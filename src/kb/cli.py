@@ -26,6 +26,9 @@ from kb.stats import REPORTS
 from kb.util import short_id
 
 
+SUBAGENT_LINES = 10
+
+
 def parse_since(value: str) -> str:
     if not value:
         return ""
@@ -143,8 +146,10 @@ def cmd_summary(args, cfg) -> int:
         print("files: " + ", ".join(files[:15]) + more)
     for p in json.loads(r.get("prs") or "[]"):
         print(f"pr: {p}")
-    for k in kids:
+    for k in kids[:SUBAGENT_LINES]:
         print(f"subagent: {short_id(k['id'])} {k['title']}")
+    if len(kids) > SUBAGENT_LINES:
+        print(f"subagents: … and {len(kids) - SUBAGENT_LINES} more")
     print(f"md: {r['md_path']}")
     return 0
 

@@ -28,7 +28,8 @@ _OUTPUT_MARK = re.compile(r"^Output:\r?$", re.M)
 _EXEC_HEADER = re.compile(r"^(?:Exit code:|Wall time:|Chunk ID:|Process exited with code|Original token count:|Output:).*$",
                           re.M)
 _STATE_DB = re.compile(r"^state_(\d+)\.sqlite$")
-_EXEC_CMD = re.compile(r'"cmd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_EXEC_CMD = re.compile(r'["\']?\bcmd["\']?\s*:\s*"((?:[^"\\]|\\.)*)"')
+_EXEC_TOOL = re.compile(r"\btools\.(\w+)\(")
 
 
 def _rank(path: Path):
@@ -215,6 +216,9 @@ def _custom_call(name: str, inp, cwd: str, files: list) -> ToolCall:
                 cmd = json.loads('"' + m.group(1) + '"')
             except ValueError:
                 cmd = m.group(1)
+        else:
+            tool = _EXEC_TOOL.search(text)
+            cmd = f"tools.{tool.group(1)}" if tool else text
         return ToolCall(name="exec", arg=first_line(cmd, 120))
     return ToolCall(name=name, arg=first_line(text, 80))
 

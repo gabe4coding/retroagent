@@ -215,3 +215,13 @@ def test_subagent_lines_show_the_short_ids_of_the_parent_and_the_child(kb_env, c
 def test_a_too_short_prefix_says_so(kb_env, capsys):
     code, out = run(capsys, "summary", "55")
     assert code == 1 and "no session with id 55" in out and "at least 4" in out
+
+
+def test_summary_caps_the_subagent_list(kb_env, capsys, monkeypatch):
+    from kb.index import Index
+    kids = [{"id": f"0000000{i:x}-aaaa-bbbb-cccc-{i:012x}", "title": f"Sub {i}"} for i in range(14)]
+    monkeypatch.setattr(Index, "children", lambda self, sid: kids)
+    code, out = run(capsys, "summary", SID[:8])
+    lines = [l for l in out.splitlines() if l.startswith("subagent")]
+    assert code == 0 and len(lines) == 11
+    assert lines[-1] == "subagents: … and 4 more"

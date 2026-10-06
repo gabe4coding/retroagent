@@ -348,3 +348,18 @@ def test_top_level_thread_keeps_reports_from_children_and_ignores_its_own_messag
     assert [t.role for t in s.turns] == ["user", "user", "assistant"]
     assert s.turns[1].text == "[from /root/finder] Found 3 calls in src/api.ts"
     assert s.title == "Audit the repo"
+
+
+def test_exec_wrapper_shows_the_real_command_or_tool(tmp_path):
+    from fixtures import codex_call, codex_msg, write_codex_unit
+    unit = write_codex_unit(tmp_path, [
+        codex_msg("user", "Run the bench"),
+        ("response_item", {"type": "custom_tool_call", "name": "exec", "call_id": "e1",
+                           "input": 'const r = await tools.exec_command({cmd:"python3 bench.py index --repo x",workdir:"/w"});'}),
+        ("response_item", {"type": "custom_tool_call", "name": "exec", "call_id": "e2",
+                           "input": 'text(await tools.write_stdin({session_id:31665,chars:""}));'}),
+        ("response_item", {"type": "custom_tool_call", "name": "exec", "call_id": "e3",
+                           "input": 'await tools.exec_command({"cmd": "ls -la", "workdir": "/w"})'}),
+    ])
+    s = codex.parse_unit(unit, {})
+    assert [i.arg for i in s.turns[1].items] == ["python3 bench.py index --repo x", "tools.write_stdin", "ls -la"]
