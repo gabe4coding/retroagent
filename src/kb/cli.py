@@ -15,6 +15,7 @@ import argparse
 import datetime as dt
 import json
 import re
+import shutil
 import sqlite3
 
 from kb import config as config_mod
@@ -231,7 +232,7 @@ def cmd_backfill(args, cfg) -> int:
 
 def cmd_status(args, cfg) -> int:
     from kb.state import State
-    from kb.sync import pending_units
+    from kb.sync import needs_summary, pending_units
     st = State.load(cfg.kb_dir / "sync-state.json")
     print(f"root: {cfg.root} · host: {cfg.host}")
     print(f"last sync: {st.last_ok or 'never'}" + (f" · {st.last_result}" if st.last_result else ""))
@@ -239,10 +240,17 @@ def cmd_status(args, cfg) -> int:
         print(f"last error: {st.last_error}")
     print(f"pending sessions: {len(pending_units(cfg, st, now=True))}")
     idx = _open_index(cfg)
-    backlog = idx.db.execute("SELECT COUNT(*) FROM sessions WHERE host=? AND parent='' AND user_turns>=2 "
-                             "AND IFNULL(summary_turns, 0) != turns", (cfg.host,)).fetchone()[0]
+    backlog = len(needs_summary(idx, cfg.host))
     idx.close()
     print(f"summary backlog: {backlog}")
+    print("gitleaks: installed" if shutil.which("gitleaks") else "gitleaks: not installed (built-in redaction only)")
+    if st.quarantine:
+        print(f"quarantined: {len(st.quarantine)} file(s)")
+        held = sorted(st.quarantine.items(), key=lambda kv: (kv[1], kv[0]))
+        for path, since in held[:5]:
+            print(f"  {path}" + (f" (since {since[:10]})" if since else ""))
+        if len(held) > 5:
+            print(f"  … and {len(held) - 5} more")
     return 0
 
 

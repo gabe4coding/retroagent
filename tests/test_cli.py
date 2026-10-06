@@ -3,9 +3,10 @@ import sqlite3
 
 import pytest
 from fixtures import SID, T1
-from test_index import OLD_SCHEMA, build_kb
+from test_index import OLD_SCHEMA, build_kb, put
 
 from kb.cli import main
+from kb.state import State
 from kb.stats import REPORTS
 
 
@@ -107,3 +108,51 @@ def test_sql_reports_multiple_statements_and_bad_ids(kb_env, capsys):
     assert code == 2 and "one SQL statement" in out
     code, out = run(capsys, "summary", "")
     assert code == 1 and "empty id" in out
+
+
+def _path_with_gitleaks(monkeypatch, tmp_path, installed):
+    bin_dir = tmp_path / ("gl-bin-installed" if installed else "gl-bin-missing")
+    bin_dir.mkdir()
+    if installed:
+        (bin_dir / "gitleaks").write_text("#!/bin/sh\nexit 0\n")
+        (bin_dir / "gitleaks").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+
+
+def test_status_reports_whether_gitleaks_is_installed(kb_env, capsys, monkeypatch, tmp_path):
+    _path_with_gitleaks(monkeypatch, tmp_path, installed=False)
+    _, out = run(capsys, "status")
+    assert "gitleaks: not installed (built-in redaction only)" in out.splitlines()
+    _path_with_gitleaks(monkeypatch, tmp_path, installed=True)
+    _, out = run(capsys, "status")
+    assert "gitleaks: installed" in out.splitlines() and "not installed" not in out
+
+
+def test_status_lists_quarantined_files_up_to_five(kb_env, capsys):
+    _, out = run(capsys, "status")
+    assert "quarantined:" not in out                                          # nothing held back: no line
+    st = State.load(kb_env / ".kb" / "sync-state.json")
+    st.quarantine = {f"sessions/h/claude/2026/10/f{i}.md": f"2026-10-0{i + 1}T10:00:00Z" for i in range(7)}
+    st.save()
+    _, out = run(capsys, "status")
+    lines = out.splitlines()
+    listed = lines[lines.index("quarantined: 7 file(s)") + 1:]
+    assert [l for l in listed if l.startswith("  sessions/h/")] == listed[:5]
+    assert listed[0].startswith("  sessions/h/claude/2026/10/f0.md") and "2026-10-01" in listed[0]
+    assert any("2 more" in l for l in listed) and not any("f5.md" in l or "f6.md" in l for l in listed)
+    st.quarantine = {"sessions/h/claude/2026/10/only.md": "2026-10-06T10:00:00Z"}
+    st.save()
+    _, out = run(capsys, "status")
+    assert "quarantined: 1 file(s)" in out and "only.md" in out and "more" not in out
+
+
+def test_status_backlog_follows_the_regrowth_rule(kb_env, capsys):
+    """Same rule as the sync: no summary yet, or 4 or more turns beyond what the summary covers."""
+    turns = tuple(f"turn {i}" for i in range(10))
+    base = 2                                                                  # the two fixture sessions have no summary
+    for covered, listed in ((7, 0), (6, 1), (10, 0), (0, 1)):
+        put(kb_env, "h/claude/2026/10/long.md", "99999999-0000-0000-0000-000000000000", turns=turns,
+            summary="s", summary_turns=covered)
+        run(capsys, "reindex")                                                # status reads the index sync built
+        _, out = run(capsys, "status")
+        assert f"summary backlog: {base + listed}" in out.splitlines(), (covered, out)
