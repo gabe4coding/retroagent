@@ -20,15 +20,23 @@ class State:
     @classmethod
     def load(cls, path) -> "State":
         path = Path(path)
-        data = {}
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except ValueError:
-                data = {}
-        return cls(path=path, files=data.get("files", {}), summary_attempts=data.get("summary_attempts", {}),
-                   last_ok=data.get("last_ok", ""), last_result=data.get("last_result", ""),
-                   last_error=data.get("last_error", ""))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+
+        def _dict(key):
+            v = data.get(key)
+            return v if isinstance(v, dict) else {}
+
+        def _text(key):
+            v = data.get(key)
+            return v if isinstance(v, str) else ""
+
+        return cls(path=path, files=_dict("files"), summary_attempts=_dict("summary_attempts"),
+                   last_ok=_text("last_ok"), last_result=_text("last_result"), last_error=_text("last_error"))
 
     def save(self) -> None:
         data = {"files": self.files, "summary_attempts": self.summary_attempts, "last_ok": self.last_ok,

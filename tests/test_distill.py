@@ -48,3 +48,10 @@ def test_update_front_matter_keeps_body(tmp_path):
     text = p.read_text(encoding="utf-8")
     assert text.split("\n---\n", 1)[1] == before
     assert split_front_matter(text)[0]["summary"] == "new"
+
+
+def test_front_matter_values_with_unicode_line_separators_round_trip():
+    meta = {"id": "x", "title": "before\u2028after", "summary": "a\u2029b\u0085c", "turns": 2}
+    text = dump_front_matter(meta) + "\nbody\n"
+    back, body = split_front_matter(text)
+    assert back == meta and body == "body\n"

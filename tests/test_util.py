@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 from kb.util import (
     atomic_write, clean_user_text, first_line, head_lines, hhmm, iso_utc,
     project_from_cwd, project_from_git_url, rel_path, slug,
@@ -63,3 +67,67 @@ def test_atomic_write_skips_identical(tmp_path):
     assert atomic_write(p, b"x") is False
     assert atomic_write(p, b"y") is True
     assert p.read_bytes() == b"y"
+
+
+def test_atomic_write_failure_keeps_old_content_and_leaves_no_temp_file(tmp_path, monkeypatch):
+    p = tmp_path / "d" / "f.txt"
+    assert atomic_write(p, b"old") is True
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        atomic_write(p, b"new")
+    monkeypatch.undo()
+    assert p.read_bytes() == b"old"
+    assert [x.name for x in p.parent.iterdir()] == ["f.txt"]
+
+
+def test_atomic_write_cleans_up_on_keyboard_interrupt(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    work.mkdir()
+    p = work / "f.txt"
+
+    def boom(fd):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(os, "fsync", boom)
+    with pytest.raises(KeyboardInterrupt):
+        atomic_write(p, b"x")
+    monkeypatch.undo()
+    assert list(work.iterdir()) == []
+
+
+def test_atomic_write_temp_name_is_unique_and_ends_with_tmp(tmp_path, monkeypatch):
+    seen = []
+    real = os.replace
+
+    def spy(src, dst):
+        seen.append(os.path.basename(src))
+        real(src, dst)
+
+    monkeypatch.setattr(os, "replace", spy)
+    atomic_write(tmp_path / "a.md", b"1")
+    atomic_write(tmp_path / "a.md", b"2")
+    assert all(n.startswith("a.md.") and n.endswith(".tmp") for n in seen) and len(set(seen)) == 2
+
+
+def test_gitignore_ignores_tmp_files():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, ".gitignore"), encoding="utf-8") as fh:
+        assert "*.tmp" in fh.read().split()
+
+
+def test_slug_has_no_trailing_separator_after_the_length_cut():
+    out = slug("a" * 39 + "-b")
+    assert out == "a" * 39
+    assert not out.endswith(("-", "."))
+    assert slug("x" * 38 + "..y") == "x" * 38
+
+
+def test_clean_user_text_drops_ci_monitor_events():
+    raw = ('Check the build <ci-monitor-event pr="12" state="failed">\nlog line 1\nlog line 2\n</ci-monitor-event>'
+           " now")
+    assert clean_user_text(raw) == "Check the build  now"
+    assert clean_user_text("<ci-monitor-event>x</ci-monitor-event>") == ""

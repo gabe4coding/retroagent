@@ -215,7 +215,11 @@ def make_codex_tree(root, t1=T1, t2=T2, t3=T3, cwd=CWD):
 # ---------------------------------------------------------------- git + config helpers
 
 def git(*args, cwd=None):
-    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} (cwd={cwd}) failed with exit {p.returncode}: "
+                           f"{(p.stderr or p.stdout).strip()}")
+    return p
 
 
 def init_remote(tmp):

@@ -1,11 +1,14 @@
-import os
-
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch, tmp_path):
-    """Tests never read the real config or start real summaries."""
+    """Tests never read the real config, the user's home or git config, or start real summaries."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("KB_CONFIG", str(tmp_path / "no-config.json"))
     monkeypatch.delenv("KB_ROOT", raising=False)
     monkeypatch.delenv("KB_CHILD", raising=False)

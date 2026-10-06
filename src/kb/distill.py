@@ -29,7 +29,7 @@ def split_front_matter(text: str):
     if end < 0:
         return {}, text
     meta = {}
-    for line in text[4:end].splitlines():
+    for line in text[4:end].split("\n"):
         key, sep, value = line.partition(": ")
         if not sep:
             continue

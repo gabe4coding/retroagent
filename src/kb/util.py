@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import re
+import tempfile
 from pathlib import Path
 
 _FRAC = re.compile(r"\.\d+")
@@ -51,7 +52,7 @@ def head_lines(text: str, n: int = 3, limit: int = 300) -> str:
 
 def slug(text: str, limit: int = 40) -> str:
     s = re.sub(r"[^a-z0-9._-]+", "-", (text or "").lower()).strip("-.")
-    return (s or "unknown")[:limit]
+    return (s or "unknown")[:limit].strip("-.") or "unknown"[:limit]
 
 
 def expand(p) -> Path:
@@ -85,7 +86,7 @@ def project_from_git_url(url: str) -> str:
 
 _DROP_BLOCKS = re.compile(
     r"<(system-reminder|task-notification|local-command-stdout|local-command-caveat|bash-stdout|bash-stderr"
-    r"|command-message|agent-message)\b[^>]*>.*?</\1>",
+    r"|command-message|agent-message|ci-monitor-event)\b[^>]*>.*?</\1>",
     re.S,
 )
 _CMD_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
@@ -114,12 +115,26 @@ def clean_user_text(text: str) -> str:
 
 
 def atomic_write(path, data: bytes) -> bool:
-    """Write bytes only if they differ from the current content. Returns True if the file changed."""
+    """Write bytes only if they differ from the current content. Returns True if the file changed.
+
+    The data goes to a unique temp file next to the target, is fsynced, then renamed over it. A failed or
+    interrupted write leaves the old file untouched and no temp file behind.
+    """
     path = Path(path)
     if path.exists() and path.read_bytes() == data:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return True

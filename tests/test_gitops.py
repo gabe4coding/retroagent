@@ -1,22 +1,68 @@
+import gzip
+import json
 import os
+import socket
+import subprocess
+import threading
+import time
+from pathlib import Path
 
+import pytest
 from fixtures import clone, init_remote
+from fixtures import git as fgit
 
 from kb import gitops
 
 
-def _add(repo, host, text):
+def _add(repo, host, text, name="x.md"):
     d = repo / "sessions" / host
     d.mkdir(parents=True, exist_ok=True)
-    (d / "x.md").write_text(text)
+    (d / name).write_text(text)
 
+
+def _staged(repo):
+    return sorted(gitops.git(repo, "diff", "--cached", "--name-only").stdout.split())
+
+
+def _no_proxy(monkeypatch):
+    for key in ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+
+
+def _diverge(tmp_path):
+    """Two clones that changed README.md differently; `a` pushed first, so `b` conflicts when it pulls."""
+    remote = init_remote(tmp_path)
+    a, b = clone(remote, tmp_path / "a"), clone(remote, tmp_path / "b")
+    for repo, text in ((a, "from a\n"), (b, "from b\n")):
+        (repo / "README.md").write_text(text)
+        fgit("commit", "-q", "-am", text.strip(), cwd=repo)
+    gitops.push(a)
+    return a, b
+
+
+# ---------------------------------------------------------------- test isolation
+
+def test_tests_never_see_the_user_home_or_git_config(tmp_path):
+    assert os.environ["HOME"] == str(tmp_path / "home") and (tmp_path / "home").is_dir()
+    assert os.environ["GIT_CONFIG_GLOBAL"] == "/dev/null" and os.environ["GIT_CONFIG_NOSYSTEM"] == "1"
+
+
+def test_fixture_git_failure_names_the_command_and_stderr(tmp_path):
+    with pytest.raises(RuntimeError) as e:
+        fgit("no-such-subcommand", cwd=tmp_path)
+    assert "no-such-subcommand" in str(e.value) and "is not a git command" in str(e.value)
+
+
+# ---------------------------------------------------------------- basic flow
 
 def test_stage_commit_push(tmp_path):
     a = clone(init_remote(tmp_path), tmp_path / "a")
     assert gitops.has_remote(a)
     _add(a, "h", "x")
-    assert gitops.stage(a, ["sessions/h", "raw/h"]) is True
-    gitops.commit(a, "m")
+    paths = ["sessions/h", "raw/h"]
+    assert gitops.stage(a, paths) is True
+    gitops.commit(a, "m", paths)
     assert gitops.ahead(a) == 1
     gitops.push(a)
     assert gitops.ahead(a) == 0
@@ -29,18 +75,399 @@ def test_push_rebases_when_remote_moved(tmp_path):
     for repo, host in ((a, "ha"), (b, "hb")):
         _add(repo, host, host)
         gitops.stage(repo, [f"sessions/{host}"])
-        gitops.commit(repo, host)
+        gitops.commit(repo, host, [f"sessions/{host}"])
     gitops.push(a)
     gitops.push(b)
     gitops.pull(a)
     assert (a / "sessions/hb/x.md").read_text() == "hb"
 
 
-def test_secrets_check_with_fake_gitleaks(tmp_path, monkeypatch):
-    fake = tmp_path / "bin"
-    fake.mkdir()
-    script = fake / "gitleaks"
-    script.write_text("#!/bin/sh\necho 'leak found: Finding 1'\nexit 1\n")
+# ---------------------------------------------------------------- non-interactive git
+
+def test_git_runs_with_an_editor_that_does_nothing(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    monkeypatch.delenv("GIT_EDITOR", raising=False)
+    monkeypatch.setenv("EDITOR", "vi")
+    monkeypatch.setenv("VISUAL", "vi")
+    assert gitops.git(a, "var", "GIT_EDITOR").stdout.strip() == "true"
+
+
+def _fake_ssh(tmp_path, monkeypatch):
+    bindir = tmp_path / "sshbin"
+    bindir.mkdir()
+    log = tmp_path / "ssh.log"
+    script = bindir / "ssh"
+    script.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\nexit 255\n')
     script.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
-    assert "leak found" in gitops.secrets_check(tmp_path)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    return log
+
+
+def _ssh_args_seen(a, log):
+    gitops.git(a, "ls-remote", "ssh://ssh-host.invalid/x.git", check=False)
+    return log.read_text()
+
+
+def test_ssh_never_asks_questions(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    log = _fake_ssh(tmp_path, monkeypatch)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    assert "-o BatchMode=yes" in _ssh_args_seen(a, log)
+
+
+def test_ssh_keeps_the_users_ssh_command(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    log = _fake_ssh(tmp_path, monkeypatch)
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i /my/key")
+    seen = _ssh_args_seen(a, log)
+    assert "-i /my/key" in seen and "-o BatchMode=yes" in seen
+
+
+def test_ssh_keeps_core_ssh_command_from_git_config(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    log = _fake_ssh(tmp_path, monkeypatch)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    fgit("config", "core.sshCommand", "ssh -F /my/ssh_config", cwd=a)
+    seen = _ssh_args_seen(a, log)
+    assert "-F /my/ssh_config" in seen and "-o BatchMode=yes" in seen
+
+
+def test_git_gives_up_on_a_server_that_never_answers(tmp_path, monkeypatch):
+    _no_proxy(monkeypatch)
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    held = []
+    threading.Thread(target=lambda: held.append(srv.accept()), daemon=True).start()
+    start = time.time()
+    try:
+        with pytest.raises(gitops.GitError, match="timed out"):
+            gitops.git(a, "ls-remote", f"http://127.0.0.1:{srv.getsockname()[1]}/x.git", timeout=2)
+    finally:
+        srv.close()
+        for conn, _ in held:
+            conn.close()
+    assert time.time() - start < 20
+
+
+def test_pull_from_an_unreachable_http_remote_fails_fast(tmp_path, monkeypatch):
+    _no_proxy(monkeypatch)
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    fgit("remote", "set-url", "origin", "http://127.0.0.1:9/x.git", cwd=a)
+    start = time.time()
+    with pytest.raises(gitops.GitError):
+        gitops.pull(a)
+    assert time.time() - start < 30
+
+
+# ---------------------------------------------------------------- stage / commit / unstage
+
+def test_commit_includes_only_the_given_paths_even_if_other_files_are_staged(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "mine")
+    (a / "other.txt").write_text("not mine")
+    fgit("add", "other.txt", cwd=a)
+    paths = ["sessions/h", "raw/h", "catalog/h"]
+    assert gitops.stage(a, paths) is True
+    gitops.commit(a, "sync", paths)
+    assert fgit("show", "--name-only", "--format=", "HEAD", cwd=a).stdout.split() == ["sessions/h/x.md"]
+    assert _staged(a) == ["other.txt"]
+
+
+def test_commit_ignores_empty_and_missing_paths(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "mine")
+    (a / "raw" / "h" / "empty").mkdir(parents=True)  # exists, but git knows nothing in it
+    paths = ["sessions/h", "raw/h", "catalog/h"]
+    assert gitops.stage(a, paths) is True
+    gitops.commit(a, "sync", paths)
+    assert gitops.ahead(a) == 1
+
+
+def test_commit_records_deletions(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "mine")
+    gitops.stage(a, ["sessions/h"])
+    gitops.commit(a, "one", ["sessions/h"])
+    (a / "sessions/h/x.md").unlink()
+    assert gitops.stage(a, ["sessions/h"]) is True
+    gitops.commit(a, "two", ["sessions/h"])
+    assert fgit("show", "--name-status", "--format=", "HEAD", cwd=a).stdout.split() == ["D", "sessions/h/x.md"]
+
+
+def test_commit_without_changes_in_the_paths_raises_and_leaves_other_staged_files(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "mine")
+    gitops.stage(a, ["sessions/h"])
+    gitops.commit(a, "one", ["sessions/h"])
+    (a / "other.txt").write_text("x")
+    fgit("add", "other.txt", cwd=a)
+    with pytest.raises(gitops.GitError):
+        gitops.commit(a, "nothing", ["sessions/h"])
+    with pytest.raises(gitops.GitError):
+        gitops.commit(a, "no paths", [])
+    assert _staged(a) == ["other.txt"] and gitops.ahead(a) == 1
+
+
+def test_commit_does_not_sign(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    fgit("config", "commit.gpgsign", "true", cwd=a)
+    fgit("config", "gpg.program", "/nonexistent/gpg", cwd=a)
+    _add(a, "h", "mine")
+    gitops.stage(a, ["sessions/h"])
+    gitops.commit(a, "m", ["sessions/h"])
+    assert gitops.ahead(a) == 1
+
+
+def test_stage_is_false_when_only_an_unrelated_file_is_staged(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    (a / "other.txt").write_text("x")
+    fgit("add", "other.txt", cwd=a)
+    _add(a, "h", "mine")
+    assert gitops.stage(a, ["sessions/h"]) is True
+    fgit("reset", "-q", "sessions/h", cwd=a)
+    (a / "sessions/h/x.md").unlink()
+    assert gitops.stage(a, ["sessions/h", "raw/h"]) is False
+    assert _staged(a) == ["other.txt"]
+
+
+def test_unstage_resets_only_the_given_paths(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    (a / "other.txt").write_text("x")
+    fgit("add", "other.txt", cwd=a)
+    _add(a, "h", "mine")
+    gitops.stage(a, ["sessions/h"])
+    assert _staged(a) == ["other.txt", "sessions/h/x.md"]
+    gitops.unstage(a, ["sessions/h", "raw/h"])
+    assert _staged(a) == ["other.txt"]
+    gitops.unstage(a, [])
+    assert _staged(a) == ["other.txt"]
+
+
+# ---------------------------------------------------------------- pull / repair
+
+def test_pull_refuses_when_a_tracked_file_has_local_changes(tmp_path):
+    remote = init_remote(tmp_path)
+    a, b = clone(remote, tmp_path / "a"), clone(remote, tmp_path / "b")
+    _add(b, "hb", "b")
+    gitops.stage(b, ["sessions/hb"])
+    gitops.commit(b, "b", ["sessions/hb"])
+    gitops.push(b)
+    (a / "README.md").write_text("edited locally\n")
+    with pytest.raises(gitops.GitError, match="local changes in tracked files; not pulling"):
+        gitops.pull(a)
+    assert (a / "README.md").read_text() == "edited locally\n" and not (a / "sessions/hb").exists()
+
+
+def test_pull_works_with_untracked_files_present(tmp_path):
+    remote = init_remote(tmp_path)
+    a, b = clone(remote, tmp_path / "a"), clone(remote, tmp_path / "b")
+    _add(b, "hb", "b")
+    gitops.stage(b, ["sessions/hb"])
+    gitops.commit(b, "b", ["sessions/hb"])
+    gitops.push(b)
+    (a / "scratch.txt").write_text("untracked")
+    gitops.pull(a)
+    assert (a / "sessions/hb/x.md").read_text() == "b"
+
+
+def test_pull_rebase_conflict_is_aborted_and_raises(tmp_path):
+    _, b = _diverge(tmp_path)
+    with pytest.raises(gitops.GitError):
+        gitops.pull(b)
+    assert not (b / ".git" / "rebase-merge").exists() and not (b / ".git" / "rebase-apply").exists()
+    assert (b / "README.md").read_text() == "from b\n"
+    assert fgit("symbolic-ref", "-q", "HEAD", cwd=b).stdout.strip() == "refs/heads/main"
+
+
+def _stuck_rebase(tmp_path):
+    _, b = _diverge(tmp_path)
+    p = subprocess.run(["git", "-C", str(b), "pull", "--rebase", "--quiet"], capture_output=True, text=True)
+    assert p.returncode != 0 and (b / ".git" / "rebase-merge").exists()
+    return b
+
+
+def test_repair_aborts_a_stuck_rebase(tmp_path):
+    b = _stuck_rebase(tmp_path)
+    assert gitops.repair(b) == ""
+    assert not (b / ".git" / "rebase-merge").exists()
+    assert (b / "README.md").read_text() == "from b\n"
+
+
+def test_repair_is_quiet_on_a_healthy_repo_and_reports_a_detached_head(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    assert gitops.repair(a) == ""
+    fgit("checkout", "-q", "--detach", cwd=a)
+    msg = gitops.repair(a)
+    assert msg and "detached" in msg
+
+
+def test_repair_reports_a_path_that_is_not_a_repo(tmp_path):
+    assert gitops.repair(tmp_path / "nowhere")
+
+
+# ---------------------------------------------------------------- secrets check
+
+def _fake_gitleaks(tmp_path, monkeypatch, body):
+    """A gitleaks stand-in. The script gets $cmd, $report (--report-path) and $src (last argument)."""
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir(exist_ok=True)
+    script = bindir / "gitleaks"
+    script.write_text(
+        "#!/bin/sh\n"
+        'cmd="$1"; report=""; prev=""; src=""\n'
+        'for a in "$@"; do\n'
+        '  if [ "$prev" = "--report-path" ]; then report="$a"; fi\n'
+        '  if [ "$prev" = "--source" ]; then src="$a"; fi\n'
+        '  prev="$a"; last="$a"\n'
+        "done\n"
+        '[ -z "$src" ] && src="$last"\n' + body)
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    return script
+
+
+def _stage_raw(repo, rel, text):
+    p = repo / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(p, "wt", encoding="utf-8") as fh:
+        fh.write(text)
+    fgit("add", rel, cwd=repo)
+
+
+def test_secrets_check_reports_the_file_of_a_finding(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "x")
+    _add(a, "h", "y", name="y.md")
+    gitops.stage(a, ["sessions/h"])
+    _fake_gitleaks(tmp_path, monkeypatch, (
+        'if [ "$cmd" = git ]; then\n'
+        '  echo \'[{"RuleID":"r","File":"sessions/h/x.md"}]\' > "$report"; echo leaks found >&2; exit 1\n'
+        "fi\n"
+        'echo "[]" > "$report"; exit 0\n'))
+    r = gitops.secrets_check(a)
+    assert r.ran is True and r.error == "" and r.files == ["sessions/h/x.md"]
+
+
+def test_secrets_check_clean(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "x")
+    gitops.stage(a, ["sessions/h"])
+    _fake_gitleaks(tmp_path, monkeypatch, 'echo "[]" > "$report"; exit 0\n')
+    r = gitops.secrets_check(a)
+    assert r.ran is True and r.error == "" and r.files == []
+
+
+def test_secrets_check_finds_a_secret_inside_a_staged_raw_file(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "clean")
+    _stage_raw(a, "raw/h/2026-10/leaky.jsonl.gz", '{"text": "SECRETVALUE"}\n')
+    _stage_raw(a, "raw/h/2026-10/fine.jsonl.gz", '{"text": "nothing"}\n')
+    gitops.stage(a, ["sessions/h", "raw/h"])
+    _fake_gitleaks(tmp_path, monkeypatch, (
+        'if [ "$cmd" = dir ]; then\n'
+        '  hit=$(grep -rl SECRETVALUE "$src")\n'
+        '  if [ -n "$hit" ]; then echo "[{\\"File\\":\\"$hit\\"}]" > "$report"; exit 1; fi\n'
+        "fi\n"
+        'echo "[]" > "$report"; exit 0\n'))
+    r = gitops.secrets_check(a)
+    assert r.ran is True and r.error == "" and r.files == ["raw/h/2026-10/leaky.jsonl.gz"]
+
+
+def test_secrets_check_maps_relative_and_resolved_raw_paths(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _stage_raw(a, "raw/h/2026-10/leaky.jsonl.gz", "SECRETVALUE\n")
+    gitops.stage(a, ["raw/h"])
+    _fake_gitleaks(tmp_path, monkeypatch, (
+        'if [ "$cmd" = dir ]; then\n'
+        '  real=$(cd "$src" && pwd -P)\n'
+        '  echo "[{\\"File\\":\\"$real/raw/h/2026-10/leaky.jsonl\\"}]" > "$report"; exit 1\n'
+        "fi\n"
+        'echo "[]" > "$report"; exit 0\n'))
+    assert gitops.secrets_check(a).files == ["raw/h/2026-10/leaky.jsonl.gz"]
+    _fake_gitleaks(tmp_path, monkeypatch, (
+        'if [ "$cmd" = dir ]; then\n'
+        '  echo \'[{"File":"raw/h/2026-10/leaky.jsonl"}]\' > "$report"; exit 1\n'
+        "fi\n"
+        'echo "[]" > "$report"; exit 0\n'))
+    assert gitops.secrets_check(a).files == ["raw/h/2026-10/leaky.jsonl.gz"]
+
+
+def test_secrets_check_merges_findings_of_both_scans(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "x")
+    _stage_raw(a, "raw/h/2026-10/leaky.jsonl.gz", "SECRETVALUE\n")
+    gitops.stage(a, ["sessions/h", "raw/h"])
+    _fake_gitleaks(tmp_path, monkeypatch, (
+        'if [ "$cmd" = dir ]; then\n'
+        '  echo \'[{"File":"raw/h/2026-10/leaky.jsonl"}]\' > "$report"; exit 1\n'
+        "fi\n"
+        'echo \'[{"File":"sessions/h/x.md"}]\' > "$report"; exit 1\n'))
+    assert gitops.secrets_check(a).files == ["raw/h/2026-10/leaky.jsonl.gz", "sessions/h/x.md"]
+
+
+def test_secrets_check_error_without_a_report_is_not_a_finding(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "x")
+    gitops.stage(a, ["sessions/h"])
+    _fake_gitleaks(tmp_path, monkeypatch, 'echo "Error: failed to load config: bad toml" >&2; exit 1\n')
+    r = gitops.secrets_check(a)
+    assert r.ran is True and r.files == [] and "bad toml" in r.error
+
+
+def test_secrets_check_error_with_an_unreadable_report(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "x")
+    gitops.stage(a, ["sessions/h"])
+    _fake_gitleaks(tmp_path, monkeypatch, 'echo "not json" > "$report"; echo boom >&2; exit 1\n')
+    r = gitops.secrets_check(a)
+    assert r.ran is True and r.files == [] and "boom" in r.error
+
+
+def test_secrets_check_without_gitleaks_installed(tmp_path, monkeypatch):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    r = gitops.secrets_check(tmp_path)
+    assert r.ran is False and r.error == "" and r.files == []
+
+
+def test_secrets_check_falls_back_to_the_old_gitleaks_commands(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "x")
+    _stage_raw(a, "raw/h/2026-10/leaky.jsonl.gz", "SECRETVALUE\n")
+    gitops.stage(a, ["sessions/h", "raw/h"])
+    _fake_gitleaks(tmp_path, monkeypatch, (
+        'case "$cmd" in\n'
+        '  git|dir) echo "Error: unknown command \\"$cmd\\" for \\"gitleaks\\"" >&2; exit 1;;\n'
+        '  protect) echo \'[{"File":"sessions/h/x.md"}]\' > "$report"; exit 1;;\n'
+        '  detect) echo \'[{"File":"raw/h/2026-10/leaky.jsonl"}]\' > "$report"; exit 1;;\n'
+        "esac\n"
+        "exit 2\n"))
+    r = gitops.secrets_check(a)
+    assert r.error == "" and r.files == ["raw/h/2026-10/leaky.jsonl.gz", "sessions/h/x.md"]
+
+
+def test_secrets_check_runs_gitleaks_non_interactively(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "x")
+    gitops.stage(a, ["sessions/h"])
+    seen = tmp_path / "seen.txt"
+    _fake_gitleaks(tmp_path, monkeypatch, (
+        f'echo "$GIT_TERMINAL_PROMPT $GIT_EDITOR $GIT_SSH_COMMAND" > "{seen}"\n'
+        'echo "[]" > "$report"; exit 0\n'))
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    gitops.secrets_check(a)
+    assert seen.read_text().strip() == "0 true ssh -o BatchMode=yes"
+
+
+def test_secrets_check_with_an_unreadable_staged_raw_file_is_an_error(tmp_path, monkeypatch):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    bad = a / "raw/h/2026-10/bad.jsonl.gz"
+    bad.parent.mkdir(parents=True)
+    bad.write_bytes(b"this is not gzip")
+    fgit("add", "raw/h", cwd=a)
+    _fake_gitleaks(tmp_path, monkeypatch, 'echo "[]" > "$report"; exit 0\n')
+    r = gitops.secrets_check(a)
+    assert r.ran is True and r.files == [] and "bad.jsonl.gz" in r.error

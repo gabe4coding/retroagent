@@ -4,10 +4,11 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kb.util import expand
+from kb.util import expand, slug
 
 CONFIG_PATH = "~/.config/sessions-kb/config.json"
 DEFAULT_ROOT = "~/Repositories/sessions-kb"
@@ -36,27 +37,66 @@ class Config:
         return self.root / ".kb"
 
 
+def _read(p: Path) -> dict:
+    """The config object, or {} (unreadable, not JSON, not an object). A syntax error warns once on stderr."""
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+    except ValueError as e:
+        sys.stderr.write(f"sessions-kb: bad config {p}: {e}; using defaults\n")
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _int(raw: dict, key: str, default: int) -> int:
+    """A non-negative int from the config; anything else (missing, bool, text, null, negative) gives the default."""
+    v = raw.get(key)
+    if isinstance(v, bool) or v is None:
+        return default
+    try:
+        n = int(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return n if n >= 0 else default
+
+
+def _list(raw: dict, key: str, default: list) -> list:
+    """A list of str from the config. A single str becomes a one-item list; a non-list gives the default."""
+    v = raw.get(key)
+    if isinstance(v, str):
+        return [v]
+    if not isinstance(v, list):
+        return list(default)
+    return [str(i) for i in v]
+
+
+def _text(raw: dict, key: str) -> str:
+    v = raw.get(key)
+    return v if isinstance(v, str) else ""
+
+
+def _absolute(p: Path) -> Path:
+    try:
+        return p.resolve()
+    except (OSError, RuntimeError):
+        return Path(os.path.abspath(str(p)))
+
+
 def load(path: str | None = None) -> Config:
     p = expand(path or os.environ.get("KB_CONFIG") or CONFIG_PATH)
-    raw = {}
-    if p.exists():
-        try:
-            raw = json.loads(p.read_text(encoding="utf-8"))
-        except ValueError:
-            raw = {}
-    root = os.environ.get("KB_ROOT") or raw.get("root") or DEFAULT_ROOT
-    cfg = Config(root=expand(root), host=str(raw.get("host") or default_host()))
-    for key in ("quiet_minutes", "debounce_minutes", "summary_cap_per_run"):
-        if key in raw:
-            setattr(cfg, key, int(raw[key]))
-    if raw.get("summary_model"):
-        cfg.summary_model = str(raw["summary_model"])
-    if raw.get("claude_dir"):
+    raw = _read(p)
+    root = os.environ.get("KB_ROOT") or _text(raw, "root") or DEFAULT_ROOT
+    host = slug(str(raw.get("host") or default_host()))
+    cfg = Config(root=_absolute(expand(root)), host=host)
+    cfg.quiet_minutes = _int(raw, "quiet_minutes", cfg.quiet_minutes)
+    cfg.debounce_minutes = _int(raw, "debounce_minutes", cfg.debounce_minutes)
+    cfg.summary_cap_per_run = _int(raw, "summary_cap_per_run", cfg.summary_cap_per_run)
+    cfg.summary_model = _text(raw, "summary_model") or cfg.summary_model
+    if _text(raw, "claude_dir"):
         cfg.claude_dir = expand(raw["claude_dir"])
-    if "codex_dirs" in raw:
-        cfg.codex_dirs = [expand(d) for d in raw["codex_dirs"]]
-    if raw.get("codex_home"):
+    cfg.codex_dirs = [expand(d) for d in _list(raw, "codex_dirs", cfg.codex_dirs)]
+    if _text(raw, "codex_home"):
         cfg.codex_home = expand(raw["codex_home"])
-    if "exclude_cwd_globs" in raw:
-        cfg.exclude_cwd_globs = list(raw["exclude_cwd_globs"])
+    cfg.exclude_cwd_globs = _list(raw, "exclude_cwd_globs", cfg.exclude_cwd_globs)
     return cfg

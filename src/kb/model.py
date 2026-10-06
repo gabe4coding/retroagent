@@ -1,6 +1,7 @@
 """The common session model produced by every adapter."""
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 
@@ -74,11 +75,12 @@ class Unit:
     main: str
 
     def fingerprint(self) -> str:
+        """sha1 of path, size, mtime and ctime of every file. Raises OSError if a file is gone."""
         parts = []
-        for p in sorted(self.paths):
+        for p in sorted(map(str, self.paths)):
             st = os.stat(p)
             parts.append(f"{p}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}")
-        return "|".join(parts)
+        return hashlib.sha1("|".join(parts).encode("utf-8", "surrogateescape")).hexdigest()
 
     def newest_mtime(self) -> float:
         return max(os.stat(p).st_mtime for p in self.paths)
