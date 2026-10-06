@@ -4,7 +4,8 @@ This is the main barrier before transcripts are committed, so rules are ordered 
 written with three properties in mind:
 - JSON-safe: a rule never consumes a lone backslash, a closing quote or a newline it does not own, so redacting a
   serialized JSON line keeps it valid (a backslash is only consumed together with the quote or character it escapes).
-- Linear time: every scan is bounded (scheme length, key body length, digit look-ahead), so 1 MB lines are cheap.
+- Linear time: every scan is bounded (scheme length, key body length, digit look-ahead, the 12 words between a command and
+  its password flag, a name suffix of 20 characters), so 1 MB lines are cheap.
 - Idempotent: placeholders start with "[", which no value pattern accepts.
 Each rule also lists hint substrings. A text that holds none of them cannot match, so its regex is skipped
 (a transcript has hundreds of thousands of short strings). A test checks that this never changes the result.
@@ -42,11 +43,13 @@ _PASSWORDS = r"password|passwd|pgpassword|mysql_pwd"
 
 _RULES: list = []      # (name, compiled regex), in order
 _HINTS: list = []      # per rule: lowercase substrings, at least one of which a matching text must contain
+_PASSES: list = []     # per rule: how many times it may run again while it still finds something
 
 
-def _add(name: str, pattern: str, hints: tuple, flags: int = 0) -> None:
+def _add(name: str, pattern: str, hints: tuple, flags: int = 0, passes: int = 1) -> None:
     _RULES.append((name, re.compile(pattern, flags)))
     _HINTS.append(hints)
+    _PASSES.append(passes)
 
 
 # --- private keys (a full block, then a block that was cut off)
@@ -73,9 +76,12 @@ _add("atlassian-token", r"\bATATT3[A-Za-z0-9_=-]{50,}", ("atatt3",))
 # a branch such as fix/sk-1234-... or feature/sk-learn-... is not a key: "sk-" must not continue a path or a word
 _add("openai-key", r"(?<![\w/-])sk-(?:proj-)?[A-Za-z0-9_-]{20,}", ("sk-",))
 _add("aws-access-key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", ("akia", "asia"))
-_add("slack-token", r"\bxox[abprs]-[A-Za-z0-9-]{10,}", ("xox",))
+_add("slack-token", r"\bxox[abprse]-[A-Za-z0-9-]{10,}", ("xox",))
 _add("slack-webhook", r"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+", ("hooks.slack.com",))
 _add("google-api-key", r"\bAIza[0-9A-Za-z_-]{35}", ("aiza",))
+_add("google-client-secret", r"\bGOCSPX-[A-Za-z0-9_-]{20,}", ("gocspx-",))
+# an Azure storage connection string: AccountName=...;AccountKey=<88 base64 characters>;EndpointSuffix=...
+_add("azure-account-key", r"(?P<keep>AccountKey=)[A-Za-z0-9+/=]{40,}", ("accountkey=",), re.I)
 _add("jwt", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", ("eyj",))
 # --- credentials in headers, commands and URLs
 # a bearer value needs a digit, so "Bearer authentication-scheme-middleware" stays
@@ -88,7 +94,7 @@ _add("url-credentials", r"""(?P<keep>\b[a-z][a-z0-9+.-]{0,31}://[^\s:/@"']*:)[^\
 _add("aws-secret",
      rf"(?P<keep>aws_secret_access_key(?:{_Q})?[ \t]*[=:][ \t]*(?:{_Q})?)[A-Za-z0-9/+=]{{40}}",
      ("aws_secret_access_key",), re.I)
-# --- generic assignments, most specific first. All three are reported as "secret-assignment".
+# --- generic assignments, most specific first. All of them are reported as "secret-assignment".
 # A quoted password/secret value of 4-200 chars, up to its closing quote (it may hold spaces and no digit).
 # The value is a run of whole tokens (a character, or a backslash + its character), so no escape is cut in half.
 # A bare double quote ends it even inside single quotes: in a serialized JSON line it is a string delimiter.
@@ -109,21 +115,81 @@ _add("secret-assignment",
      rf"(?P<keep>{_NAME_START}(?:{_KEYWORDS}){_ASSIGN}){_PLACEHOLDER}"
      rf"(?=[^{_VALUE_END}]{{0,256}}\d)[^{_VALUE_END}]{{8,}}",
      ("pass", "secret", "token", "key"), re.I)
+# The same with a suffix after the keyword (DB_PASSWORD_PROD, GITHUB_TOKEN_RO, SECRET_KEY_BASE, apiKeyProd): 1 to 20
+# name characters before the "=" or ":". The suffix does not start with a plural "s" (`tokens = 12345678`, `max_tokens_per_x`
+# count things): a lower-case "s", or an upper-case "S" that does not open a camelCase word (tokenSecret is a name). A suffix
+# also names things that are not secrets (TOKEN_URL, SECRET_KEY_FILE), so a path, a URL or a dotted identifier is not a value.
+_PLURAL = r"(?-i:s|S(?![a-z]))"
+_add("secret-assignment",
+     rf"(?P<keep>{_NAME_START}(?:{_KEYWORDS})(?!{_PLURAL})[A-Za-z0-9_]{{1,20}}{_ASSIGN}){_PLACEHOLDER}(?![/~]|\w{{1,16}}://)"
+     rf"{_CODE_REF}"
+     rf"(?=[^{_VALUE_END}]{{0,256}}\d)[^{_VALUE_END}]{{8,}}",
+     ("pass", "secret", "token", "key"), re.I)
+# --- password flags: a command-line option that names a secret. The flag stays, only the value goes. They run after the
+# generic assignments: `--password=...` that a rule above already catches keeps its name (secret-assignment); these add
+# the forms no name rule reaches (`--password X`, `--pass=X`, a short value, `mysql -pX`, `sshpass -p X`, ...).
+# A value is quoted (spaces allowed, up to the closing quote, as in the quoted-password rule above) or bare (up to white
+# space, a quote or a shell delimiter, so a JSON string or an inline-code span is not eaten). A placeholder (${VAR}, $VAR,
+# <value>, ****, {x}, [REDACTED...]) or a path is no value, and neither is another option after a space (`--password -u`).
+# A quoted value does not start with `,` `:` `]` `}` or white space either: in serialized JSON a plain quote right after
+# "--pass " is the end of the string, and what follows it is JSON structure that must stay.
+_FLAG_QUOTE = r"""(?P<oq>(?P<bs>\\)?(?P<q>["']))?"""     # a quote, or a quote escaped for JSON; stays in the "keep" group
+_FLAG_VALUE = (r"""(?(oq)(?![$<*{\[/~,:\]}\s])(?:(?!(?P=q))[^\\\r\n"]|\\(?(bs)(?!(?P=q)))[^\r\n]){1,200}(?=(?(bs)\\)(?P=q))"""
+               r"""|(?![$<*{\[/~"'\\])[^\s"'\\;&|<>)}`]{1,200})""")
+# One word of a command line: it ends at white space and at a command separator (`;`, `&`, `|`, a line break written as
+# a real one or as a JSON escape), so an option is only looked for in the same command. 12 words of up to 80 characters.
+# The command word itself is not a word of the gap: the next one starts its own search, so a line of repeated command words
+# costs one step per word, not twelve.
+_ARG = r"(?:[^\s;&|\\]|\\[^nr\s]){1,80}"
+
+
+def _gap(cmd: str) -> str:
+    return rf"(?:[ \t]+(?!{cmd}(?![\w-])){_ARG}){{0,12}}?"
+
+
+_MYSQL = r"(?:mysql(?:dump|admin|import|check|show)?|mariadb(?:-(?:dump|admin|import|check|show))?)"
+_FLAGS = (r"pass(?:word|wd)?|token|secret|api[-_]?key|(?:access|auth|refresh)[-_]token|client[-_]secret|secret[-_]key")
+# A bare word after the flag that is prose about the flag ("the --password flag"), not a value.
+_PROSE = (r"(?:flags?|options?|arguments?|args?|param(?:eter)?s?|values?|to|is|are|and|or|for|in|on|the|an?|as|with|when|if"
+          r"|that|which|from|it|this|so|but|be|by|via|instead|only)(?![\w-])")
+_FLAG_HINTS = ("--pass", "--token", "--secret", "--api", "--access", "--auth", "--refresh", "--client")
+_add("password-flag", rf"(?P<keep>(?<![\w-])--(?:{_FLAGS})={_FLAG_QUOTE}){_FLAG_VALUE}", _FLAG_HINTS)
+_add("password-flag", rf"(?P<keep>(?<![\w-])--(?:{_FLAGS})[ \t]+(?!-)(?!{_PROSE})(?!id=){_FLAG_QUOTE}){_FLAG_VALUE}", _FLAG_HINTS)
+# The short options below only mean a password after their own command (`mkdir -p`, `ssh -p 2222`, `grep -a` do not).
+# For mysql, redis-cli and az the command word is part of the match, so a second flag of the same command is only reached
+# by running the rule again (passes=3): the first match has used up the command word. A run that finds nothing ends the
+# loop, and a placeholder is never a value, so a rule cannot go on matching its own output.
+# mysql, mariadb and their dump/admin tools: `-p` is glued to the value (`-p secret` prompts; `-p3306:3306` publishes a port).
+_add("password-flag",
+     rf"(?P<keep>(?<![\w.-]){_MYSQL}(?![\w-]){_gap(_MYSQL)}[ \t]+-p(?![\d.]+:\d){_FLAG_QUOTE}){_FLAG_VALUE}",
+     ("mysql", "mariadb"), passes=3)
+# sshpass: `-p` comes first among its options (a later `-p` belongs to ssh), with or without a space before the value.
+_add("password-flag",
+     rf"(?P<keep>(?<![\w.-])sshpass(?:[ \t]+-[^\s;&|\\p][^\s;&|\\]{{0,40}}){{0,3}}[ \t]+-p[ \t]*{_FLAG_QUOTE}){_FLAG_VALUE}",
+     ("sshpass",))
+_add("password-flag", rf"(?P<keep>(?<![\w.-])redis-cli(?![\w-]){_gap('redis-cli')}[ \t]+-a[ \t]+(?!-){_FLAG_QUOTE}){_FLAG_VALUE}",
+     ("redis-cli",), passes=3)
+_add("password-flag", rf"(?P<keep>(?<![\w.-])az{_gap('az')}[ \t]+-p[ \t]+(?!-){_FLAG_QUOTE}){_FLAG_VALUE}", ("az ", "az\t"), passes=3)
 
 
 def _run(text: str, use_hints: bool):
     counts: Counter = Counter()
     low = text.lower() if use_hints else ""
-    for (name, rx), hints in zip(_RULES, _HINTS):
+    for (name, rx), hints, passes in zip(_RULES, _HINTS, _PASSES):
         if use_hints and not any(h in low for h in hints):
             continue
 
         def _sub(m, name=name):
             keep = m.groupdict().get("keep") or ""
             return f"{keep}[REDACTED:{name}]"
-        text, n = rx.subn(_sub, text)
-        if n:
-            counts[name] += n
+        total = 0
+        for _ in range(passes):
+            text, n = rx.subn(_sub, text)
+            total += n
+            if not n:
+                break
+        if total:
+            counts[name] += total
             if use_hints:
                 low = text.lower()
     return text, counts

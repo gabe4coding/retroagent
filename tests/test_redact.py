@@ -1,5 +1,6 @@
 import json
 import random
+import re
 import time
 
 import pytest
@@ -312,7 +313,9 @@ def test_every_rule_is_linear_on_more_adversarial_lines(line):
 
 def test_the_prefilter_never_changes_the_result():
     corpus = ([t for _, t, _ in POSITIVE] + [t for _, t, _ in NEW_POSITIVE] + NEGATIVE + NEW_NEGATIVE
-              + [json.dumps(p) for p in JSON_PAYLOADS] + [json.dumps(JSON_PAYLOADS)])
+              + [json.dumps(p) for p in JSON_PAYLOADS] + [json.dumps(JSON_PAYLOADS)]
+              + [t for t, _, _ in FLAG_CASES] + FLAG_NEGATIVE + [t for _, t, _ in SUFFIX_POSITIVE] + SUFFIX_NEGATIVE
+              + [t for _, t, _ in VENDOR_CASES] + VENDOR_NEGATIVE)
     for text in corpus:
         assert redact(text) == _run(text, False), text
     rng = random.Random(7)
@@ -335,6 +338,8 @@ _FUZZ_PIECES = [
     GH, "aws_secret_access_key", "A" * 40, ",", ";", ")", "}", "\r", '"password":"', 'password\\":\\"', '\\"', "\\\\",
     "\\n", "\\u00e9", 'token":', "secret'", "=\\'", "-----BEGIN RSA PRIVATE KEY-----\n", "QUJDQUJD",
     "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+    "--password ", "--token=", "--pass '", "mysql -p", "mysql -u root -p'", "sshpass -p ", "redis-cli -a ", "az login -p ",
+    "AccountKey=", "GOCSPX-", "xoxe-", "_PROD=", "apiKeyProd", "mysql", "\\n",
 ]
 
 
@@ -386,3 +391,311 @@ def test_curl_user_guard_keeps_the_rest_of_the_command_line_intact():
 def test_new_rules_agree_with_and_without_the_prefilter():
     for _, text, _ in REVIEW_POSITIVE:
         assert redact(text) == _run(text, False), text
+
+
+# ---------------------------------------------------------------- password flags, suffixed names, Azure/Google/Slack formats
+
+PW = "Hunter" + "22x"                       # a made-up password
+PW_SPACE = "my S3cret" + " pw 9"           # a made-up password with spaces
+MYPW = "S3cret" + "Pw9"
+FLAG = "[REDACTED:password-flag]"
+GEN = "[REDACTED:secret-assignment]"      # a name rule that runs first keeps its own name for `--password=...`
+
+# (text, the secret in it, the exact expected output): the flag stays, only the value goes
+FLAG_CASES = [
+    (f"mysql -p{MYPW}", MYPW, f"mysql -p{FLAG}"),
+    (f"mysql -u root -p{MYPW} appdb", MYPW, f"mysql -u root -p{FLAG} appdb"),
+    (f"mariadb -h db.local -uroot -p{MYPW} -e 'select 1'", MYPW, f"mariadb -h db.local -uroot -p{FLAG} -e 'select 1'"),
+    (f"mysqldump -u root -p{MYPW} appdb > dump.sql", MYPW, f"mysqldump -u root -p{FLAG} appdb > dump.sql"),
+    (f"/usr/bin/mysql -p{MYPW}", MYPW, f"/usr/bin/mysql -p{FLAG}"),
+    (f"docker exec -i mysql mysql -uroot -p{MYPW}", MYPW, f"docker exec -i mysql mysql -uroot -p{FLAG}"),
+    (f"mysql -u root -p'{PW_SPACE}' appdb", PW_SPACE, f"mysql -u root -p'{FLAG}' appdb"),
+    (f'mysql -u root -p"{PW_SPACE}" appdb', PW_SPACE, f'mysql -u root -p"{FLAG}" appdb'),
+    (f"mysql -e 'select 1' -p{MYPW}", MYPW, f"mysql -e 'select 1' -p{FLAG}"),
+    (f"--password {PW}", PW, f"--password {FLAG}"),
+    (f"--password={PW}", PW, f"--password={GEN}"),
+    (f"--passwd {PW}", PW, f"--passwd {FLAG}"),
+    (f"--passwd={PW}", PW, f"--passwd={GEN}"),
+    (f"--pass {PW}", PW, f"--pass {FLAG}"),
+    (f"--token {PW}", PW, f"--token {FLAG}"),
+    (f"--secret {PW}", PW, f"--secret {FLAG}"),
+    (f"--api-key {PW}", PW, f"--api-key {FLAG}"),
+    (f"--api-key={PW}", PW, f"--api-key={GEN}"),
+    (f"--access-token {PW}", PW, f"--access-token {FLAG}"),
+    (f"--client-secret={PW}", PW, f"--client-secret={GEN}"),
+    (f"docker login -u me --password {PW} registry.local", PW, f"docker login -u me --password {FLAG} registry.local"),
+    (f"tool --password '{PW_SPACE}' run", PW_SPACE, f"tool --password '{FLAG}' run"),
+    (f'tool --password="{PW_SPACE}" run', PW_SPACE, f'tool --password="{GEN}" run'),
+    # `=` forms that no name rule reaches: another name, or a value that is short or has no digit
+    (f"--pass={PW}", PW, f"--pass={FLAG}"),
+    ("--password=" + "ab", "ab", f"--password={FLAG}"),
+    ("--token=" + "abc", "abc", f"--token={FLAG}"),
+    ("--secret=" + "Hunter", "Hunter", f"--secret={FLAG}"),
+    ("--password='" + "ab" + "'", "ab", f"--password='{FLAG}'"),
+    (f'--pass="{PW_SPACE}"', PW_SPACE, f'--pass="{FLAG}"'),
+    ("--api-key=" + "abc", "abc", f"--api-key={FLAG}"),
+    ("--auth-token " + "abc", "abc", f"--auth-token {FLAG}"),
+    ("--secret-key=" + "abc", "abc", f"--secret-key={FLAG}"),
+    # a flag before and after, and two commands on one line
+    (f"cmd --pass {PW} --token {PW}", PW, f"cmd --pass {FLAG} --token {FLAG}"),
+    (f"mysql -u a -p{MYPW} -e 'x'; redis-cli -a {MYPW} ping", MYPW, f"mysql -u a -p{FLAG} -e 'x'; redis-cli -a {FLAG} ping"),
+    # two flags of one command: the first match has used up the command word, so the rule runs again for the next one
+    (f"mysql -u a -p{MYPW} -p{MYPW}", MYPW, f"mysql -u a -p{FLAG} -p{FLAG}"),
+    (f"redis-cli -a {PW} -a {PW} ping", PW, f"redis-cli -a {FLAG} -a {FLAG} ping"),
+    (f"az login -p {PW} --foo -p {PW}", PW, f"az login -p {FLAG} --foo -p {FLAG}"),
+    (f"mysqldump -p{MYPW} db | mysql -p{MYPW} db2", MYPW, f"mysqldump -p{FLAG} db | mysql -p{FLAG} db2"),
+    (f"sshpass -p '{PW_SPACE}' ssh me@host", PW_SPACE, f"sshpass -p '{FLAG}' ssh me@host"),
+    (f"sshpass -p {PW} ssh me@host", PW, f"sshpass -p {FLAG} ssh me@host"),
+    (f"sshpass -p{PW} ssh me@host", PW, f"sshpass -p{FLAG} ssh me@host"),
+    (f"sshpass -p {PW} ssh -p 2222 me@host", PW, f"sshpass -p {FLAG} ssh -p 2222 me@host"),
+    (f"redis-cli -a {PW}", PW, f"redis-cli -a {FLAG}"),
+    (f"redis-cli -h cache.local -p 6379 -a {PW} ping", PW, f"redis-cli -h cache.local -p 6379 -a {FLAG} ping"),
+    (f"redis-cli -a '{PW_SPACE}' ping", PW_SPACE, f"redis-cli -a '{FLAG}' ping"),
+    (f"az login --service-principal -u app-id -p {PW} --tenant t", PW,
+     f"az login --service-principal -u app-id -p {FLAG} --tenant t"),
+    (f"az acr login -n reg -u me -p '{PW_SPACE}'", PW_SPACE, f"az acr login -n reg -u me -p '{FLAG}'"),
+    (f"sudo az login -u me -p {PW}", PW, f"sudo az login -u me -p {FLAG}"),
+]
+
+
+@pytest.mark.parametrize("text,secret,expected", FLAG_CASES, ids=[str(i) for i in range(len(FLAG_CASES))])
+def test_password_flags_are_redacted_and_the_flag_stays(text, secret, expected):
+    out, counts = redact(text)
+    assert out == expected and secret not in out
+    assert sum(counts.values()) == len(re.findall(r"\[REDACTED:", expected))     # one count per placeholder
+    assert redact(out)[0] == out                                   # idempotent
+    assert redact(text) == _run(text, False)                       # the prefilter changes nothing
+
+
+@pytest.mark.parametrize("text,secret,expected", FLAG_CASES, ids=[str(i) for i in range(len(FLAG_CASES))])
+def test_password_flags_inside_serialized_json(text, secret, expected):
+    line = json.dumps({"cmd": text, "n": 1})
+    out, _ = redact(line)
+    data = json.loads(out)                                         # still valid JSON
+    assert data == {"cmd": expected, "n": 1}
+
+
+def test_password_flag_does_not_cross_a_json_escaped_line_break():
+    line = json.dumps({"cmd": "az login\nssh -p 2222 me@host\nredis-cli -h x\ngrep -a needle"})
+    assert redact(line)[0] == line
+    line = json.dumps({"cmd": f"mysql -u root\nls -p{MYPW}"})
+    assert redact(line)[0] == line
+
+
+FLAG_NEGATIVE = [
+    # short options that are not a password
+    "mkdir -p /tmp/a/b",
+    "docker run -p 8080:80 nginx",
+    "ssh -p 2222 me@host",
+    "grep -a needle file.txt",
+    "git log -p",
+    "git log -p --stat main",
+    "ls -pla",
+    # the mysql family without a value, or with a port: the client prompts, or docker publishes a port
+    "mysql -p",
+    "mysql -u root -p appdb",
+    "mysql -h db.local -P 3306 -u root",
+    "mysql --port=3306 -u root",
+    "docker run --name mysql -p 3306:3306 mysql:8",
+    "docker run -d --name mysql -p3306:3306 mysql:8",
+    "docker run -d --name mysql -p127.0.0.1:3306:3306 mysql:8",
+    "systemctl restart mysql; ssh -p2222 me@host",
+    "service mysql start && tar -pxf a.tar",
+    "cat my.cnf | mysql_config | grep -pfoo",
+    # other tools keep their short options
+    "redis-cli -h cache.local -p 6379 ping",
+    "redis-cli -a",
+    "redis-cli -p 6379 -a --no-auth-warning ping",
+    "redis-cli -h x; grep -a needle f",
+    "az login; ssh -p 2222 me@host",
+    "az account show && ssh -p 2222 me@host",
+    "az vm list | grep -p x",
+    "sshpass -p $SSHPASS ssh -p 2222 me@host",
+    'sshpass -p "$DB_PASSWORD" ssh me@host',
+    "sshpass -e ssh -p 2222 me@host",
+    "sshpass -f /run/secrets/pw ssh -p 2222 me@host",
+    # long flags that hold a placeholder, a path, another flag or no value
+    "docker login --password-stdin",
+    "docker login -u me --password-stdin registry.local",
+    "--password $DB_PASSWORD",
+    "--password ${DB_PASSWORD}",
+    '--password "$DB_PASSWORD"',
+    "--password=$DB_PASSWORD",
+    "--token=$GITHUB_TOKEN",
+    "--token ${{ secrets.GITHUB_TOKEN }}",
+    "--token <your-token>",
+    "--api-key {api_key}",
+    "--password ********",
+    "--password=[REDACTED:secret-assignment]",
+    "--password /run/secrets/db_password",
+    "--secret id=npm,src=.npmrc",
+    "--password -u",
+    "--token --verbose",
+    "--password=",
+    "--password ''",
+    "--with-token",
+    "--passwordless",
+    "--tokenizer bert-base-uncased",
+    "--secrets-file x.env",
+    "--api-keys list",
+    "parser.add_argument('--token', help='the token')",
+    'parser.add_argument("--password", required=True)',
+    # prose that names the flag
+    "pass the --password flag to the script",
+    "use --token to authenticate",
+    "the --secret option is required",
+    "set --pass and --token as arguments",
+    "`--password` flag",
+]
+
+
+@pytest.mark.parametrize("text", FLAG_NEGATIVE, ids=[str(i) for i in range(len(FLAG_NEGATIVE))])
+def test_password_flag_false_positives_stay(text):
+    out, counts = redact(text)
+    assert out == text and not counts
+
+
+SUFFIX_POSITIVE = [
+    ("secret-assignment", "DB_PASSWORD_PROD=" + "hunter2xyz9", "hunter2xyz9"),
+    ("secret-assignment", "export GITHUB_TOKEN_RO=" + "r0t0k3n" + "abcd", "r0t0k3nabcd"),
+    ("secret-assignment", "SECRET_KEY_BASE=" + HEX32, HEX32),
+    ("secret-assignment", '"apiKeyProd": "' + "abc123" + 'def456"', "abc123def456"),
+    ("secret-assignment", '{"clientSecretProd": "' + "abc123" + 'def456"}', "abc123def456"),
+    ("secret-assignment", 'api_key_staging = "' + "abc123" + 'def456"', "abc123def456"),
+    ("secret-assignment", "AUTH_TOKEN_STAGING: " + "abc123" + "def456", "abc123def456"),
+    ("secret-assignment", "tokenSecret: " + "abc123" + "def456", "abc123def456"),
+    ("secret-assignment", "apiKey2: " + "abc123" + "def456", "abc123def456"),
+    ("secret-assignment", "TOKEN_" + "A" * 19 + "=" + "abc123" + "def456", "abc123def456"),          # 20-character suffix
+    ("secret-assignment", "PASSWORD_2: " + "hunter.2xyz9abc", "hunter.2xyz9abc"),                    # a dot is not always code
+    ("secret-assignment", "process.env.PASSWORD_2 = '" + "abc123" + "def456'", "abc123def456"),    # a string assigned to a suffixed name
+]
+
+
+@pytest.mark.parametrize("rule,text,secret", SUFFIX_POSITIVE, ids=[str(i) for i in range(len(SUFFIX_POSITIVE))])
+def test_names_with_a_suffix_after_the_keyword(rule, text, secret):
+    out, counts = redact(text)
+    assert secret not in out and counts[rule] >= 1
+    assert redact(out)[0] == out
+    assert redact(text) == _run(text, False)
+    json.loads(redact(json.dumps({"a": text}))[0])
+
+
+SUFFIX_NEGATIVE = [
+    "tokens = 12345678",
+    "TOKENS = 12345678",
+    "max_tokens: 4096",
+    "max_tokens_per_request: 123456789",
+    "MAX_TOKENS_PER_MINUTE=1234567890",
+    "passwords: abc12345678",
+    "api_keys = abc12345678",
+    "password: ${DB_PASSWORD}",
+    "DB_PASSWORD_PROD: ${DB_PASSWORD_PROD}",
+    "GITHUB_TOKEN_RO=$GH_RO_TOKEN",
+    "SECRET_KEY_BASE=<redacted>",
+    "SECRET_KEY_BASE=****************",
+    "apiKeyProd: ${API_KEY_PROD}",
+    "SECRET_KEY_BASE: process.env.SECRET_KEY_BASE",
+    "PASSWORD_2: process.env.PASSWORD_2 };",                # a dotted code reference with a digit is code, not a value
+    "SECRET_KEY_BASE_V2 = process.env.SECRET_KEY_BASE_V2",
+    "const x = { TOKEN_RO: config.secrets.token_ro2, a: 1 }",
+    'apiKeyProd: req.body.apiKey2,',
+    "secret_key_base = config.secrets.secret_key_base",
+    "PWD=/Users/x/Repos/acme-web",
+    "TOKEN_" + "A" * 20 + "=abc123def456",                  # 21-character suffix: too long to be a name
+    "api_key_prod=short",
+    '"secretProd": 12345678901',                            # a JSON number
+    '"tokenCount": 12345678901',
+]
+
+
+@pytest.mark.parametrize("text", SUFFIX_NEGATIVE, ids=[str(i) for i in range(len(SUFFIX_NEGATIVE))])
+def test_suffix_rule_keeps_the_false_positive_guards(text):
+    out, counts = redact(text)
+    assert out == text and not counts
+
+
+AZURE_KEY = "A1b2C3d4E5f6G7h8I9j0" * 4 + "K1l2M3n4" + "=="                  # 88 characters
+GOCSPX = "GOC" + "SPX-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"
+SLACK_XOXE = "xox" + "e-1-" + "A1b2C3d4E5f6G7h8I9j0"
+
+VENDOR_CASES = [
+    ("azure-account-key", "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=" + AZURE_KEY + ";EndpointSuffix=core.windows.net",
+     "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=[REDACTED:azure-account-key];EndpointSuffix=core.windows.net"),
+    ("azure-account-key", "AccountKey=" + AZURE_KEY, "AccountKey=[REDACTED:azure-account-key]"),
+    ("azure-account-key", '{"cs": "AccountKey=' + AZURE_KEY + '"}', '{"cs": "AccountKey=[REDACTED:azure-account-key]"}'),
+    ("azure-account-key", "AccountKey=" + "A" * 40, "AccountKey=[REDACTED:azure-account-key]"),
+    ("google-client-secret", "client_secret " + GOCSPX + " ok", "client_secret [REDACTED:google-client-secret] ok"),
+    ("google-client-secret", '{"installed": {"x": "' + GOCSPX + '"}}', '{"installed": {"x": "[REDACTED:google-client-secret]"}}'),
+    ("google-client-secret", "GOCSPX-" + "a" * 20, "[REDACTED:google-client-secret]"),
+    ("slack-token", "SLACK " + SLACK_XOXE, "SLACK [REDACTED:slack-token]"),
+    ("slack-token", "SLACK " + "xox" + "p-1234567890-abcdefghij", "SLACK [REDACTED:slack-token]"),
+    ("slack-token", "SLACK " + "xox" + "r-1234567890-abcdefghij", "SLACK [REDACTED:slack-token]"),
+    ("slack-token", "SLACK " + "xox" + "s-1234567890-abcdefghij", "SLACK [REDACTED:slack-token]"),
+]
+
+
+@pytest.mark.parametrize("rule,text,expected", VENDOR_CASES, ids=[str(i) for i in range(len(VENDOR_CASES))])
+def test_azure_google_and_slack_formats(rule, text, expected):
+    out, counts = redact(text)
+    assert out == expected and counts[rule] == 1
+    assert redact(out)[0] == out
+    assert redact(text) == _run(text, False)
+    json.loads(redact(json.dumps({"a": text}))[0])
+
+
+VENDOR_NEGATIVE = [
+    "AccountKey=" + "A" * 39,
+    "AccountKey=${STORAGE_KEY}",
+    "AccountKey=<key>",
+    "AccountKeyVault=" + "A" * 50,
+    "GOCSPX-" + "a" * 19,
+    "GOCSPX is the prefix of a client secret",
+    "xoxe-short",
+    "xoxe is a token family",
+    "xoxz-1234567890-abcdefghij",
+]
+
+
+@pytest.mark.parametrize("text", VENDOR_NEGATIVE, ids=[str(i) for i in range(len(VENDOR_NEGATIVE))])
+def test_vendor_format_false_positives_stay(text):
+    out, counts = redact(text)
+    assert out == text and not counts
+
+
+ADVERSARIAL_FLAGS = [
+    "mysql " * 170_000, "mariadb -u " * 90_000, "mysql -p" * 120_000, "mysql -p " * 110_000, "mysqldump " * 100_000,
+    ("mysql " + "x" * 70 + " ") * 14_000, ("mysql " + "x" * 79 + " ") * 12_000, "mysql " + "-u a " * 250_000,
+    "az " * 300_000, "az -p " * 160_000, ("az " + "x" * 79 + " ") * 12_000, "redis-cli " * 100_000, "redis-cli -a " * 80_000,
+    "sshpass " * 120_000, "sshpass -p " * 90_000, "sshpass -x " * 90_000,
+    "--password " * 90_000, "--password=" * 90_000, "--password='" * 80_000, "--token " * 120_000, "--pass " * 140_000,
+    "--password " + "a" * 1_000_000, "--password='" + "a" * 1_000_000, "--password=" + "a" * 1_000_000,
+    "--password \"" + "a b " * 250_000, "mysql -p'" + "a" * 1_000_000, "-p" * 500_000, "-a " * 330_000,
+    "--api-key " * 90_000, "--access-token " * 60_000, "--client-secret=" * 60_000,
+    "AccountKey=" * 90_000, "AccountKey=" + "A" * 1_000_000, "AccountKey=" + "A" * 39 + " ", ("AccountKey=" + "A" * 39 + " ") * 20_000,
+    "GOCSPX-" * 140_000, "GOCSPX-" + "a" * 1_000_000, "xoxe-" * 200_000, "xoxe-" + "a" * 1_000_000,
+    "token_" * 170_000, "secret_key_base" * 60_000, "api_key" * 140_000, "TOKEN_" + "A" * 1_000_000,
+    "token" + "a" * 1_000_000, "password_" * 110_000, "apiKeyProd" * 100_000, "token_a=" * 120_000, "secret_" + "x" * 15 + "=" + " " * 100_000,
+    # the dotted-identifier guard of the suffix rule
+    "token_x=" + "a." * 500_000, "token_x=a." * 100_000, "token_x=" + "a" * 1_000_000, "token_x=" + "a.b" * 300_000 + "=",
+    ("token_x=a.b" + "c" * 80) * 11_000, "token_x=a.b=" * 80_000, "password_2=" + "a." * 450_000 + "9",
+    # one command with a very long run of flags: a rule runs at most 3 times
+    "mysql " + "-pa " * 250_000, "redis-cli " + "-a a " * 200_000, "az " + "-p a " * 200_000, "mysql -pa " * 100_000,
+    "az -p a " * 120_000, "redis-cli -a a " * 70_000, "sshpass -p a " * 80_000,
+]
+
+
+@pytest.mark.parametrize("line", ADVERSARIAL_FLAGS, ids=[str(i) for i in range(len(ADVERSARIAL_FLAGS))])
+def test_new_rules_are_linear_on_adversarial_lines(line):
+    t0 = time.perf_counter()
+    _run(line, False)                                 # all rules, no prefilter
+    assert time.perf_counter() - t0 < 2
+    t0 = time.perf_counter()
+    redact(line)
+    assert time.perf_counter() - t0 < 2
+
+
+def test_flag_rules_keep_the_names_of_the_rules_that_run_first():
+    # `--password=...` that a name rule already catches is still counted as secret-assignment (the slimraw counts rely on it)
+    assert redact(f"--password={PW}")[1] == {"secret-assignment": 1}
+    assert redact(f"--password {PW}")[1] == {"password-flag": 1}
+    assert redact(f"--pass={PW}")[1] == {"password-flag": 1}
