@@ -51,7 +51,7 @@ def test_hook_starts_background_sync_and_prints_nothing(tmp_path):
     start = time.time()
     p = subprocess.run([str(hook)], env=env, input="{}", capture_output=True, text=True, timeout=5)
     assert p.returncode == 0 and p.stdout == "" and time.time() - start < 2
-    assert _wait(marker) and marker.read_text().strip() == "sync"
+    assert _wait(marker) and marker.read_text().strip() == "sync --auto"       # item 1: the gate is checked by kb itself
 
 
 def test_hook_respects_guard_and_debounce(tmp_path):
@@ -68,3 +68,12 @@ def test_kb_wrapper_runs_cli(tmp_path):
     env = {**os.environ, "KB_ROOT": str(REPO), "KB_CONFIG": str(tmp_path / "none.json")}
     p = subprocess.run([str(PLUGIN / "bin/kb"), "--help"], env=env, capture_output=True, text=True, timeout=20)
     assert p.returncode == 0 and "kb find" in p.stdout
+
+
+def test_hook_passes_auto_to_kb_even_when_the_config_turns_auto_sync_off(tmp_path):
+    """The gate lives in `kb sync --auto`, not in the shell hook: the hook always hands over."""
+    hook, marker, _, env = _hook_env(tmp_path)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"auto_sync": False}))
+    subprocess.run([str(hook)], env={**env, "KB_CONFIG": str(cfg)}, input="{}", capture_output=True, text=True, timeout=5)
+    assert _wait(marker) and marker.read_text().strip() == "sync --auto"

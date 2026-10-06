@@ -120,6 +120,8 @@ def _parse(path, session_id: str, parent: str = ""):
     current = None
     for rec in iter_records(path, skipped):
         try:
+            if rec.get("entrypoint") == "sdk-cli":      # what `claude -p` and the Agent SDK write
+                s.headless = True
             kind = rec.get("type")
             ts = iso_utc(rec.get("timestamp"))
             if ts:

@@ -383,3 +383,20 @@ def test_exec_wrapper_shows_the_real_command_or_tool(tmp_path):
     ])
     s = codex.parse_unit(unit, {})
     assert [i.arg for i in s.turns[1].items] == ["python3 bench.py index --repo x", "tools.write_stdin", "ls -la"]
+
+
+# ---- item 2: headless sessions (session_meta.source == "exec", what `codex exec` writes)
+
+@pytest.mark.parametrize("source, headless", [("exec", True), ("vscode", False), ("cli", False),
+                                              ({"subagent": {"thread_spawn": {"parent_thread_id": T1}}}, False)])
+def test_codex_exec_is_headless(tmp_path, source, headless):
+    unit = write_codex_unit(tmp_path, [codex_msg("user", "Do it"), codex_msg("assistant", "Done.")],
+                            meta={"source": source})
+    s = codex.parse_unit(unit, {})
+    assert s is not None and s.headless is headless
+
+
+def test_the_codex_fixture_threads_are_not_headless(tmp_path):
+    units, titles = _units(tmp_path)
+    assert codex.parse_unit(units[f"codex:{T1}"], titles).headless is False
+    assert codex.parse_unit(units[f"codex:{T2}"], titles).headless is False

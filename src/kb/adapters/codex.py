@@ -283,7 +283,7 @@ def parse_unit(unit: Unit, titles=None):
     parent = _str(spawn.get("parent_thread_id")) if isinstance(spawn, dict) else ""
     tid = _str(meta.get("id")) or unit.key.split(":", 1)[-1]
     s = Session(id=tid, agent="codex", source_paths=list(unit.paths), cwd=_str(meta.get("cwd")),
-                parent=parent or _str(meta.get("parent_thread_id")))
+                parent=parent or _str(meta.get("parent_thread_id")), headless=source == "exec")
     git = meta.get("git") if isinstance(meta.get("git"), dict) else {}
     s.branch = _str(git.get("branch"))
     me = {_str(meta.get("agent_path")), _str(meta.get("agent_nickname"))}

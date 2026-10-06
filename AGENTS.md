@@ -17,6 +17,7 @@ Reading needs no write access, except to build a missing or outdated index. If `
 - Use `kb` first. Never `cat` or read whole files in `sessions/`.
 - Never read `raw/` unless the task is to fix or re-run the distiller.
 - `sessions/`, `raw/` and `catalog/` are written by `kb sync`. Do not edit them by hand.
+- The sync works in its own data clone (`~/.sessions-kb`). Do not edit or commit there by hand; change code in a separate checkout.
 
 ## Layout
 - `sessions/<host>/<agent>/<YYYY>/<MM>/<date>_<project>_<short>.md` — distilled session: JSON front matter, then `## [N] role · HH:MM` turns.

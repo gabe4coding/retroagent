@@ -1,8 +1,10 @@
 """kb sync: discover changed sessions, distill, summarize, catalog, commit this host's folders, then pull and push.
 
 Order of a run (nothing is pulled before our own files are written and committed, so our own uncommitted
-files never block a pull): lock, repair a half-done rebase, index, process sessions, summaries, catalog,
-stage + secrets check + commit, pull, index again (other machines' sessions), push.
+files never block a pull): lock, host check (another machine's marker: stop), git gate (branch, half-done rebase,
+stale index.lock: otherwise skip git, keep processing), index, process sessions (headless one-prompt runs are
+skipped), summaries, catalog, host marker, stage + secrets check + commit, pull, index again (other machines'
+sessions), push (never commits that touch anything outside this host's folders).
 """
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 
-from kb import gitops
+from kb import gitops, machine
 from kb.adapters import claude, codex
 from kb.catalog import write_catalog
 from kb.distill import update_front_matter
@@ -148,10 +150,16 @@ def write_samples(cfg, picker, report) -> None:
             report.errors.append(f"sample {short_id(s.id)}: {type(e).__name__}: {e}")
 
 
+def _skip_headless(cfg, s) -> bool:
+    """A `claude -p` / `codex exec` run with one prompt: a script's call, not a conversation. It is marked done like
+    any skipped session and is taken later if it grows a second prompt (the unit's fingerprint changes)."""
+    return cfg.skip_headless_single_prompt and s.headless and not s.parent and s.user_turns <= 1
+
+
 def process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_run, picker=None) -> None:
     try:
         s = claude.parse_unit(unit) if unit.agent == "claude" else codex.parse_unit(unit, titles)
-        if s is None or not s.turns or s.id in seen or excluded(cfg, s.cwd):
+        if s is None or not s.turns or s.id in seen or excluded(cfg, s.cwd) or _skip_headless(cfg, s):
             if not dry_run:
                 state.files[unit.key] = fp
             return
@@ -250,37 +258,95 @@ def _staged(root, paths) -> bool:
     return rc == 1
 
 
+def own_paths(cfg) -> list:
+    """The only folders this machine ever stages, commits or pushes."""
+    return [f"sessions/{cfg.host}", f"raw/{cfg.host}", f"catalog/{cfg.host}"]
+
+
+def _within(path: str, folders) -> bool:
+    return any(path == f or path.startswith(f + "/") for f in folders)
+
+
+def _wrong_branch(cfg, report) -> bool:
+    branch = gitops.current_branch(cfg.root)
+    if branch == cfg.branch:
+        return False
+    report.errors.append(f"git: on branch {branch or '(detached HEAD)'}, expected {cfg.branch}; skipping git")
+    return True
+
+
+def git_gate(cfg, report):
+    """Decide whether this run may touch git. Returns (git_ok, has_remote); a refusal is recorded in the report.
+
+    The branch is checked first: on another branch nothing is repaired, staged, committed, pulled or pushed (the
+    checkout may hold somebody's work). A half-done rebase of ours is aborted; that can put HEAD back on a branch,
+    so the branch is checked again.
+    """
+    root = cfg.root
+    if gitops.current_branch(root) not in ("", cfg.branch):
+        _wrong_branch(cfg, report)
+        return False, False
+    remote = gitops.has_remote(root)
+    if remote:
+        problem = gitops.repair(root)
+        if problem:
+            report.errors.append(f"git: {problem}; no git step this run")
+            return False, remote
+    if _wrong_branch(cfg, report):
+        return False, remote
+    return True, remote
+
+
+def host_is_taken(cfg, mine: str) -> str:
+    """The error text if another machine owns this host (see kb.machine), else ''."""
+    if machine.owned_by_another(cfg.root, cfg.host, mine, cfg.branch):
+        return f"host '{cfg.host}' belongs to another machine; set a unique host in the config"
+    return ""
+
+
 def commit_own(cfg, state, report) -> None:
     """Stage this host's folders, scan them, commit what is clean.
 
     A scan that could not run commits nothing. Files gitleaks flags are kept out of the commit, stay on disk and
     are staged and scanned again on every run: once clean they are committed and leave the quarantine.
+    Without any gitleaks: with `require_gitleaks` nothing is committed; otherwise the files that are already
+    quarantined stay held back (the quarantine is never emptied by a missing scanner) and the rest is committed.
     """
     root = cfg.root
-    own = [f"sessions/{cfg.host}", f"raw/{cfg.host}", f"catalog/{cfg.host}"]
+    own = own_paths(cfg)
     if not gitops.stage(root, own):
         state.quarantine = {}              # nothing differs from HEAD any more: nothing is held back
         return
-    res = gitops.secrets_check(root)
+    res = gitops.secrets_check(root, exe=cfg.gitleaks_path or None)
     if res.error:                          # fail closed
         gitops.unstage(root, own)
         report.errors.append(f"gitleaks: {res.error}")
         return
-    stray = [f for f in res.files if not any(f == o or f.startswith(o + "/") for o in own)]
-    if stray:                              # a finding we cannot hold back precisely: hold back everything
-        gitops.unstage(root, own)
-        report.errors.append("gitleaks: finding in a path outside this host's folders: " + ", ".join(stray[:3]))
-        return
-    gitops.unstage(root, res.files)
-    first_seen = state.quarantine
-    state.quarantine = {f: first_seen.get(f) or now_iso() for f in res.files}
-    report.newly_quarantined = len([f for f in res.files if f not in first_seen])
+    if res.ran:
+        stray = [f for f in res.files if not _within(f, own)]
+        if stray:                          # a finding we cannot hold back precisely: hold back everything
+            gitops.unstage(root, own)
+            report.errors.append("gitleaks: finding in a path outside this host's folders: " + ", ".join(stray[:3]))
+            return
+        held = res.files
+        first_seen = state.quarantine
+        state.quarantine = {f: first_seen.get(f) or now_iso() for f in held}
+        report.newly_quarantined = len([f for f in held if f not in first_seen])
+    else:
+        if cfg.require_gitleaks:           # fail closed: no scanner, no commit
+            gitops.unstage(root, own)
+            report.errors.append("gitleaks: required but not found")
+            return
+        held = [f for f in state.quarantine if _within(f, own)]
+        if held:
+            report.errors.append(f"gitleaks: not found; {len(held)} quarantined file(s) stay held back until it is back")
+    gitops.unstage(root, held)
     if not _staged(root, own):
         return
     # `git commit -- <paths>` also takes unstaged changes of tracked files inside the paths, so name the held-back
     # files as exclusions; otherwise a flagged file that was committed before would go in with its new content.
     gitops.commit(root, f"sync({cfg.host}): {report.sessions} sessions, {report.summarized} summaries",
-                  own + [f":(exclude,literal){f}" for f in res.files])
+                  own + [f":(exclude,literal){f}" for f in held])
     report.committed = True
 
 
@@ -295,6 +361,9 @@ def publish(cfg, idx, state, report) -> None:
             note = f" ({len(state.quarantine)} quarantined file(s) stay in the working tree; see kb status)" \
                 if state.quarantine and "local changes" in str(e) else ""
             report.errors.append(f"pull: {e}{note}")
+            taken = host_is_taken(cfg, machine.local_id(cfg.kb_dir))      # a clone that had not seen the other marker
+            if taken:
+                report.errors.append(taken)
             return
         try:
             idx.update(root)                # other machines' sessions become searchable
@@ -302,6 +371,10 @@ def publish(cfg, idx, state, report) -> None:
             report.errors.append(f"index: {type(e).__name__}: {e}")
     unborn = gitops.git(root, "rev-parse", "-q", "--verify", "HEAD", check=False).returncode != 0
     if report.committed or gitops.ahead(root) or (not has_upstream and not unborn):
+        foreign = [p for p in gitops.unpushed_paths(root) if not _within(p, own_paths(cfg))]
+        if foreign:                         # somebody's own commits are theirs to push
+            report.errors.append(f"git: unpushed commits touch {', '.join(foreign[:3])}; push them by hand")
+            return
         try:
             gitops.push(root, keep=tuple(state.quarantine))
             report.pushed = True
@@ -323,14 +396,14 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
         idx = None
         try:
             git_ok, remote, known = False, False, {}
+            mine = ""
             if not dry_run:
-                git_ok = True
-                remote = gitops.has_remote(cfg.root)
-                if remote:
-                    problem = gitops.repair(cfg.root)
-                    if problem:
-                        report.errors.append(f"git: {problem}; no git step this run")
-                        git_ok = False
+                mine = machine.local_id(cfg.kb_dir)
+                taken = host_is_taken(cfg, mine)         # before any git step and any write under the host's folders
+                if taken:
+                    report.errors.append(taken)
+                    return report
+                git_ok, remote = git_gate(cfg, report)
                 idx = Index(cfg.kb_dir / "index.sqlite")
                 idx.update(cfg.root)
                 known = idx.paths_by_id(cfg.host)
@@ -353,7 +426,9 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
             if report.summarized:
                 idx.update(cfg.root)
             if months:
-                write_catalog(cfg.root, cfg.host, months)
+                for path, why in write_catalog(cfg.root, cfg.host, months):
+                    report.errors.append(f"catalog: {path}: {why}")
+            machine.claim(cfg.root, cfg.host, mine)
             if git_ok:
                 commit_own(cfg, state, report)
                 if remote:

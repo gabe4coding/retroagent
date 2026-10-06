@@ -1,5 +1,6 @@
 #!/bin/sh
-# SessionStart hook (Claude Code and Codex): start `kb sync` in the background and return at once.
+# SessionStart hook (Claude Code and Codex): start `kb sync --auto` in the background and return at once.
+# `--auto` makes kb do nothing unless auto_sync is true in the config (see `kb enable`).
 # Prints nothing, so it adds no tokens to the session. Skips when KB_CHILD=1 (our own headless
 # summary calls) and when the last sync finished less than debounce_minutes ago.
 [ "${KB_CHILD:-}" = "1" ] && exit 0
@@ -19,5 +20,5 @@ mkdir -p "$ROOT/.kb"
 if [ -f "$ROOT/.kb/last-ok" ] && [ -n "$(find "$ROOT/.kb/last-ok" -mmin "-$DEBOUNCE" 2>/dev/null)" ]; then
   exit 0
 fi
-KB_ROOT="$ROOT" nohup "$HERE/kb" sync </dev/null >>"$ROOT/.kb/sync.log" 2>&1 &
+KB_ROOT="$ROOT" nohup "$HERE/kb" sync --auto </dev/null >>"$ROOT/.kb/sync.log" 2>&1 &
 exit 0

@@ -342,3 +342,38 @@ def test_subagent_uses_the_parent_project_when_the_parent_has_a_cwd(tmp_path):
     subs = [("agent-abc.jsonl", _sub_records("hi", cwd=CWD + "/sub"), None)]
     s = _session(tmp_path, [claude_user(T(1), "hi")], subs=subs)
     assert s.project == "demo" and s.subagents[0].project == "demo"
+
+
+# ---- item 2: headless sessions (entrypoint "sdk-cli", what `claude -p` writes)
+
+def _headless(tmp_path, entrypoints, sub_entrypoint=None):
+    ts = "2026-10-06T10:00:0%dZ"
+    recs = []
+    for i, ep in enumerate(entrypoints):
+        extra = {"entrypoint": ep} if ep is not None else {}
+        recs.append(claude_user(ts % (2 * i), f"question {i}", **extra))
+        recs.append(claude_asst(ts % (2 * i + 1), f"answer {i}", **extra))
+    subs = []
+    if sub_entrypoint:
+        subs = [("agent-s1.jsonl", [claude_user("2026-10-06T10:00:05Z", "sub task", entrypoint=sub_entrypoint),
+                                    claude_asst("2026-10-06T10:00:06Z", "sub done", entrypoint=sub_entrypoint)], None)]
+    return claude.parse_unit(write_claude_session(tmp_path, recs, subs=subs))
+
+
+def test_an_sdk_cli_transcript_is_headless(tmp_path):
+    s = _headless(tmp_path, ["sdk-cli"])
+    assert s.headless is True and s.user_turns == 1
+
+
+@pytest.mark.parametrize("entrypoint", ["cli", "claude-desktop", "", None])
+def test_other_entrypoints_are_not_headless(tmp_path, entrypoint):
+    assert _headless(tmp_path, [entrypoint]).headless is False
+
+
+def test_the_fixture_session_is_not_headless(tmp_path):
+    assert _parse(tmp_path)[1].headless is False
+
+
+def test_only_the_main_transcript_decides_headless(tmp_path):
+    assert _headless(tmp_path, ["cli"], sub_entrypoint="sdk-cli").headless is False
+    assert _headless(tmp_path, ["sdk-cli"], sub_entrypoint="cli").headless is True

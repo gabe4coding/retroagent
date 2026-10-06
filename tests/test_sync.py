@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -234,10 +235,15 @@ def test_gitleaks_finding_blocks_commit(hosts, tmp_path, monkeypatch):
 
 
 def test_cold_rebuild_is_identical(hosts):
+    """Changed for item 5: .kb/machine-id says which machine owns the host, so a rebuild keeps it (the rest of .kb is
+    derived data and goes). A wiped id looks like another machine."""
     a, _ = hosts
     run_sync(a, runner=FakeRunner())
+    mid = (a.kb_dir / "machine-id").read_text()
     for d in ("sessions", "raw", "catalog", ".kb"):
         shutil.rmtree(a.root / d)
+    a.kb_dir.mkdir()
+    (a.kb_dir / "machine-id").write_text(mid)
     r = run_sync(a, runner=FakeRunner())
     assert r.sessions == 3 and not r.committed
     assert gitops.git(a.root, "status", "--porcelain").stdout == ""
@@ -645,14 +651,82 @@ def test_nothing_is_committed_when_every_staged_file_is_flagged(hosts, gitleaks)
     assert gitops.git(a.root, "diff", "--cached", "--name-only").stdout == "" and list(_quarantine(a)) == [held]
 
 
-def test_quarantine_is_cleared_when_gitleaks_is_gone(hosts, gitleaks, monkeypatch, tmp_path):
+def test_quarantine_is_kept_when_gitleaks_is_gone(hosts, gitleaks, monkeypatch, tmp_path):
+    """Changed for item 3: a missing scanner no longer releases quarantined files; they stay held back (and on disk)."""
     a, _ = hosts
     gitleaks.flag("_55555555.md")
     run_sync(a, runner=FakeRunner(), summary_cap=0)
-    assert _quarantine(a)
+    held = _md(a, "_55555555.md")
+    assert list(_quarantine(a)) == [held]
     _path(monkeypatch, tmp_path)                                               # gitleaks no longer installed
     r = run_sync(a, runner=FakeRunner(), summary_cap=0)
-    assert r.committed and r.quarantined == [] and _quarantine(a) == {}
+    assert not r.committed and r.quarantined == [held] and list(_quarantine(a)) == [held]
+    assert held not in _tracked(a.root) and (a.root / held).exists()
+    assert gitops.git(a.root, "diff", "--cached", "--name-only").stdout == ""
+    warnings = [e for e in r.errors if e.startswith("gitleaks:")]
+    assert len(warnings) == 1 and "\n" not in warnings[0] and "quarantine" in warnings[0]
+
+
+def test_other_files_are_committed_while_a_missing_scanner_keeps_the_quarantine(hosts, gitleaks, monkeypatch, tmp_path):
+    a, _ = hosts
+    gitleaks.flag("_55555555.md")
+    assert run_sync(a, runner=FakeRunner(), summary_cap=0).pushed
+    held, other = _md(a, "_55555555.md"), _md(a, f"_{short_id(T1)}.md")
+    _path(monkeypatch, tmp_path)
+    (a.root / other).write_text((a.root / other).read_text() + "\nmore\n")
+    (a.root / held).write_text((a.root / held).read_text() + "\nmore\n")
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.committed and _head_files(a.root) == [other] and list(_quarantine(a)) == [held]
+    gitleaks_bin = tmp_path / "gl-bin"                                         # the scanner is back and finds nothing
+    gitleaks.flag("")
+    _path(monkeypatch, tmp_path, gitleaks_bin)
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.committed and _head_files(a.root) == [held] and _quarantine(a) == {}
+
+
+def test_a_missing_scanner_without_quarantine_commits_quietly_as_before(hosts):
+    a, _ = hosts
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.committed and r.pushed
+
+
+def test_require_gitleaks_without_a_scanner_commits_nothing(hosts):
+    a, _ = hosts
+    a.require_gitleaks = True
+    head = gitops.git(a.root, "rev-parse", "HEAD").stdout
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert not r.committed and not r.pushed and "gitleaks: required but not found" in r.errors
+    assert gitops.git(a.root, "rev-parse", "HEAD").stdout == head
+    assert gitops.git(a.root, "diff", "--cached", "--name-only").stdout == ""
+    assert (a.root / "sessions" / "host-a").is_dir() and _quarantine(a) == {}  # still processed locally
+    assert State.load(a.kb_dir / "sync-state.json").last_error == "gitleaks: required but not found"
+
+
+def test_require_gitleaks_with_a_scanner_commits(hosts, gitleaks):
+    a, _ = hosts
+    a.require_gitleaks = True
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.committed and r.pushed
+
+
+def test_gitleaks_path_from_the_config_is_used_when_path_has_none(hosts, tmp_path, monkeypatch):
+    a, _ = hosts
+    a.require_gitleaks = True
+    away = tmp_path / "away"
+    away.mkdir()
+    (away / "gitleaks").write_text(FAKE_GITLEAKS)
+    (away / "gitleaks").chmod(0o755)
+    data = tmp_path / "gl-data2"
+    data.mkdir()
+    monkeypatch.setenv("FAKE_GITLEAKS_DIR", str(data))
+    (data / "flag").write_text("_55555555.md")
+    a.gitleaks_path = str(away / "gitleaks")
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.committed and len(r.quarantined) == 1          # it really ran: it flagged a file
+    a.gitleaks_path = str(away / "missing")                                    # a wrong path and nothing on PATH
+    (a.root / r.quarantined[0]).write_text("changed\n")
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert "gitleaks: required but not found" in r.errors
 
 
 def test_state_quarantine_round_trip_and_tolerant_load(tmp_path):
@@ -882,3 +956,363 @@ def test_dry_run_sample_fills_up_with_the_newest_others(tmp_path):
     run_sync(cfg, dry_run=True, sample=5)
     assert _dry_run_sample_ids(cfg) == {SID, AID, T1, T2, plain[0], plain[1]}
     assert not (cfg.root / "sessions").exists()                                # still nothing outside .kb/
+
+
+# ================================================================ item 2: headless one-prompt sessions are skipped
+
+def _solo_host(tmp_path, claude_records=None, codex_items=None, codex_meta=None, **kw):
+    """One host with a single hand-made session (Claude and/or Codex). Returns the config."""
+    from fixtures import write_claude_session, write_codex_unit
+    root = clone(init_remote(tmp_path), tmp_path / "root")
+    src = tmp_path / "src"
+    (src / "projects").mkdir(parents=True)
+    paths = []
+    if claude_records is not None:
+        unit = write_claude_session(src, claude_records)
+        paths += unit.paths
+    (src / "codex" / "sessions").mkdir(parents=True)
+    if codex_items is not None:
+        paths += write_codex_unit(src / "codex", codex_items, meta=codex_meta).paths
+    age(paths)
+    return make_config(root, "host-a", src / "projects", src / "codex" / "sessions", src / "codex", **kw)
+
+
+def _claude_prompts(n, entrypoint):
+    from fixtures import claude_asst, claude_user
+    extra = {"entrypoint": entrypoint} if entrypoint else {}
+    out = []
+    for i in range(n):
+        out.append(claude_user(f"2026-10-06T10:{2 * i:02d}:00Z", f"question {i}", **extra))
+        out.append(claude_asst(f"2026-10-06T10:{2 * i + 1:02d}:00Z", f"answer {i}", **extra))
+    return out
+
+
+def _codex_prompts(n):
+    from fixtures import codex_msg
+    out = []
+    for i in range(n):
+        out += [codex_msg("user", f"question {i}"), codex_msg("assistant", f"answer {i}")]
+    return out
+
+
+def _written(cfg):
+    return sorted(p.name for p in (cfg.root / "sessions").rglob("*.md")) if (cfg.root / "sessions").exists() else []
+
+
+def test_a_headless_claude_session_with_one_prompt_is_skipped_and_marked_done(tmp_path):
+    cfg = _solo_host(tmp_path, claude_records=_claude_prompts(1, "sdk-cli"))
+    r = run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.sessions == 0 and not r.committed and _written(cfg) == []
+    assert not (cfg.root / "raw").exists() and State.load(cfg.kb_dir / "sync-state.json").files   # done, not retried
+    assert sync_mod.pending_units(cfg, State.load(cfg.kb_dir / "sync-state.json"), now=True) == []
+
+
+def test_an_interactive_one_prompt_session_is_kept(tmp_path):
+    cfg = _solo_host(tmp_path, claude_records=_claude_prompts(1, "cli"))
+    assert run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0).sessions == 1
+
+
+def test_a_headless_session_with_two_prompts_is_kept(tmp_path):
+    cfg = _solo_host(tmp_path, claude_records=_claude_prompts(2, "sdk-cli"))
+    assert run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0).sessions == 1
+
+
+def test_the_skip_can_be_turned_off(tmp_path):
+    cfg = _solo_host(tmp_path, claude_records=_claude_prompts(1, "sdk-cli"), skip_headless_single_prompt=False)
+    assert run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0).sessions == 1
+
+
+def test_a_skipped_headless_session_is_taken_once_it_grows_a_second_prompt(tmp_path):
+    cfg = _solo_host(tmp_path, claude_records=_claude_prompts(1, "sdk-cli"))
+    assert run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0).sessions == 0
+    f = next(Path(cfg.claude_dir).rglob("*.jsonl"))
+    more = _claude_prompts(2, "sdk-cli")[2:]
+    with open(f, "a", encoding="utf-8") as fh:
+        for rec in more:
+            fh.write(json.dumps(rec) + "\n")
+    age([f])
+    r = run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.sessions == 1 and len(_written(cfg)) == 1
+
+
+def test_a_codex_exec_session_with_one_prompt_is_skipped(tmp_path):
+    cfg = _solo_host(tmp_path, codex_items=_codex_prompts(1), codex_meta={"source": "exec"})
+    r = run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.sessions == 0 and _written(cfg) == []
+
+
+def test_codex_exec_with_two_prompts_and_interactive_codex_are_kept(tmp_path):
+    cfg = _solo_host(tmp_path, codex_items=_codex_prompts(2), codex_meta={"source": "exec"})
+    assert run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0).sessions == 1
+    cfg = _solo_host(tmp_path / "other", codex_items=_codex_prompts(1), codex_meta={"source": "vscode"})
+    assert run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0).sessions == 1
+
+
+# ================================================================ item 4: branch guard and push guard
+
+def _remote_files(cfg, ref="main"):
+    return set(git("ls-tree", "-r", "--name-only", ref, cwd=cfg.root.parent / "remote.git").stdout.split())
+
+
+def test_a_wrong_branch_skips_every_git_step_but_still_processes(hosts, monkeypatch):
+    a, _ = hosts
+    git("checkout", "-q", "-b", "feature", cwd=a.root)
+    before = gitops.git(a.root, "rev-parse", "HEAD").stdout
+    seen = []
+    for name in ("repair", "stage", "secrets_check", "commit", "pull", "push"):
+        real = getattr(gitops, name)
+        monkeypatch.setattr(gitops, name, lambda *args, _n=name, _r=real, **kw: (seen.append(_n), _r(*args, **kw))[1])
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.sessions == 3 and r.errors == ["git: on branch feature, expected main; skipping git"]
+    assert seen == [] and not r.committed and not r.pushed
+    assert gitops.git(a.root, "rev-parse", "HEAD").stdout == before
+    assert gitops.git(a.root, "diff", "--cached", "--name-only").stdout == ""
+    assert (a.root / "sessions" / "host-a").is_dir()
+    git("checkout", "-q", "main", cwd=a.root)                                   # back on main: the files are committed
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.committed and r.pushed and _md(a, "_55555555.md") in _tracked(a.root)
+
+
+def test_the_configured_branch_is_the_one_that_counts(hosts):
+    a, _ = hosts
+    a.branch = "trunk"                                                          # the repo is on main
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == ["git: on branch main, expected trunk; skipping git"] and not r.committed
+    git("checkout", "-q", "-b", "trunk", cwd=a.root)
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.committed and r.pushed
+    assert _remote_files(a, "trunk") >= {_md(a, "_55555555.md")}
+
+
+def test_the_branch_guard_applies_without_a_remote_too(tmp_path):
+    root = tmp_path / "solo"
+    git("init", "-q", "-b", "other", str(root))
+    src = tmp_path / "src"
+    projects = make_claude_tree(src)
+    sessions, home = make_codex_tree(src)
+    cfg = make_config(root, "host-a", projects, sessions, home)
+    r = run_sync(cfg, runner=FakeRunner(), summary_cap=0)
+    assert r.sessions == 3 and "git: on branch other, expected main; skipping git" in r.errors and not r.committed
+
+
+def _local_commit(cfg, files):
+    """A commit by hand outside this host's folders (the sync must never push it)."""
+    for name in files:
+        (cfg.root / name).write_text(f"hand-made {name}\n")
+    git("add", *files, cwd=cfg.root)
+    git("commit", "-q", "-m", "by hand", cwd=cfg.root)
+
+
+def test_unpushed_commits_outside_the_hosts_folders_block_the_push(hosts):
+    a, _ = hosts
+    remote_before = _remote_files(a)
+    _local_commit(a, ["notes-1.txt", "notes-2.txt", "notes-3.txt", "notes-4.txt", "notes-5.txt"])
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.committed and not r.pushed
+    msg = [e for e in r.errors if e.startswith("git: unpushed commits touch")]
+    assert msg == ["git: unpushed commits touch notes-1.txt, notes-2.txt, notes-3.txt; push them by hand"]
+    assert _remote_files(a) == remote_before                                    # nothing of ours went out either
+    git("push", "-q", cwd=a.root)                                               # the owner pushes by hand
+    r = run_sync(a, now=True, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and not r.committed and not r.pushed
+
+
+def test_a_foreign_commit_that_was_already_pushed_does_not_block(hosts):
+    a, _ = hosts
+    _local_commit(a, ["notes-1.txt"])
+    git("push", "-q", cwd=a.root)
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.committed and r.pushed
+
+
+def test_unpushed_commits_inside_the_hosts_folders_are_pushed(hosts):
+    a, _ = hosts
+    assert run_sync(a, runner=FakeRunner(), summary_cap=0).pushed
+    mine = a.root / _md(a, "_55555555.md")
+    mine.write_text(mine.read_text() + "\nmore\n")
+    git("commit", "-q", "-am", "own change by hand", cwd=a.root)
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.pushed and gitops.ahead(a.root) == 0
+
+
+def test_the_first_push_without_an_upstream_is_not_blocked(tmp_path):
+    remote = tmp_path / "empty.git"
+    git("init", "-q", "--bare", "-b", "main", str(remote))
+    root = tmp_path / "root"
+    git("clone", "-q", str(remote), str(root))
+    src = tmp_path / "src"
+    projects = make_claude_tree(src)
+    sessions, home = make_codex_tree(src)
+    cfg = make_config(root, "host-a", projects, sessions, home)
+    r = run_sync(cfg, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.pushed
+
+
+def test_the_pull_refusal_in_the_log_names_the_dirty_files(hosts):
+    a, _ = hosts
+    (a.root / "README.md").write_text("local edit\n")
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert any(e.startswith("pull: ") and "not pulling: README.md" in e for e in r.errors)
+
+
+# ================================================================ item 5: host marker (two machines, one host name)
+
+HOST_TAKEN = "host 'host-a' belongs to another machine; set a unique host in the config"
+
+
+def _local_id(cfg):
+    return (cfg.kb_dir / "machine-id").read_text().strip()
+
+
+def _marker(cfg, host="host-a"):
+    return cfg.root / "sessions" / host / ".machine-id"
+
+
+def test_the_machine_id_is_created_once_and_committed_as_a_marker_with_the_host_paths(hosts):
+    a, _ = hosts
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    mid = _local_id(a)
+    assert r.errors == [] and r.pushed and re.fullmatch(r"[0-9a-f]{32}", mid)
+    assert _marker(a).read_text() == mid + "\n"
+    rel = "sessions/host-a/.machine-id"
+    assert rel in _tracked(a.root) and rel in _head_files(a.root) and rel in _remote_files(a)
+    r = run_sync(a, now=True, runner=FakeRunner(), summary_cap=0)
+    assert _local_id(a) == mid and r.errors == [] and not r.committed        # nothing changed, nothing new
+
+
+def test_the_marker_is_not_written_when_the_host_has_no_folder_yet(hosts):
+    a, _ = hosts
+    a.exclude_cwd_globs = ["/Users/me/*"]
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.sessions == 0 and not r.committed and not _marker(a).exists()
+    assert _local_id(a)                                                       # the id itself is made at once
+
+
+def test_a_dry_run_makes_no_machine_id_and_no_marker(hosts):
+    a, _ = hosts
+    run_sync(a, dry_run=True)
+    assert not (a.kb_dir / "machine-id").exists() and not _marker(a).exists()
+
+
+def test_a_missing_marker_of_existing_host_data_is_written_and_committed(hosts):
+    a, _ = hosts
+    assert run_sync(a, runner=FakeRunner(), summary_cap=0).pushed
+    git("rm", "-q", "sessions/host-a/.machine-id", cwd=a.root)                # data from before markers existed
+    git("commit", "-q", "-m", "pre-marker state", cwd=a.root)
+    git("push", "-q", cwd=a.root)
+    assert not _marker(a).exists()
+    r = run_sync(a, now=True, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.committed and r.pushed and _head_files(a.root) == ["sessions/host-a/.machine-id"]
+    assert _marker(a).read_text() == _local_id(a) + "\n"
+
+
+def _same_host_pulled(hosts):
+    """a syncs and pushes; b (another machine, same host name) pulls that."""
+    a, b = hosts
+    assert run_sync(a, runner=FakeRunner(), summary_cap=0).pushed
+    gitops.pull(b.root)
+    b.host = "host-a"
+    return a, b
+
+
+def _host_listing(cfg):
+    return sorted(p.relative_to(cfg.root).as_posix() for d in ("sessions", "raw", "catalog")
+                  for p in (cfg.root / d / "host-a").rglob("*") if (cfg.root / d / "host-a").exists())
+
+
+def test_a_second_machine_with_the_same_host_writes_nothing(hosts):
+    a, b = _same_host_pulled(hosts)
+    listing = _host_listing(b)
+    head, remote_before = gitops.git(b.root, "rev-parse", "HEAD").stdout, _remote_files(b)
+    r = run_sync(b, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [HOST_TAKEN] and r.sessions == 0 and r.summarized == 0 and not r.committed and not r.pushed
+    assert _host_listing(b) == listing                                         # no write under the host's folders
+    assert gitops.git(b.root, "rev-parse", "HEAD").stdout == head and _remote_files(b) == remote_before
+    assert gitops.git(b.root, "diff", "--cached", "--name-only").stdout == ""
+    assert not (b.kb_dir / "last-ok").exists() and State.load(b.kb_dir / "sync-state.json").files == {}
+    assert State.load(b.kb_dir / "sync-state.json").last_error == HOST_TAKEN
+    assert _marker(b).read_text() == _local_id(a) + "\n"                      # a's marker is untouched
+
+
+def test_the_second_machine_works_once_it_has_its_own_host(hosts):
+    a, b = _same_host_pulled(hosts)
+    assert run_sync(b, runner=FakeRunner(), summary_cap=0).errors == [HOST_TAKEN]
+    b.host = "host-b"
+    r = run_sync(b, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.sessions == 3 and r.committed and r.pushed
+    assert (b.root / "sessions" / "host-b" / ".machine-id").read_text() == _local_id(b) + "\n"
+    assert _local_id(a) != _local_id(b)
+
+
+def test_a_marker_that_matches_the_local_id_is_fine(hosts):
+    a, _ = hosts
+    assert run_sync(a, runner=FakeRunner(), summary_cap=0).pushed
+    _grow_claude(a)
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.committed and r.pushed
+
+
+def test_a_clone_that_has_not_seen_the_other_marker_yet_finds_out_at_the_pull(hosts):
+    """b was cloned before a pushed: its working tree has no marker, so the first run writes its own and the pull
+    collides. The log says why, and from then on the fetched upstream marker stops every run."""
+    a, b = hosts
+    assert run_sync(a, runner=FakeRunner(), summary_cap=0).pushed
+    b.host = "host-a"
+    r = run_sync(b, runner=FakeRunner(), summary_cap=0)
+    assert r.committed and not r.pushed
+    assert any(e.startswith("pull:") for e in r.errors) and HOST_TAKEN in r.errors
+    remote_before = _remote_files(b)
+    r = run_sync(b, now=True, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [HOST_TAKEN] and not r.pushed and _remote_files(b) == remote_before
+    assert gitops.ahead(b.root) == 1                                         # its stray commit stays local
+    b.host = "host-b"                                                        # a unique host does not push the stray commit
+    r = run_sync(b, now=True, runner=FakeRunner(), summary_cap=0)            # (it still collides with the remote)
+    assert not r.pushed and _remote_files(b) == remote_before
+
+
+def test_the_host_check_comes_before_the_git_gate_so_a_wrong_branch_is_still_blocked_locally(hosts):
+    a, b = _same_host_pulled(hosts)
+    git("checkout", "-q", "-b", "feature", cwd=b.root)
+    r = run_sync(b, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [HOST_TAKEN] and r.sessions == 0                        # no writes under the host, no git talk
+
+
+# ================================================================ item 6: a stale index.lock stops the git steps
+
+def test_a_stale_index_lock_is_reported_and_skips_git_but_not_the_processing(hosts):
+    import time as _time
+    a, _ = hosts
+    lock = a.root / ".git" / "index.lock"
+    lock.write_text("")
+    t = _time.time() - 3600
+    os.utime(lock, (t, t))
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.sessions == 3 and not r.committed and not r.pushed
+    assert any(e.startswith("git: ") and "index.lock" in e and "no git step this run" in e for e in r.errors)
+    assert lock.exists()
+    lock.unlink()
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.committed and r.pushed
+
+
+# ================================================================ item 7: catalog skips are reported
+
+def test_catalog_files_that_are_skipped_become_one_error_line_each(hosts):
+    a, _ = hosts
+    assert run_sync(a, runner=FakeRunner(), summary_cap=0).errors == []
+    odd = a.root / "sessions/host-a/claude/2026/10/2026-10-06_demo_00000002.md"
+    odd.write_text('---\nid: "odd-2"\nstarted: "2026-10-06T11:00:00Z"\nfiles: 5\n---\n\nbody\n')
+    _grow_claude(a)                                                           # the month is rebuilt, the odd file is skipped
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    lines = [e for e in r.errors if e.startswith("catalog:")]
+    assert len(lines) == 1 and lines[0].startswith("catalog: sessions/host-a/claude/2026/10/2026-10-06_demo_00000002.md: ")
+    assert "\n" not in lines[0] and len(lines[0].split(": ", 2)[2]) > 0         # a reason follows the path
+    assert r.committed                                                         # a skipped file is no reason to stop
+    rows = [json.loads(l) for l in (a.root / "catalog/host-a/2026-10.jsonl").read_text().splitlines()]
+    assert "odd-2" not in {x["id"] for x in rows} and SID in {x["id"] for x in rows}
+    assert State.load(a.kb_dir / "sync-state.json").last_error.startswith("catalog:")
+
+
+def test_a_clean_catalog_adds_no_error(hosts):
+    a, _ = hosts
+    assert run_sync(a, runner=FakeRunner(), summary_cap=0).errors == []

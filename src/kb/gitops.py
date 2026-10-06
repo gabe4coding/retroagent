@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,6 +20,9 @@ DEFAULT_TIMEOUT = 60
 PULL_TIMEOUT = 120
 PUSH_TIMEOUT = 30 * 60        # the first data push can be hundreds of MB
 GITLEAKS_TIMEOUT = 300
+KILL_GRACE = 5                # seconds between SIGTERM and SIGKILL for a process that ran into its timeout
+STALE_LOCK_S = 10 * 60        # an index.lock older than this is not a git run in progress
+GITLEAKS_FALLBACKS = ("/opt/homebrew/bin/gitleaks", "/usr/local/bin/gitleaks")     # tried after PATH (a hook's PATH is short)
 
 
 class GitError(Exception):
@@ -54,14 +58,24 @@ def _env(root=None) -> dict:
     return env
 
 
-def _kill_group(proc) -> None:
+def _signal_group(proc, sig) -> None:
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
+        os.killpg(proc.pid, sig)
     except OSError:
         try:
-            proc.kill()
+            proc.send_signal(sig)
         except OSError:
             pass
+
+
+def _stop_group(proc) -> None:
+    """Stop a process and its helpers gently: SIGTERM to the group, up to KILL_GRACE seconds to clean up (git removes
+    its lock files), then SIGKILL for whatever is left."""
+    _signal_group(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=KILL_GRACE)
+    except subprocess.TimeoutExpired:
+        _signal_group(proc, signal.SIGKILL)
     try:
         proc.communicate(timeout=5)
     except Exception:  # noqa: BLE001 - best effort; a helper outside the group may still hold the pipes
@@ -75,10 +89,10 @@ def _run(cmd, timeout, label, root=None, env=None) -> subprocess.CompletedProces
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        _kill_group(proc)
+        _stop_group(proc)
         raise GitError(f"{label}: timed out after {timeout}s") from None
     except BaseException:
-        _kill_group(proc)
+        _stop_group(proc)
         raise
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
@@ -92,6 +106,26 @@ def git(root, *args, check: bool = True, timeout: float = DEFAULT_TIMEOUT) -> su
 
 def has_remote(root) -> bool:
     return bool(git(root, "remote", check=False).stdout.strip())
+
+
+def current_branch(root) -> str:
+    """The checked-out branch name, or "" (detached HEAD, or not a repo). An unborn branch has a name too."""
+    p = git(root, "symbolic-ref", "-q", "--short", "HEAD", check=False)
+    return p.stdout.strip() if p.returncode == 0 else ""
+
+
+def unpushed_paths(root) -> list:
+    """Sorted paths changed by the commits that the upstream does not have. [] if there is no upstream."""
+    p = git(root, "log", "-z", "--name-only", "--format=", "--no-renames", "@{u}..HEAD", check=False)
+    if p.returncode != 0:
+        return []
+    return sorted({x for x in p.stdout.split("\0") if x})
+
+
+def upstream_text(root, path: str) -> str:
+    """Content of `path` in the upstream branch as of the last fetch. "" if there is no upstream or no such file."""
+    p = git(root, "show", f"@{{u}}:{path}", check=False)
+    return p.stdout if p.returncode == 0 else ""
 
 
 def _dirty_tracked(root) -> set:
@@ -135,8 +169,10 @@ def pull(root, keep=()) -> None:
     after it, whether or not it worked. If the stash cannot be restored, GitError says so and the stash is left.
     """
     dirty = _dirty_tracked(root)
-    if dirty - set(keep):
-        raise GitError("local changes in tracked files; not pulling")
+    blocking = sorted(dirty - set(keep))
+    if blocking:
+        more = f" (+{len(blocking) - 3} more)" if len(blocking) > 3 else ""
+        raise GitError(f"local changes in tracked files; not pulling: {', '.join(blocking[:3])}{more}")
     stashed = False
     if dirty:
         before = git(root, "rev-parse", "-q", "--verify", "refs/stash", check=False).stdout.strip()
@@ -160,20 +196,41 @@ def pull(root, keep=()) -> None:
         raise error
 
 
-def repair(root) -> str:
-    """Abort a rebase left half-done by an earlier run. Returns an error text if the repo is still unfit to sync."""
+def _stale_index_lock(root) -> str:
+    """Text about .git/index.lock when it is older than STALE_LOCK_S, else "". Never deletes it."""
+    path = Path(root) / git(root, "rev-parse", "--git-path", "index.lock").stdout.strip()
     try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return ""
+    if age < STALE_LOCK_S:
+        return ""
+    return (f"stale {path} ({int(age // 60)} minutes old, older than {STALE_LOCK_S // 60} minutes); "
+            f"if no git is running, remove it by hand")
+
+
+def repair(root) -> str:
+    """Abort a rebase left half-done by an earlier run. Returns an error text if the repo is still unfit to sync.
+
+    A stale index.lock is added to the text (and left alone): every git write fails on it, and it is often why an
+    abort fails.
+    """
+    problems = []
+    try:
+        lock = _stale_index_lock(root)
         stuck = [Path(root) / git(root, "rev-parse", "--git-path", name).stdout.strip()
                  for name in ("rebase-merge", "rebase-apply")]
         if any(p.exists() for p in stuck):
             git(root, "rebase", "--abort", check=False)
             if any(p.exists() for p in stuck):
-                return "a rebase is stuck and could not be aborted"
-        if git(root, "symbolic-ref", "-q", "HEAD", check=False).returncode != 0:
-            return "HEAD is detached (not on a branch)"
+                problems.append("a rebase is stuck and could not be aborted")
+        if not problems and git(root, "symbolic-ref", "-q", "HEAD", check=False).returncode != 0:
+            problems.append("HEAD is detached (not on a branch)")
     except GitError as e:
         return str(e)
-    return ""
+    if lock:
+        problems.append(lock)
+    return "; ".join(problems)
 
 
 def _known(root, path: str) -> bool:
@@ -296,9 +353,26 @@ def _scan_raw(root, exe, raw_paths, tmpdir: Path):
     return [_map_raw(f, str(tree), rels) for f in found], errors
 
 
-def secrets_check(root) -> SecretsResult:
-    """Scan what is staged (and the decompressed staged raw files) with gitleaks, if it is installed."""
-    exe = shutil.which("gitleaks")
+def find_gitleaks(exe=None):
+    """Path of a usable gitleaks, or None: the given path, else PATH, else the usual install folders.
+
+    A hook runs with a short PATH, so the usual folders matter. A given path that is no executable file is ignored.
+    """
+    def usable(p) -> bool:
+        return bool(p) and os.path.isfile(p) and os.access(p, os.X_OK)
+
+    given = os.path.expanduser(str(exe)) if exe else ""
+    if usable(given):
+        return given
+    found = shutil.which("gitleaks")
+    if found:
+        return found
+    return next((p for p in GITLEAKS_FALLBACKS if usable(p)), None)
+
+
+def secrets_check(root, exe=None) -> SecretsResult:
+    """Scan what is staged (and the decompressed staged raw files) with gitleaks (see find_gitleaks), if there is one."""
+    exe = find_gitleaks(exe)
     if not exe:
         return SecretsResult(ran=False)
     result = SecretsResult(ran=True)

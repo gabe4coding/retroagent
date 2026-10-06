@@ -50,6 +50,7 @@ class Session:
     prs: list = field(default_factory=list)
     subagents: list = field(default_factory=list)   # list[Session] (Claude only)
     skipped: dict = field(default_factory=dict)     # unhandled record type -> count
+    headless: bool = False                          # started by `claude -p` / `codex exec`, not by a person at a prompt
 
     @property
     def user_turns(self) -> int:

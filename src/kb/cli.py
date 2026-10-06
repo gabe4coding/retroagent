@@ -6,6 +6,7 @@
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
   kb stats [report]    ready-made analytics; kb sql "<SELECT …>" for custom ones
   kb sync | backfill | status | reindex   maintenance
+  kb enable | disable  switch automatic syncs (the SessionStart hook) on or off
 
 Ids: the 8-character short id shown in lists (or any unique prefix of it or of the full id, 4 characters at least).
 Add --help to any command for its flags.
@@ -17,11 +18,11 @@ import datetime as dt
 import json
 import os
 import re
-import shutil
 import sqlite3
 import sys
 
 from kb import config as config_mod
+from kb import gitops
 from kb.distill import parse_markdown
 from kb.index import MIN_PREFIX, AmbiguousId, Filters, Index, run_sql
 from kb.stats import REPORTS
@@ -249,6 +250,8 @@ def dry_run_text(rep) -> str:
 
 def cmd_sync(args, cfg) -> int:
     from kb.sync import now_iso, run_sync
+    if getattr(args, "auto", False) and not cfg.auto_sync:     # the hook asks; the owner has not said yes yet. Plain `kb sync` always runs.
+        return 0
     rep = run_sync(cfg, now=args.now, dry_run=args.dry_run, sample=args.sample,
                    summary_cap=0 if args.no_summaries else "default")
     if rep.locked_out:                      # the hook starts syncs freely: a second one is not an error
@@ -272,6 +275,20 @@ def cmd_backfill(args, cfg) -> int:
     return 1 if rep.errors else 0
 
 
+def _set_auto_sync(on: bool) -> int:
+    path = config_mod.set_key("auto_sync", on)
+    print(f"automatic syncs {'enabled' if on else 'disabled'} ({path})")
+    return 0
+
+
+def cmd_enable(args, cfg) -> int:
+    return _set_auto_sync(True)
+
+
+def cmd_disable(args, cfg) -> int:
+    return _set_auto_sync(False)
+
+
 def cmd_status(args, cfg) -> int:
     from kb.state import State
     from kb.sync import needs_summary, pending_units
@@ -280,12 +297,18 @@ def cmd_status(args, cfg) -> int:
     backlog = len(needs_summary(idx, cfg.host))
     idx.close()
     print(f"root: {cfg.root} · host: {cfg.host}")
+    print("auto sync: on" if cfg.auto_sync else "auto sync: off (the hook does nothing; run: kb enable)")
     print(f"last sync: {st.last_ok or 'never'}" + (f" · {st.last_result}" if st.last_result else ""))
     if st.last_error:
         print(f"last error: {st.last_error}")
     print(f"pending sessions: {len(pending_units(cfg, st, now=True))}")
     print(f"summary backlog: {backlog}")
-    print("gitleaks: installed" if shutil.which("gitleaks") else "gitleaks: not installed (built-in redaction only)")
+    if gitops.find_gitleaks(cfg.gitleaks_path):
+        print("gitleaks: installed")
+    elif cfg.require_gitleaks:
+        print("gitleaks: not installed (required: nothing is committed until it is installed)")
+    else:
+        print("gitleaks: not installed (built-in redaction only)")
     if st.quarantine:
         print(f"quarantined: {len(st.quarantine)} file(s)")
         held = sorted(st.quarantine.items(), key=lambda kv: (kv[1], kv[0]))
@@ -362,12 +385,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="with --dry-run: write N sessions to .kb/dry-run/ (the newest Claude session with subagents, "
                          "the newest Codex top-level and subagent session, then the newest others)")
     sy.add_argument("--no-summaries", action="store_true")
+    sy.add_argument("--auto", action="store_true",
+                    help="what the SessionStart hook runs: do nothing (silently) unless auto_sync is on")
     sy.set_defaults(func=cmd_sync)
 
     b = sub.add_parser("backfill", help="process every pending session now")
     b.add_argument("--summaries", action="store_true", help="also summarize everything (no per-run cap, no time limit)")
     b.set_defaults(func=cmd_backfill)
 
+    sub.add_parser("enable", help="turn automatic syncs on (auto_sync in the config)").set_defaults(func=cmd_enable)
+    sub.add_parser("disable", help="turn automatic syncs off").set_defaults(func=cmd_disable)
     sub.add_parser("status", help="last sync, pending sessions, summary backlog").set_defaults(func=cmd_status)
     sub.add_parser("reindex", help="rebuild the local index from markdown").set_defaults(func=cmd_reindex)
     return p

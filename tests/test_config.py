@@ -102,3 +102,71 @@ def test_relative_root_becomes_absolute(tmp_path, monkeypatch):
     assert cfg.root.is_absolute() and cfg.root == (tmp_path / "rel" / "kb").resolve()
     monkeypatch.setenv("KB_ROOT", "other")
     assert config.load().root == (tmp_path / "other").resolve()
+
+
+# ---- approval gate and new keys (auto_sync, skip_headless_single_prompt, gitleaks_path, require_gitleaks, branch)
+
+def test_auto_sync_is_true_when_absent_and_follows_the_file(tmp_path, monkeypatch):
+    assert _load(tmp_path, monkeypatch, {})[0].auto_sync is True               # old configs keep syncing
+    assert _load(tmp_path, monkeypatch, {"auto_sync": None})[0].auto_sync is True
+    assert _load(tmp_path, monkeypatch, {"auto_sync": False})[0].auto_sync is False
+    assert _load(tmp_path, monkeypatch, {"auto_sync": True})[0].auto_sync is True
+
+
+@pytest.mark.parametrize("bad", ["maybe", "false", 0, 1, [], {}])
+def test_auto_sync_with_an_unusable_value_fails_closed(tmp_path, monkeypatch, bad):
+    assert _load(tmp_path, monkeypatch, {"auto_sync": bad})[0].auto_sync is False
+
+
+def test_a_config_with_a_syntax_error_does_not_start_automatic_syncs(tmp_path, monkeypatch, capsys):
+    cfg, _ = _load(tmp_path, monkeypatch, "{broken")
+    assert cfg.auto_sync is False and capsys.readouterr().err.count("\n") == 1
+
+
+def test_new_keys_have_defaults(tmp_path, monkeypatch):
+    cfg, _ = _load(tmp_path, monkeypatch, {})
+    assert cfg.skip_headless_single_prompt is True and cfg.require_gitleaks is False
+    assert cfg.gitleaks_path == "" and cfg.branch == "main"
+
+
+def test_new_keys_are_read_from_the_file(tmp_path, monkeypatch):
+    cfg, _ = _load(tmp_path, monkeypatch, {"skip_headless_single_prompt": False, "require_gitleaks": True,
+                                           "gitleaks_path": "/opt/x/gitleaks", "branch": "trunk"})
+    assert cfg.skip_headless_single_prompt is False and cfg.require_gitleaks is True
+    assert cfg.gitleaks_path == "/opt/x/gitleaks" and cfg.branch == "trunk"
+
+
+def test_unusable_values_of_new_keys_take_the_safe_side(tmp_path, monkeypatch):
+    cfg, _ = _load(tmp_path, monkeypatch, {"skip_headless_single_prompt": "no", "require_gitleaks": "no",
+                                           "gitleaks_path": 5, "branch": ""})
+    assert cfg.skip_headless_single_prompt is True and cfg.require_gitleaks is True      # skip more, require more
+    assert cfg.gitleaks_path == "" and cfg.branch == "main"
+
+
+def test_set_key_rewrites_the_file_and_keeps_other_keys(tmp_path, monkeypatch):
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"root": "/x", "host": "box", "extra": [1, 2]}))
+    monkeypatch.setenv("KB_CONFIG", str(p))
+    assert config.set_key("auto_sync", True) == p
+    assert json.loads(p.read_text()) == {"root": "/x", "host": "box", "extra": [1, 2], "auto_sync": True}
+    assert p.read_text().endswith("\n")
+    config.set_key("auto_sync", False)
+    assert json.loads(p.read_text())["auto_sync"] is False
+
+
+def test_set_key_creates_a_missing_file(tmp_path, monkeypatch):
+    p = tmp_path / "new" / "dir" / "c.json"
+    monkeypatch.setenv("KB_CONFIG", str(p))
+    config.set_key("auto_sync", True)
+    assert json.loads(p.read_text()) == {"auto_sync": True}
+
+
+@pytest.mark.parametrize("content", ["{broken", "[1, 2]", "null"])
+def test_set_key_refuses_to_overwrite_a_file_it_cannot_read(tmp_path, monkeypatch, content):
+    p = tmp_path / "c.json"
+    p.write_text(content)
+    monkeypatch.setenv("KB_CONFIG", str(p))
+    with pytest.raises(config.ConfigError) as e:
+        config.set_key("auto_sync", True)
+    assert "\n" not in str(e.value) and str(p) in str(e.value)
+    assert p.read_text() == content

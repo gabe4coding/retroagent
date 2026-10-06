@@ -386,3 +386,105 @@ def test_find_output_stays_short_with_a_huge_token(kb_env, capsys):
     snippets = [h["snippet"] for h in json.loads(out)]
     assert snippets and all(0 < len(s) <= 200 and s == " ".join(s.split()) for s in snippets)
     assert len(out) < 1500
+
+
+# ---- item 1: approval gate (kb sync --auto, kb enable, kb disable)
+
+def _config_file(tmp_path):
+    return tmp_path / "config.json"
+
+
+def _set_config(tmp_path, **keys):
+    p = _config_file(tmp_path)
+    data = json.loads(p.read_text())
+    data.update(keys)
+    p.write_text(json.dumps(data))
+
+
+def _spy_run_sync(monkeypatch):
+    from kb import sync as sync_mod
+    calls = []
+
+    def fake(cfg, **kw):
+        calls.append(kw)
+        return sync_mod.Report()
+
+    monkeypatch.setattr(sync_mod, "run_sync", fake)
+    return calls
+
+
+def test_sync_auto_exits_silently_when_auto_sync_is_off(kb_env, tmp_path, capsys, monkeypatch):
+    _set_config(tmp_path, auto_sync=False)
+    calls = _spy_run_sync(monkeypatch)
+    code, out = run(capsys, "sync", "--auto")
+    assert code == 0 and out == "" and calls == []
+
+
+def test_sync_auto_runs_when_auto_sync_is_on_or_absent(kb_env, tmp_path, capsys, monkeypatch):
+    calls = _spy_run_sync(monkeypatch)
+    assert run(capsys, "sync", "--auto")[0] == 0 and len(calls) == 1                 # absent: backward compatible
+    _set_config(tmp_path, auto_sync=True)
+    assert run(capsys, "sync", "--auto")[0] == 0 and len(calls) == 2
+
+
+def test_plain_sync_and_backfill_ignore_the_gate(kb_env, tmp_path, capsys, monkeypatch):
+    _set_config(tmp_path, auto_sync=False)
+    calls = _spy_run_sync(monkeypatch)
+    assert run(capsys, "sync", "--now")[0] == 0 and len(calls) == 1
+    assert run(capsys, "backfill")[0] == 0 and len(calls) == 2
+
+
+def test_sync_auto_accepts_the_other_sync_flags(kb_env, tmp_path, capsys, monkeypatch):
+    calls = _spy_run_sync(monkeypatch)
+    assert run(capsys, "sync", "--auto", "--now", "--no-summaries")[0] == 0
+    assert calls[0]["now"] is True and calls[0]["summary_cap"] == 0
+
+
+def test_disable_and_enable_write_the_config_and_print_one_line(kb_env, tmp_path, capsys):
+    before = json.loads(_config_file(tmp_path).read_text())
+    code, out = run(capsys, "disable")
+    after = json.loads(_config_file(tmp_path).read_text())
+    assert code == 0 and len(out.splitlines()) == 1 and "disabled" in out
+    assert after == {**before, "auto_sync": False}                                   # other keys are kept
+    code, out = run(capsys, "enable")
+    assert code == 0 and len(out.splitlines()) == 1 and "enabled" in out
+    assert json.loads(_config_file(tmp_path).read_text()) == {**before, "auto_sync": True}
+
+
+def test_enable_creates_the_config_when_there_is_none(tmp_path, monkeypatch, capsys):
+    p = tmp_path / "fresh" / "config.json"
+    monkeypatch.setenv("KB_CONFIG", str(p))
+    assert run(capsys, "enable")[0] == 0
+    assert json.loads(p.read_text()) == {"auto_sync": True}
+
+
+def test_enable_does_not_overwrite_a_broken_config(tmp_path, monkeypatch, capsys):
+    p = tmp_path / "config.json"
+    p.write_text("{broken")
+    monkeypatch.setenv("KB_CONFIG", str(p))
+    code, out = run(capsys, "enable")
+    assert code == 2 and len(out.splitlines()) == 1 and str(p) in out
+    assert p.read_text() == "{broken"
+
+
+def test_status_shows_whether_automatic_syncs_are_on(kb_env, tmp_path, capsys):
+    _, out = run(capsys, "status")
+    assert "auto sync: on" in out.splitlines()
+    _set_config(tmp_path, auto_sync=False)
+    _, out = run(capsys, "status")
+    assert any(l.startswith("auto sync: off") and "kb enable" in l for l in out.splitlines())
+
+
+def test_status_uses_the_configured_gitleaks_path_and_says_when_it_is_required(kb_env, tmp_path, capsys, monkeypatch):
+    _path_with_gitleaks(monkeypatch, tmp_path, installed=False)
+    away = tmp_path / "away"
+    away.mkdir()
+    (away / "gitleaks").write_text("#!/bin/sh\nexit 0\n")
+    (away / "gitleaks").chmod(0o755)
+    _set_config(tmp_path, gitleaks_path=str(away / "gitleaks"))
+    _, out = run(capsys, "status")
+    assert "gitleaks: installed" in out.splitlines()
+    _set_config(tmp_path, gitleaks_path="", require_gitleaks=True)
+    _, out = run(capsys, "status")
+    line = next(l for l in out.splitlines() if l.startswith("gitleaks:"))
+    assert "not installed" in line and "required" in line

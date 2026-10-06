@@ -1,6 +1,7 @@
 import gzip
 import json
 import os
+import shutil
 import socket
 import subprocess
 import threading
@@ -625,3 +626,258 @@ def test_push_retry_keeps_quarantined_files_out_of_the_way(tmp_path):
 
 def test_push_has_a_long_timeout():
     assert gitops.PUSH_TIMEOUT >= 30 * 60
+
+
+# ---------------------------------------------------------------- item 3: finding gitleaks
+
+def _gitleaks_script(directory, name="gitleaks", body='echo "[]" > "$report"; exit 0\n'):
+    directory.mkdir(parents=True, exist_ok=True)
+    script = directory / name
+    script.write_text('#!/bin/sh\nreport=""; prev=""\nfor a in "$@"; do\n  if [ "$prev" = "--report-path" ]; then report="$a"; fi\n'
+                      '  prev="$a"\ndone\n' + body)
+    script.chmod(0o755)
+    return script
+
+
+def _path_with_only_git(tmp_path, monkeypatch):
+    """PATH holds git and nothing else: no gitleaks, but the scan can still run git."""
+    only_git = tmp_path / "only-git"
+    only_git.mkdir(exist_ok=True)
+    if not (only_git / "git").exists():
+        (only_git / "git").symlink_to(shutil.which("git"))
+    monkeypatch.setenv("PATH", str(only_git))
+
+
+def _staged_repo(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    _add(a, "h", "x")
+    gitops.stage(a, ["sessions/h"])
+    return a
+
+
+def test_find_gitleaks_order_is_given_path_then_path_then_fallbacks(tmp_path, monkeypatch):
+    given = _gitleaks_script(tmp_path / "given")
+    on_path = _gitleaks_script(tmp_path / "onpath")
+    fallback = _gitleaks_script(tmp_path / "fallback")
+    monkeypatch.setenv("PATH", str(on_path.parent))
+    monkeypatch.setattr(gitops, "GITLEAKS_FALLBACKS", (str(tmp_path / "missing" / "gitleaks"), str(fallback)))
+    assert gitops.find_gitleaks(str(given)) == str(given)
+    assert gitops.find_gitleaks(None) == str(on_path)
+    assert gitops.find_gitleaks("") == str(on_path)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert gitops.find_gitleaks(None) == str(fallback)
+    monkeypatch.setattr(gitops, "GITLEAKS_FALLBACKS", ())
+    assert gitops.find_gitleaks(None) is None
+
+
+def test_a_given_path_that_is_not_usable_falls_through(tmp_path, monkeypatch):
+    on_path = _gitleaks_script(tmp_path / "onpath")
+    monkeypatch.setenv("PATH", str(on_path.parent))
+    plain = tmp_path / "not-executable"
+    plain.write_text("x")
+    for bad in (str(tmp_path / "nowhere" / "gitleaks"), str(plain), str(tmp_path)):      # missing, not executable, a folder
+        assert gitops.find_gitleaks(bad) == str(on_path)
+
+
+def test_the_default_fallbacks_are_the_homebrew_and_usr_local_locations():
+    import importlib
+    fresh = importlib.reload(gitops)           # conftest empties the tuple; the shipped value is what counts
+    try:
+        assert fresh.GITLEAKS_FALLBACKS == ("/opt/homebrew/bin/gitleaks", "/usr/local/bin/gitleaks")
+    finally:
+        fresh.GITLEAKS_FALLBACKS = ()
+
+
+def test_secrets_check_uses_the_given_path_with_an_empty_path(tmp_path, monkeypatch):
+    a = _staged_repo(tmp_path)
+    _path_with_only_git(tmp_path, monkeypatch)
+    hit = _gitleaks_script(tmp_path / "elsewhere", body='echo \'[{"File":"sessions/h/x.md"}]\' > "$report"; exit 1\n')
+    r = gitops.secrets_check(a, exe=str(hit))
+    assert r.ran is True and r.files == ["sessions/h/x.md"]
+    assert gitops.secrets_check(a).ran is False                                   # without the path: no scanner
+
+
+def test_secrets_check_prefers_the_given_path_over_path(tmp_path, monkeypatch):
+    a = _staged_repo(tmp_path)
+    on_path = _gitleaks_script(tmp_path / "onpath", body='echo path-version >&2; echo \'[]\' > "$report"; exit 2\n')
+    monkeypatch.setenv("PATH", f"{on_path.parent}:{os.environ['PATH']}")
+    given = _gitleaks_script(tmp_path / "given")
+    r = gitops.secrets_check(a, exe=str(given))
+    assert r.ran is True and r.error == "" and r.files == []
+
+
+def test_secrets_check_finds_gitleaks_in_a_fallback_location(tmp_path, monkeypatch):
+    a = _staged_repo(tmp_path)
+    fallback = _gitleaks_script(tmp_path / "usr-local-bin")
+    _path_with_only_git(tmp_path, monkeypatch)
+    monkeypatch.setattr(gitops, "GITLEAKS_FALLBACKS", (str(fallback),))
+    r = gitops.secrets_check(a)
+    assert r.ran is True and r.error == "" and r.files == []
+
+
+# ---------------------------------------------------------------- item 4: branch, unpushed paths, pull message
+
+def test_current_branch(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    assert gitops.current_branch(a) == "main"
+    fgit("checkout", "-q", "-b", "feature/x", cwd=a)
+    assert gitops.current_branch(a) == "feature/x"
+    fgit("checkout", "-q", "--detach", cwd=a)
+    assert gitops.current_branch(a) == ""                                      # detached: no branch name
+
+
+def test_unpushed_paths_is_empty_without_an_upstream(tmp_path):
+    repo = tmp_path / "solo"
+    fgit("init", "-q", "-b", "main", str(repo))
+    (repo / "a.txt").write_text("a")
+    fgit("add", ".", cwd=repo)
+    fgit("commit", "-q", "-m", "a", cwd=repo)
+    assert gitops.unpushed_paths(repo) == []
+    assert gitops.unpushed_paths(tmp_path / "nowhere") == []
+
+
+def test_unpushed_paths_lists_files_of_commits_not_on_the_upstream(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    assert gitops.unpushed_paths(a) == []
+    _add(a, "h", "x")
+    _add(a, "h", "y", name="odd name.md")
+    gitops.stage(a, ["sessions/h"])
+    gitops.commit(a, "own", ["sessions/h"])
+    (a / "README.md").write_text("edited\n")
+    fgit("commit", "-q", "-am", "readme", cwd=a)
+    (a / "README.md").write_text("edited again\n")
+    fgit("commit", "-q", "-am", "readme 2", cwd=a)                              # the same path twice: listed once
+    assert gitops.unpushed_paths(a) == ["README.md", "sessions/h/odd name.md", "sessions/h/x.md"]
+    gitops.push(a)
+    assert gitops.unpushed_paths(a) == []
+
+
+def test_unpushed_paths_includes_deleted_files_and_ignores_what_upstream_has_that_we_lack(tmp_path):
+    remote = init_remote(tmp_path)
+    a, b = clone(remote, tmp_path / "a"), clone(remote, tmp_path / "b")
+    _add(b, "hb", "b")
+    gitops.stage(b, ["sessions/hb"])
+    gitops.commit(b, "b", ["sessions/hb"])
+    gitops.push(b)                                                              # upstream moved; a has not pulled
+    fgit("rm", "-q", ".gitignore", cwd=a)
+    fgit("commit", "-q", "-m", "drop it", cwd=a)
+    fgit("fetch", "-q", cwd=a)
+    assert gitops.unpushed_paths(a) == [".gitignore"]                           # not sessions/hb/x.md from the remote
+
+
+def test_pull_refusal_names_up_to_three_dirty_files(tmp_path):
+    remote = init_remote(tmp_path)
+    a = clone(remote, tmp_path / "a")
+    for name in ("a.txt", "b.txt", "c.txt", "d.txt", "e.txt"):
+        (a / name).write_text("v1")
+    fgit("add", ".", cwd=a)
+    fgit("commit", "-q", "-m", "files", cwd=a)
+    gitops.push(a)
+    for name in ("e.txt", "d.txt", "c.txt", "b.txt"):
+        (a / name).write_text("v2")
+    with pytest.raises(gitops.GitError) as e:
+        gitops.pull(a)
+    msg = str(e.value)
+    assert "local changes in tracked files; not pulling" in msg and "\n" not in msg
+    assert "b.txt, c.txt, d.txt" in msg and "e.txt" not in msg and "+1 more" in msg
+
+
+def test_pull_refusal_with_one_dirty_file_names_it_without_a_count(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    (a / "README.md").write_text("edited locally\n")
+    with pytest.raises(gitops.GitError) as e:
+        gitops.pull(a)
+    assert str(e.value).endswith("not pulling: README.md")
+
+
+# ---------------------------------------------------------------- item 6: gentle timeouts, stale index lock
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_gone(pid: int, seconds: float = 3.0) -> bool:
+    end = time.time() + seconds
+    while time.time() < end:
+        if not _alive(pid):
+            return True
+        time.sleep(0.05)
+    return not _alive(pid)
+
+
+def test_a_timeout_sends_sigterm_first_so_the_process_can_clean_up(tmp_path):
+    note, helper = tmp_path / "note", tmp_path / "helper.pid"
+    script = (f'sleep 60 & echo $! > "{helper}"; trap \'echo cleaned > "{note}"; exit 0\' TERM; wait')
+    start = time.time()
+    with pytest.raises(gitops.GitError, match="timed out after 1s"):
+        gitops._run(["sh", "-c", script], 1, "fake")
+    assert note.read_text().strip() == "cleaned"                                # it saw SIGTERM, not SIGKILL
+    assert time.time() - start < 4                                              # and nobody waited for the grace period
+    assert _wait_gone(int(helper.read_text()))                                  # the helper in the group stopped too
+
+
+def test_a_process_that_ignores_sigterm_is_killed_after_the_grace_period(tmp_path, monkeypatch):
+    monkeypatch.setattr(gitops, "KILL_GRACE", 1)
+    pidfile = tmp_path / "pid"
+    script = f'echo $$ > "{pidfile}"; trap "" TERM; while :; do sleep 1; done'
+    start = time.time()
+    with pytest.raises(gitops.GitError, match="timed out"):
+        gitops._run(["sh", "-c", script], 1, "fake")
+    elapsed = time.time() - start
+    assert 1.8 <= elapsed < 6, elapsed                                          # timeout (1 s) + grace (1 s)
+    assert _wait_gone(int(pidfile.read_text()))
+
+
+def test_the_default_grace_period_is_five_seconds():
+    assert gitops.KILL_GRACE == 5
+
+
+def _stale(path, minutes):
+    t = time.time() - minutes * 60
+    os.utime(path, (t, t))
+
+
+def test_repair_reports_a_stale_index_lock_and_leaves_it(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    lock = a / ".git" / "index.lock"
+    lock.write_text("")
+    _stale(lock, 11)
+    msg = gitops.repair(a)
+    assert "index.lock" in msg and "stale" in msg and "10 minutes" in msg and "\n" not in msg
+    assert lock.exists()                                                        # never deleted by us
+
+
+def test_repair_ignores_a_young_index_lock(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    lock = a / ".git" / "index.lock"
+    lock.write_text("")
+    _stale(lock, 2)                                                             # another git may be running right now
+    assert gitops.repair(a) == "" and lock.exists()
+
+
+def test_repair_reports_the_lock_even_when_a_rebase_is_stuck(tmp_path):
+    b = _stuck_rebase(tmp_path)
+    lock = b / ".git" / "index.lock"
+    lock.write_text("")
+    _stale(lock, 30)
+    msg = gitops.repair(b)                                                      # the lock is why the abort fails
+    assert "a rebase is stuck and could not be aborted" in msg and "stale" in msg and "index.lock" in msg
+    assert "\n" not in msg and lock.exists() and (b / ".git" / "rebase-merge").exists()
+    lock.unlink()
+    assert gitops.repair(b) == "" and not (b / ".git" / "rebase-merge").exists()     # the owner removed it: repaired
+
+
+def test_repair_lists_every_problem_it_finds(tmp_path):
+    a = clone(init_remote(tmp_path), tmp_path / "a")
+    fgit("checkout", "-q", "--detach", cwd=a)
+    lock = a / ".git" / "index.lock"
+    lock.write_text("")
+    _stale(lock, 30)
+    msg = gitops.repair(a)
+    assert "detached" in msg and "index.lock" in msg and "; " in msg
