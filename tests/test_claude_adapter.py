@@ -1,4 +1,6 @@
-from fixtures import AID, SID, make_claude_tree
+import pytest
+from fixtures import (AID, CWD, SID, claude_asst, claude_result, claude_tool, claude_user, make_claude_tree,
+                      write_claude_session)
 
 from kb.adapters import claude
 from kb.distill import render_markdown
@@ -97,3 +99,246 @@ def test_golden_markdown(tmp_path):
     sub_name = md_rel("test-host", s.subagents[0], parent=s).rsplit("/", 1)[1]
     md = render_markdown(s, "test-host", sub_files={AID: sub_name}, raw=raw_rel("test-host", s))
     assert md == EXPECTED_MAIN
+
+
+# ---------------------------------------------------------------- per-record robustness (C1)
+
+def T(minute):
+    return f"2026-10-06T13:{minute:02d}:00.000Z"
+
+
+def _session(tmp_path, records, subs=None):
+    return claude.parse_unit(write_claude_session(tmp_path, records, subs=subs))
+
+
+def _tools(turn):
+    return [i for i in turn.items if isinstance(i, ToolCall)]
+
+
+def test_odd_records_do_not_lose_the_session(tmp_path):
+    records = [
+        claude_user(T(1), "first prompt"),
+        {"type": "user", "timestamp": T(2), "message": "just a string"},
+        {"type": "assistant", "timestamp": T(3), "message": 5},
+        claude_asst(T(4), [
+            {"type": "text", "text": None}, {"type": "text", "text": 5},
+            {"type": "tool_use", "id": ["x"], "name": None, "input": {"command": "ls"}}]),
+        claude_user(T(5), [{"type": "text", "text": None}, {"type": "text", "text": "second prompt"}]),
+        claude_user(T(6), [{"type": "tool_result", "tool_use_id": ["x"], "content": None}]),
+        claude_asst(T(7), "done"),
+    ]
+    s = _session(tmp_path, records)
+    assert [t.role for t in s.turns] == ["user", "assistant", "user", "assistant"]
+    assert s.turns[0].text == "first prompt" and s.turns[2].text == "second prompt"
+    assert s.turns[1].text == "5" and s.turns[3].text == "done"
+    tools = _tools(s.turns[1])
+    assert [(t.name, t.arg) for t in tools] == [("", "ls")]
+    assert s.skipped["<error:AttributeError>"] == 2
+
+
+def test_record_that_still_raises_is_counted_and_skipped(tmp_path, monkeypatch):
+    def boom(name, inp, cwd):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(claude, "short_arg", boom)
+    records = [claude_user(T(1), "hi"), claude_asst(T(2), [claude_tool("t1", "Bash", command="ls")]),
+               claude_asst(T(3), "still here")]
+    s = _session(tmp_path, records)
+    assert s.skipped == {"<error:RuntimeError>": 1}
+    assert [t.text for t in s.turns] == ["hi", "still here"]
+
+
+def test_non_string_scalars_do_not_break_the_session(tmp_path):
+    records = [
+        claude_user(T(1), "hi", cwd=["not", "a", "string"], gitBranch=5),
+        {"type": "custom-title", "customTitle": ["x"]},
+        {"type": "pr-link", "prUrl": 7},
+        {"type": "relocated", "relocatedCwd": ["y"]},
+        claude_asst(T(2), "ok", cwd=CWD),
+    ]
+    s = _session(tmp_path, records)
+    assert s.cwd == CWD and s.title == "hi" and s.branch == "" and s.prs == []
+    assert [t.text for t in s.turns] == ["hi", "ok"]
+
+
+def test_text_of_and_tool_name_coerce_odd_values():
+    assert claude.text_of([{"type": "text", "text": None}, {"type": "text", "text": 5}, "x"]) == "\n5"
+    assert claude.tool_name(None) == "" and claude.tool_name(5) == "5"
+    assert claude.tool_name("mcp__plugin_x__search") == "mcp:search"
+
+
+# ---------------------------------------------------------------- harness records (C2, C3, C7)
+
+@pytest.mark.parametrize("extra", [
+    {"promptSource": "system"},
+    {"turnOrigin": "peer"},
+    {"origin": {"kind": "peer"}},
+    {"turnOrigin": "task_notification"},
+    {"origin": {"kind": "task-notification"}},
+    {"isMeta": True},
+])
+def test_harness_prompts_are_not_user_turns(tmp_path, extra):
+    s = _session(tmp_path, [claude_user(T(1), "real prompt"), claude_user(T(2), "injected text", **extra),
+                            claude_asst(T(3), "answer")])
+    assert [(t.role, t.text) for t in s.turns] == [("user", "real prompt"), ("assistant", "answer")]
+
+
+@pytest.mark.parametrize("extra,content", [
+    ({"isCompactSummary": True}, "This session is being continued from a previous conversation. Summary: ..."),
+    ({"isVisibleInTranscriptOnly": True}, "visible only in the transcript"),
+    ({}, "[Request interrupted by user]"),
+    ({}, "[Request interrupted by user for tool use]"),
+    ({}, [{"type": "text", "text": "[Request interrupted by user]"}]),
+])
+def test_compact_summary_and_interrupt_markers_are_not_prompts(tmp_path, extra, content):
+    s = _session(tmp_path, [claude_user(T(1), "real prompt"), claude_asst(T(2), "answer"),
+                            claude_user(T(3), content, **extra), claude_asst(T(4), "more")])
+    assert [t.role for t in s.turns] == ["user", "assistant"] and s.turns[1].items == ["answer", "more"]
+    assert s.user_turns == 1 and s.first_prompt() == "real prompt"
+    assert "interrupted" not in str(s.turns) and "continued from" not in str(s.turns)
+
+
+def test_a_prompt_that_merely_mentions_an_interrupt_is_kept(tmp_path):
+    s = _session(tmp_path, [claude_user(T(1), "why does it print [Request interrupted by user]?")])
+    assert s.user_turns == 1
+
+
+def test_skipped_notification_or_peer_record_ends_the_assistant_turn(tmp_path):
+    records = [
+        claude_user(T(1), "go"),
+        claude_asst(T(2), "started"),
+        claude_user(T(3), "<task-notification>done</task-notification>", turnOrigin="task_notification"),
+        claude_asst(T(4), "background job finished"),
+        claude_user(T(5), "peer says hi", origin={"kind": "peer"}),
+        claude_asst(T(6), "replied to peer"),
+    ]
+    s = _session(tmp_path, records)
+    assert [(t.role, t.text, t.ts) for t in s.turns] == [
+        ("user", "go", "2026-10-06T13:01:00Z"), ("assistant", "started", "2026-10-06T13:02:00Z"),
+        ("assistant", "background job finished", "2026-10-06T13:04:00Z"),
+        ("assistant", "replied to peer", "2026-10-06T13:06:00Z")]
+
+
+def test_skipped_meta_record_does_not_end_the_assistant_turn(tmp_path):
+    records = [claude_user(T(1), "go"), claude_asst(T(2), "one"), claude_user(T(3), "skill body", isMeta=True),
+               claude_asst(T(4), "two")]
+    s = _session(tmp_path, records)
+    assert [t.role for t in s.turns] == ["user", "assistant"]
+    assert s.turns[1].items == ["one", "two"]
+
+
+def test_image_only_prompt_is_a_user_turn(tmp_path):
+    image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+    records = [claude_user(T(1), [image]), claude_asst(T(2), "I see it"),
+               claude_user(T(3), [{"type": "text", "text": "and this?"}, image])]
+    s = _session(tmp_path, records)
+    assert [(t.role, t.text) for t in s.turns] == [("user", "[image]"), ("assistant", "I see it"),
+                                                    ("user", "and this?")]
+
+
+# ---------------------------------------------------------------- session metadata (C2)
+
+def test_relocated_sets_cwd_and_project(tmp_path):
+    s = _session(tmp_path, [claude_user(T(1), "hi"), {"type": "relocated", "relocatedCwd": "/Users/me/Repos/moved"}])
+    assert s.cwd == "/Users/me/Repos/moved" and s.project == "moved"
+
+
+@pytest.mark.parametrize("titles,expected", [
+    (["custom-title", "ai-title", "agent-name"], "From custom"),
+    (["ai-title", "agent-name"], "From ai"),
+    (["agent-name"], "From agent"),
+    ([], "hi there"),
+])
+def test_title_precedence(tmp_path, titles, expected):
+    rec = {"custom-title": {"type": "custom-title", "customTitle": "From custom"},
+           "ai-title": {"type": "ai-title", "aiTitle": "From ai"},
+           "agent-name": {"type": "agent-name", "agentName": "From agent"}}
+    s = _session(tmp_path, [claude_user(T(1), "hi there")] + [rec[t] for t in titles])
+    assert s.title == expected
+
+
+def test_detached_head_branch_is_ignored(tmp_path):
+    s = _session(tmp_path, [claude_user(T(1), "a", gitBranch="HEAD")])
+    assert s.branch == ""
+    s = _session(tmp_path / "two",
+                 [claude_user(T(1), "a", gitBranch="feat/x"), claude_user(T(2), "b", gitBranch="HEAD")])
+    assert s.branch == "feat/x"
+
+
+def test_mcp_tool_names_are_shortened(tmp_path):
+    s = _session(tmp_path, [claude_asst(T(1), [claude_tool("t1", "mcp__plugin_jira_jira__getIssue", id="X-1"),
+                                               claude_tool("t2", "Read", file_path=CWD + "/a.py")])])
+    assert [t.name for t in _tools(s.turns[0])] == ["mcp:getIssue", "Read"]
+
+
+# ---------------------------------------------------------------- tool results and files (C5)
+
+def test_files_lists_only_successful_edits(tmp_path):
+    records = [
+        claude_asst(T(1), [
+            claude_tool("e1", "Edit", file_path=CWD + "/failed.py", old_string="a", new_string="b"),
+            claude_tool("e2", "Write", file_path=CWD + "/written.py", content="x"),
+            claude_tool("e3", "Edit", file_path=CWD + "/pending.py", old_string="a", new_string="b"),
+            claude_tool("e4", "Edit", file_path=CWD + "/twice.py", old_string="a", new_string="b"),
+            claude_tool("e5", "Edit", file_path=CWD + "/twice.py", old_string="b", new_string="c")]),
+        claude_user(T(2), [claude_result("e1", "File has not been read yet", is_error=True),
+                           claude_result("e2"), claude_result("e4", "no match", is_error=True),
+                           claude_result("e5")]),
+    ]
+    s = _session(tmp_path, records)
+    assert s.files == ["written.py", "pending.py", "twice.py"]
+
+
+# ---------------------------------------------------------------- subagent links (C4, C6)
+
+def _sub_records(answer, cwd=CWD):
+    return [claude_user(T(10), "task", cwd=cwd), claude_asst(T(11), answer, cwd=cwd)]
+
+
+def test_agent_id_links_only_agent_or_task_calls_with_one_result(tmp_path):
+    records = [
+        claude_asst(T(1), [claude_tool("b1", "Bash", command="ls"), claude_tool("g1", "Task", description="d1"),
+                           claude_tool("g2", "Agent", description="d2"), claude_tool("g3", "Agent", description="d3")]),
+        claude_user(T(2), [claude_result("b1")], toolUseResult={"agentId": "zzz"}),
+        claude_user(T(3), [claude_result("g1", "finished 1")], toolUseResult={"agentId": "aaa"}),
+        claude_user(T(4), [claude_result("g2"), claude_result("g3")], toolUseResult={"agentId": "yyy"}),
+    ]
+    tools = _tools(_session(tmp_path, records).turns[0])
+    assert [(t.name, t.subagent_id) for t in tools] == [("Bash", ""), ("Task", "aaa"), ("Agent", ""), ("Agent", "")]
+    assert tools[1].subagent_note == "finished 1"
+
+
+def test_subagent_is_linked_through_its_meta_tool_use_id(tmp_path):
+    records = [
+        claude_asst(T(1), [claude_tool("w1", "Agent", description="in a workflow"),
+                           claude_tool("l1", "Agent", description="linked by id"),
+                           claude_tool("n1", "Agent", description="nobody")]),
+        claude_user(T(2), [claude_result("l1", "ok")], toolUseResult={"agentId": "linked"}),
+    ]
+    subs = [
+        ("workflows/wf_1/agent-wfagent.jsonl", _sub_records("Workflow answer.\nMore."), {"toolUseId": "w1"}),
+        ("agent-linked.jsonl", _sub_records("Linked answer."), {"toolUseId": "l1"}),
+        # Same call as above, but that call is linked already: it must keep its agentId link.
+        ("agent-other.jsonl", _sub_records("Other answer."), {"toolUseId": "l1"}),
+        ("agent-nometa.jsonl", _sub_records("No meta."), None),
+        ("agent-badmeta.jsonl", _sub_records("Bad meta."), {"toolUseId": ["x"]}),
+    ]
+    unit = write_claude_session(tmp_path, records, subs=subs)
+    assert any(p.endswith("workflows/wf_1/agent-wfagent.jsonl") for p in unit.paths)
+    s = claude.parse_unit(unit)
+    tools = _tools(s.turns[0])
+    assert [(t.subagent_id, t.subagent_note) for t in tools] == [
+        ("wfagent", "Workflow answer."), ("linked", "Linked answer."), ("", "")]
+    assert {sub.id for sub in s.subagents} == {"wfagent", "linked", "other", "nometa", "badmeta"}
+
+
+def test_subagent_project_comes_from_its_own_cwd_when_the_parent_has_none(tmp_path):
+    subs = [("agent-abc.jsonl", _sub_records("hi", cwd="/Users/me/Repos/other-proj"), None)]
+    s = _session(tmp_path, [], subs=subs)
+    assert s.cwd == "" and s.subagents[0].cwd == "/Users/me/Repos/other-proj"
+    assert s.subagents[0].project == "other-proj"
+
+
+def test_subagent_uses_the_parent_project_when_the_parent_has_a_cwd(tmp_path):
+    subs = [("agent-abc.jsonl", _sub_records("hi", cwd=CWD + "/sub"), None)]
+    s = _session(tmp_path, [claude_user(T(1), "hi")], subs=subs)
+    assert s.project == "demo" and s.subagents[0].project == "demo"

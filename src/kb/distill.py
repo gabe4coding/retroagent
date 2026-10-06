@@ -6,13 +6,14 @@ import re
 from pathlib import Path
 
 from kb.model import ToolCall
-from kb.util import atomic_write, hhmm
+from kb.util import atomic_write, hhmm, short_id
 
 FIELD_ORDER = ["id", "agent", "host", "project", "cwd", "branch", "started", "ended", "model", "turns",
                "user_turns", "title", "summary", "tags", "outcome", "decisions", "summary_turns", "files",
                "prs", "parent", "raw"]
 SUMMARY_FIELDS = ("summary", "tags", "outcome", "decisions", "summary_turns")
 HEADER_RE = re.compile(r"^## \[(\d+)\] (user|assistant) · (\S+)$", re.M)
+_NEWLINES = re.compile(r"\r\n?")
 
 
 def dump_front_matter(meta: dict) -> str:
@@ -55,17 +56,24 @@ def session_meta(s, host: str, keep: dict, raw: str) -> dict:
     return meta
 
 
+def _one_line(text) -> str:
+    """Collapse all whitespace (newlines, carriage returns, Unicode line separators) so a field stays on one line."""
+    return " ".join(str(text or "").split())
+
+
 def _tool_line(tc: ToolCall, sub_files: dict) -> str:
-    arg = tc.arg.replace("`", "'")
-    line = f"- {tc.name}" + (f" `{arg}`" if arg else "")
+    arg = _one_line(tc.arg).replace("`", "'")
+    line = f"- {_one_line(tc.name)}" + (f" `{arg}`" if arg else "")
     if tc.diff:
-        line += f" ({tc.diff})"
+        line += f" ({_one_line(tc.diff)})"
     if tc.status == "error":
-        line += " → ERROR" + (f": {tc.error_head}" if tc.error_head else "")
+        head = _one_line(tc.error_head)
+        line += " → ERROR" + (f": {head}" if head else "")
     if tc.subagent_id:
         fname = sub_files.get(tc.subagent_id)
-        link = f"[subagent]({fname})" if fname else f"subagent {tc.subagent_id[:8]}"
-        line += f" → {link}" + (f": {tc.subagent_note}" if tc.subagent_note else "")
+        link = f"[subagent]({fname})" if fname else f"subagent {short_id(tc.subagent_id)}"
+        note = _one_line(tc.subagent_note)
+        line += f" → {link}" + (f": {note}" if note else "")
     return line
 
 
@@ -83,7 +91,7 @@ def render_body(s, sub_files: dict) -> str:
                 if tools:
                     out += tools + [""]
                     tools = []
-                out += [_escape(item.strip()), ""]
+                out += [_escape(_NEWLINES.sub("\n", item).strip()), ""]
             else:
                 tools.append(_tool_line(item, sub_files))
         if tools:
@@ -109,6 +117,7 @@ def parse_markdown(text: str):
 
 def update_front_matter(path, fields: dict) -> None:
     path = Path(path)
-    meta, body = split_front_matter(path.read_text(encoding="utf-8"))
+    # read_text would translate \r\n and \r to \n: the body must come back byte for byte
+    meta, body = split_front_matter(path.read_bytes().decode("utf-8"))
     meta.update(fields)
     atomic_write(path, (dump_front_matter(meta) + "\n" + body).encode("utf-8"))

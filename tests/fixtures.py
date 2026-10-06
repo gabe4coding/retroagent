@@ -70,7 +70,7 @@ def claude_main(sid=SID, aid=AID, cwd=CWD):
              "input": {"description": "Explore tests", "prompt": "Find flaky tests", "subagent_type": "Explore"}}]),
         user("u4", "2026-10-06T13:06:00.000Z",
              [{"type": "tool_result", "tool_use_id": "t3",
-               "content": [{"type": "text", "text": "Found 2 flaky tests.\nDetails..."}]}],
+               "content": [{"type": "text", "text": "Agent finished"}]}],
              toolUseResult={"agentId": aid, "status": "completed"}),
         asst("a4", "2026-10-06T13:07:00.000Z", "m4", [{"type": "text", "text": "Fixed: the timer was not awaited."}]),
         user("u5", "2026-10-06T13:08:00.000Z", "meta skill body", isMeta=True),
@@ -120,6 +120,50 @@ def make_claude_tree(root, sid=SID, aid=AID, cwd=CWD):
         json.dumps({"agentType": "Explore", "description": "Explore tests", "toolUseId": "t3"}))
     age([main, sub])
     return projects
+
+
+def claude_user(ts, content, cwd=CWD, **extra):
+    """One synthetic Claude user record (a prompt, or tool results when content is a list of tool_result parts)."""
+    return {"type": "user", "timestamp": ts, "cwd": cwd, "sessionId": SID,
+            "message": {"role": "user", "content": content}, **extra}
+
+
+def claude_asst(ts, content, model="claude-opus-5-5", cwd=CWD, **extra):
+    """One synthetic Claude assistant record. content is a list of parts, or a str for one text part."""
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    return {"type": "assistant", "timestamp": ts, "cwd": cwd, "sessionId": SID,
+            "message": {"role": "assistant", "model": model, "content": content}, **extra}
+
+
+def claude_tool(tid, name, **inp):
+    return {"type": "tool_use", "id": tid, "name": name, "input": inp}
+
+
+def claude_result(tid, content="ok", is_error=False):
+    part = {"type": "tool_result", "tool_use_id": tid, "content": content}
+    if is_error:
+        part["is_error"] = True
+    return part
+
+
+def write_claude_session(root, records, subs=None, sid=SID, cwd=CWD):
+    """Write a main transcript plus optional subagent files and return its Unit.
+
+    subs is a list of (path relative to <sid>/subagents/, records, meta dict or None); the meta is written next to
+    the transcript as agent-<id>.meta.json.
+    """
+    from kb.adapters import claude
+    projects = Path(root) / "projects"
+    proj = projects / ("-" + cwd.strip("/").replace("/", "-"))
+    write_jsonl(proj / f"{sid}.jsonl", records)
+    for rel, sub_records, meta in subs or []:
+        sub = write_jsonl(proj / sid / "subagents" / rel, sub_records)
+        if meta is not None:
+            sub.with_name(sub.stem + ".meta.json").write_text(json.dumps(meta))
+    units = claude.discover(projects)
+    assert len(units) == 1
+    return units[0]
 
 
 # ---------------------------------------------------------------- Codex
@@ -210,6 +254,46 @@ def make_codex_tree(root, t1=T1, t2=T2, t3=T3, cwd=CWD):
     con.close()
     age(files)
     return home / "sessions", home
+
+
+def codex_msg(role, text):
+    return ("response_item", _msg(role, "output_text" if role == "assistant" else "input_text", text))
+
+
+def codex_call(name, call_id="c1", arguments=None, **extra):
+    """A function_call item. arguments is a dict (sent as a JSON string, as Codex does)."""
+    payload = {"type": "function_call", "name": name, "call_id": call_id,
+               "arguments": json.dumps(arguments or {})}
+    payload.update(extra)
+    if call_id is None:
+        del payload["call_id"]
+    return ("response_item", payload)
+
+
+def codex_output(call_id, output, kind="function_call_output"):
+    return ("response_item", {"type": kind, "call_id": call_id, "output": output})
+
+
+def codex_patch(patch, call_id="p1"):
+    return ("response_item", {"type": "custom_tool_call", "name": "apply_patch", "call_id": call_id, "input": patch})
+
+
+def write_codex_unit(root, items, tid=T1, cwd=CWD, meta=None, name=None, leading=()):
+    """Write one rollout file (a session_meta, then the given (type, payload) items) and return its Unit.
+
+    meta is merged into the session_meta payload. name overrides the file name. leading items come before the
+    session_meta.
+    """
+    from kb.adapters import codex
+    day = Path(root) / "sessions" / "2026" / "09" / "22"
+    head = {"id": tid, "session_id": tid, "timestamp": "2026-09-22T09:41:00.000Z", "cwd": cwd, "source": "vscode"}
+    head.update(meta or {})
+    items = list(leading) + [("session_meta", head)] + list(items)
+    records = [_cx(f"2026-09-22T09:41:{i % 60:02d}.000Z", t, p, i) for i, (t, p) in enumerate(items)]
+    path = write_jsonl(day / (name or f"rollout-2026-09-22T11-41-09-{tid}.jsonl"), records)
+    units = codex.discover([Path(root) / "sessions"])
+    assert [u for u in units if str(path) in u.paths]
+    return next(u for u in units if str(path) in u.paths)
 
 
 # ---------------------------------------------------------------- git + config helpers
