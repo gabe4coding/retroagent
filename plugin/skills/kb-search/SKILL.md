@@ -8,14 +8,14 @@ description: Use when the user asks about past work in any Claude Code or Codex 
 `kb` searches every synced Claude Code and Codex session (all projects, all machines). Output is short on purpose. Go in this order and stop as soon as you have the answer.
 
 1. **Find:** `kb find "<2-5 distinctive words>" [--project NAME] [--agent claude|codex] [--since 30d] [--tag TAG]`
-   - One line per session: `id8 date agent project title · «snippet» [turn N]`. Lines with `↳parent8` are subagent transcripts.
+   - One line per session: `short date agent project title · «snippet» [turn N]`. `short` is the 8-character session id (the last 8 characters, no dashes). Lines with `↳parent` are subagent transcripts.
    - Use distinctive words: error text, file names, service or tool names. Add filters when you know them.
    - No match: try synonyms or fewer words. `kb recent --project NAME` lists the latest sessions.
-2. **Summarize:** `kb summary <id8>` on the 1–3 best hits: summary, decisions, outcome, files, PRs, subagents.
-3. **Read only what you need:** `kb show <id8> --turn N --around 1` or `kb show <id8> --grep "pattern"`. Output stops at `--max-chars` (default 4000).
+2. **Summarize:** `kb summary <short>` on the 1–3 best hits: summary, decisions, outcome, files, PRs, subagents.
+3. **Read only what you need:** `kb show <short> --turn N --around 1` or `kb show <short> --grep "pattern"`. Output stops at `--max-chars` (default 4000).
 
 Rules:
 - Never `cat`, `Read` or `rg` whole files under `sessions/` or `raw/`. Use `kb`.
-- When you report a finding, cite it as `id8 [turn N]` so the user can open it.
+- When you report a finding, cite it as `short [turn N]` so the user can open it.
 - The KB lags a little: a session is synced after it has been idle 15 minutes. `kb sync --now` syncs now. `kb status` shows the last sync and its error, if any.
 - All flags: `kb <command> --help`.

@@ -26,6 +26,7 @@ def write_catalog(root, host: str, months) -> None:
         rows.sort(key=lambda r: (r.get("started") or "", r.get("id") or ""))
         path = root / "catalog" / host / f"{yyyy}-{mm}.jsonl"
         if rows:
-            atomic_write(path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode("utf-8"))
+            lines = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+            atomic_write(path, lines.encode("utf-8", errors="replace"))     # a lone surrogate must not stop the catalog
         elif path.exists():
             path.unlink()

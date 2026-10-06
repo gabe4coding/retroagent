@@ -2,12 +2,13 @@ import json
 import sqlite3
 
 import pytest
-from fixtures import SID, T1
+from fixtures import AID, SID, T1
 from test_index import OLD_SCHEMA, build_kb, put
 
 from kb.cli import main
 from kb.state import State
 from kb.stats import REPORTS
+from kb.util import short_id
 
 
 @pytest.fixture
@@ -28,7 +29,7 @@ def run(capsys, *argv):
 def test_find(kb_env, capsys):
     code, out = run(capsys, "find", "flaky", "motion")
     first = out.splitlines()[0]
-    assert code == 0 and first.startswith("11111111 2026-10-06 claude")
+    assert code == 0 and first.startswith("55555555 2026-10-06 claude")
     assert "Fix flaky motion test" in first and "«" in first
     code, out = run(capsys, "find", "nothing-matches-this")
     assert code == 1 and out.strip() == "no matches"
@@ -39,7 +40,7 @@ def test_find(kb_env, capsys):
 def test_summary(kb_env, capsys):
     code, out = run(capsys, "summary", SID[:8])
     assert code == 0 and "title: Fix flaky motion test" in out
-    assert "subagent: a1d0ec8d Explore tests" in out and "pr: https://github.com/me/demo/pull/7" in out
+    assert "subagent: e94ad30f Explore tests" in out and "pr: https://github.com/me/demo/pull/7" in out
     assert "files: src/motion.ts" in out
     code, out = run(capsys, "summary", "01a0c")
     assert code == 1 and out.startswith("ambiguous id")
@@ -60,7 +61,7 @@ def test_show(kb_env, capsys):
 
 def test_recent_stats_sql(kb_env, capsys):
     _, out = run(capsys, "recent")
-    assert [l[:8] for l in out.splitlines()] == ["11111111", T1[:8]]
+    assert [l[:8] for l in out.splitlines()] == ["55555555", short_id(T1)]
     for name in REPORTS:
         assert run(capsys, "stats", name)[0] == 0
     _, out = run(capsys, "stats", "overview")
@@ -92,7 +93,7 @@ def test_find_rebuilds_an_index_written_by_an_older_schema(kb_env, capsys):
     con.executescript(OLD_SCHEMA)
     con.close()
     code, out = run(capsys, "find", "flaky", "motion")
-    assert code == 0 and out.startswith("11111111 2026-10-06 claude")
+    assert code == 0 and out.startswith("55555555 2026-10-06 claude")
 
 
 def test_find_fts_reports_a_bad_query(kb_env, capsys):
@@ -100,7 +101,8 @@ def test_find_fts_reports_a_bad_query(kb_env, capsys):
     assert code == 2 and out.startswith("bad FTS query")
     code, out = run(capsys, "find", "--fts", "title:flaky", "--json")
     assert code == 0 and json.loads(out)[0]["id"] == SID
-    assert set(json.loads(out)[0]) == {"id", "agent", "host", "project", "started", "title", "parent", "snippet", "turn"}
+    assert set(json.loads(out)[0]) == {"id", "short", "agent", "host", "project", "started", "title", "parent", "snippet",
+                                       "turn"}
 
 
 def test_sql_reports_multiple_statements_and_bad_ids(kb_env, capsys):
@@ -156,3 +158,60 @@ def test_status_backlog_follows_the_regrowth_rule(kb_env, capsys):
         run(capsys, "reindex")                                                # status reads the index sync built
         _, out = run(capsys, "status")
         assert f"summary backlog: {base + listed}" in out.splitlines(), (covered, out)
+
+
+# ---- short ids
+
+V7 = ("01a0d000-0000-7000-8000-5f3c9a1be7d2", "01a0d000-0001-7123-9abc-0e4b7c2d91a6")    # same first 8 characters
+
+
+def _add_v7_sessions(root):
+    from collections import Counter
+
+    from kb.model import Session
+    from kb.store import write_session
+    paths = []
+    for n, sid in enumerate(V7):
+        s = Session(id=sid, agent="codex", project="demo", started=f"2026-10-06T10:0{n}:00Z", title=f"uuid7 session {n}")
+        s.add_turn("user", s.started, [f"question {n}"])
+        s.add_turn("assistant", s.started, [f"answer {n}"])
+        paths.append(write_session(root, "h", s, Counter())[0][0])
+    return paths
+
+
+def test_sessions_with_the_same_first_eight_characters_have_distinct_files_and_shorts(kb_env, capsys):
+    paths = _add_v7_sessions(kb_env)
+    assert paths[0] != paths[1] and paths[0].endswith("_9a1be7d2.md") and paths[1].endswith("_7c2d91a6.md")
+    run(capsys, "reindex")
+    _, out = run(capsys, "recent")
+    shown = [l.split()[0] for l in out.splitlines()]
+    assert "9a1be7d2" in shown and "7c2d91a6" in shown
+    for n, short in enumerate(("9a1be7d2", "7c2d91a6")):
+        code, out = run(capsys, "summary", short)
+        assert code == 0 and f"title: uuid7 session {n}" in out and f"md: {paths[n]}" in out
+        code, out = run(capsys, "show", short)
+        assert code == 0 and out.startswith(f"{short} · uuid7 session {n}") and f"answer {n}" in out
+    code, out = run(capsys, "summary", "01a0d000")                       # the old prefix is ambiguous: list the shorts
+    assert code == 1 and out.startswith("ambiguous id") and "9a1be7d2" in out and "7c2d91a6" in out
+
+
+def test_find_json_rows_carry_the_short_id(kb_env, capsys):
+    _add_v7_sessions(kb_env)
+    run(capsys, "reindex")
+    code, out = run(capsys, "find", "uuid7", "--json")
+    rows = json.loads(out)
+    assert code == 0 and {r["id"]: r["short"] for r in rows} == {V7[0]: "9a1be7d2", V7[1]: "7c2d91a6"}
+    _, out = run(capsys, "find", "uuid7")
+    assert all(l.split()[0] in ("9a1be7d2", "7c2d91a6") for l in out.splitlines())
+
+
+def test_subagent_lines_show_the_short_ids_of_the_parent_and_the_child(kb_env, capsys):
+    _, out = run(capsys, "find", "setTimeout", "--agent", "claude")
+    assert out.startswith(f"{short_id(AID)} ") and f"↳{short_id(SID)} " in out
+    code, out = run(capsys, "summary", short_id(AID))
+    assert code == 0 and f"parent: {SID}" in out
+
+
+def test_a_too_short_prefix_says_so(kb_env, capsys):
+    code, out = run(capsys, "summary", "55")
+    assert code == 1 and "no session with id 55" in out and "at least 4" in out

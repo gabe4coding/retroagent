@@ -35,6 +35,15 @@ def iso_utc(ts) -> str:
         return ""
 
 
+def short_id(sid: str) -> str:
+    """The 8 characters used to name and show a session: the last 8 of the id without dashes.
+
+    The head of an id is no good for this: a Codex id is a UUIDv7 and starts with a timestamp, so sessions started
+    within a minute share their first 8 characters. The tail is random for UUIDv4, UUIDv7 and Claude agent ids.
+    """
+    return (sid or "").replace("-", "")[-8:]
+
+
 def hhmm(iso: str) -> str:
     return iso[11:16] if len(iso or "") >= 16 else "--:--"
 

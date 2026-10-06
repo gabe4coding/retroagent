@@ -15,6 +15,7 @@ from kb.index import Index
 from kb.lock import Lock
 from kb.state import State
 from kb.sync import Report, run_sync
+from kb.util import short_id
 
 SUMMARY = {"summary": "Did the thing.", "tags": ["demo"], "outcome": "done", "decisions": []}
 GOOD = json.dumps({"type": "result", "is_error": False, "result": json.dumps(SUMMARY)})
@@ -246,7 +247,7 @@ def test_cold_rebuild_is_identical(hosts):
 
 def _add_sessions(cfg, n):
     """n more Claude sessions (each with a subagent) in the host's source tree. Returns their ids."""
-    sids = [f"{i + 1:08x}-2222-3333-4444-555555555555" for i in range(n)]
+    sids = [f"{i + 1:08x}-2222-3333-4444-{i + 1:012x}" for i in range(n)]
     for i, sid in enumerate(sids):
         make_claude_tree(Path(cfg.claude_dir).parent, sid=sid, aid=f"a{i + 1:016x}")
     return sids
@@ -314,7 +315,7 @@ def test_own_uncommitted_files_do_not_block_the_pull(hosts):
     a, b = hosts
     assert run_sync(a, runner=FakeRunner()).errors == []
     assert run_sync(b, runner=FakeRunner()).pushed
-    mine = a.root / _md(a, "_11111111.md")                 # a crash left an own tracked file changed
+    mine = a.root / _md(a, "_55555555.md")                 # a crash left an own tracked file changed
     mine.write_text(mine.read_text() + "\nleft by an interrupted run\n")
     r = run_sync(a, runner=FakeRunner())
     assert r.errors == [] and r.committed and r.pushed
@@ -337,7 +338,7 @@ def test_detached_head_skips_git_but_still_processes(hosts):
     git("checkout", "-q", "main", cwd=a.root)
     r = run_sync(a, runner=FakeRunner())
     assert r.errors == [] and r.committed and r.pushed
-    assert _tracked(a.root) >= {_md(a, "_11111111.md")}
+    assert _tracked(a.root) >= {_md(a, "_55555555.md")}
 
 
 def test_dry_run_runs_no_git_at_all(hosts, monkeypatch):
@@ -569,9 +570,9 @@ def test_unmappable_gitleaks_finding_fails_closed(hosts, gitleaks):
 
 def test_flagged_file_is_quarantined_and_released_when_clean(hosts, gitleaks):
     a, _ = hosts
-    gitleaks.flag("_11111111.md")
+    gitleaks.flag("_55555555.md")
     r = run_sync(a, runner=FakeRunner(), summary_cap=0)
-    flagged = _md(a, "_11111111.md")
+    flagged = _md(a, "_55555555.md")
     assert r.errors == [] and r.committed and r.pushed and r.quarantined == [flagged]
     assert flagged not in _tracked(a.root) and len(_tracked(a.root)) > 5
     assert (a.root / flagged).exists()                                         # stays on disk
@@ -596,17 +597,17 @@ def test_flagged_raw_file_is_quarantined_too(hosts, gitleaks):
     raw = f"raw/host-a/claude/2026/10/{SID}.jsonl.gz"
     assert r.errors == [] and r.committed and r.quarantined == [raw]
     assert raw not in _tracked(a.root) and (a.root / raw).exists()
-    assert _md(a, "_11111111.md") in _tracked(a.root)
+    assert _md(a, "_55555555.md") in _tracked(a.root)
 
 
 def test_a_changed_tracked_file_that_is_flagged_is_not_committed(hosts, gitleaks):
     """`git commit -- <dir>` takes unstaged tracked changes too; the quarantine must still hold it back."""
     a, _ = hosts
     assert run_sync(a, runner=FakeRunner(), summary_cap=0).pushed
-    held, other = _md(a, "_11111111.md"), _md(a, f"_{T1[:8]}.md")
+    held, other = _md(a, "_55555555.md"), _md(a, f"_{short_id(T1)}.md")
     for rel in (held, other):
         (a.root / rel).write_text((a.root / rel).read_text() + "\nmore\n")
-    gitleaks.flag("_11111111.md")
+    gitleaks.flag("_55555555.md")
     r = run_sync(a, runner=FakeRunner(), summary_cap=0)
     assert r.committed and _head_files(a.root) == [other]
     assert gitops.git(a.root, "status", "--porcelain").stdout == f" M {held}\n"
@@ -619,9 +620,9 @@ def test_a_changed_tracked_file_that_is_flagged_is_not_committed(hosts, gitleaks
 def test_nothing_is_committed_when_every_staged_file_is_flagged(hosts, gitleaks):
     a, _ = hosts
     assert run_sync(a, runner=FakeRunner(), summary_cap=0).pushed
-    held = _md(a, "_11111111.md")
+    held = _md(a, "_55555555.md")
     (a.root / held).write_text((a.root / held).read_text() + "\nmore\n")
-    gitleaks.flag("_11111111.md")
+    gitleaks.flag("_55555555.md")
     head = gitops.git(a.root, "rev-parse", "HEAD").stdout
     r = run_sync(a, runner=FakeRunner(), summary_cap=0)
     assert not r.committed and gitops.git(a.root, "rev-parse", "HEAD").stdout == head
@@ -630,7 +631,7 @@ def test_nothing_is_committed_when_every_staged_file_is_flagged(hosts, gitleaks)
 
 def test_quarantine_is_cleared_when_gitleaks_is_gone(hosts, gitleaks, monkeypatch, tmp_path):
     a, _ = hosts
-    gitleaks.flag("_11111111.md")
+    gitleaks.flag("_55555555.md")
     run_sync(a, runner=FakeRunner(), summary_cap=0)
     assert _quarantine(a)
     _path(monkeypatch, tmp_path)                                               # gitleaks no longer installed
@@ -681,3 +682,96 @@ def test_sync_prints_one_line_when_something_happened_and_nothing_otherwise(host
     out = capsys.readouterr().out
     assert len(out.splitlines()) == 1 and "gitleaks" in out and "boom" in out
     assert "\n" not in State.load(a.kb_dir / "sync-state.json").last_error
+
+
+# ================================================================ review fixes: short ids, collisions, moves, quarantine
+
+def _squatter(cfg, sid="99999999-2222-3333-4444-555555555555", aid="c3c3c3c3c3c3c3c3c"):
+    """A second Claude session whose id ends like SID's: the same short id, project and day, so the same md path."""
+    make_claude_tree(Path(cfg.claude_dir).parent, sid=sid, aid=aid)
+    return sid
+
+
+def test_a_file_of_another_session_is_not_overwritten_and_the_error_is_reported(hosts):
+    a, _ = hosts
+    assert run_sync(a, runner=FakeRunner(), summary_cap=0).errors == []
+    path = a.root / _md(a, "_55555555.md")
+    before = path.read_bytes()
+    squatter = _squatter(a)
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert path.read_bytes() == before                                     # the existing file is untouched
+    assert len(r.errors) == 1 and "PathCollision" in r.errors[0] and SID in r.errors[0] and squatter in r.errors[0]
+    assert r.sessions == 0 and "PathCollision" in State.load(a.kb_dir / "sync-state.json").last_error
+    assert not any(squatter in f.name for f in (a.root / "raw").rglob("*"))
+    r = run_sync(a, now=True, runner=FakeRunner(), summary_cap=0)           # it is retried (and reported) on every run
+    assert len(r.errors) == 1 and "PathCollision" in r.errors[0] and path.read_bytes() == before
+
+
+def test_sessions_with_the_same_first_eight_characters_are_all_kept_and_found(tmp_path):
+    remote = init_remote(tmp_path)
+    root = clone(remote, tmp_path / "root")
+    src = tmp_path / "src"
+    projects = make_claude_tree(src, sid="01a0d000-0000-7000-8000-5f3c9a1be7d2", aid="a111111111111111a")
+    make_claude_tree(src, sid="01a0d000-0001-7123-9abc-0e4b7c2d91a6", aid="b222222222222222b")
+    sessions, home = make_codex_tree(src)
+    cfg = make_config(root, "host-a", projects, sessions, home)
+    r = run_sync(cfg, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.sessions == 4
+    names = sorted(p.name for p in (root / "sessions/host-a/claude").rglob("*.md") if "_sub-" not in p.name)
+    assert len(names) == 2 and names[0].endswith("_7c2d91a6.md") and names[1].endswith("_9a1be7d2.md")
+    idx = Index(cfg.kb_dir / "index.sqlite")
+    try:
+        assert idx.get("9a1be7d2")["id"] == "01a0d000-0000-7000-8000-5f3c9a1be7d2"
+        assert idx.get("7c2d91a6")["id"] == "01a0d000-0001-7123-9abc-0e4b7c2d91a6"
+    finally:
+        idx.close()
+
+
+def _rewrite_month(cfg, sid, old="2026-10", new="2026-11"):
+    for f in Path(cfg.claude_dir).rglob("*.jsonl"):
+        if sid in str(f):
+            f.write_text(f.read_text().replace(old, new))
+            age([f])
+
+
+def test_a_session_that_moves_to_another_month_is_fully_moved_by_the_sync(hosts):
+    a, _ = hosts
+    r = run_sync(a, runner=FakeRunner(), summary_cap=None)
+    assert r.errors == [] and r.summarized == 2 and r.pushed
+    old_md, old_raw = _md(a, "_55555555.md"), f"raw/host-a/claude/2026/10/{SID}.jsonl.gz"
+    old_sub = _md(a, f"_55555555_sub-{short_id(AID)}.md")
+    old_sub_raw = f"raw/host-a/claude/2026/10/{SID}__sub-{AID}.jsonl.gz"
+    before = _row(a, SID)
+    tracked = _tracked(a.root)
+    assert {old_md, old_sub, old_raw, old_sub_raw, "catalog/host-a/2026-10.jsonl"} <= tracked
+    _rewrite_month(a, SID)
+    r = run_sync(a, now=True, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.sessions == 1 and r.committed and r.pushed
+    root, new_md = a.root, _md(a, "_55555555.md")
+    assert "/2026/11/" in new_md and new_md != old_md
+    for gone in (old_md, old_sub, old_raw, old_sub_raw, "catalog/host-a/2026-10.jsonl"):
+        assert not (root / gone).exists() and gone not in _tracked(root), gone
+    assert {new_md, f"raw/host-a/claude/2026/11/{SID}.jsonl.gz", "catalog/host-a/2026-11.jsonl"} <= _tracked(root)
+    rows = [json.loads(l) for l in (root / "catalog/host-a/2026-11.jsonl").read_text().splitlines()]
+    assert [x["id"] for x in rows] == [SID, AID] and rows[0]["summary"] == "Did the thing."
+    after = _row(a, SID)
+    assert after["md_path"] == new_md and after["summary_turns"] == before["summary_turns"] > 0
+    assert gitops.git(root, "status", "--porcelain").stdout == ""
+
+
+def test_a_quarantined_tracked_file_does_not_block_the_pull(hosts, gitleaks):
+    a, b = hosts
+    assert run_sync(a, runner=FakeRunner(), summary_cap=0).pushed
+    held = _md(a, "_55555555.md")
+    (a.root / held).write_text((a.root / held).read_text() + "\nlocal change\n")
+    gitleaks.flag("_55555555.md")
+    assert run_sync(b, runner=FakeRunner(), summary_cap=0).pushed           # a new commit on the remote
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and list(_quarantine(a)) == [held]
+    assert (a.root / held).read_text().endswith("local change\n")           # the local file is as it was
+    assert gitops.git(a.root, "status", "--porcelain").stdout == f" M {held}\n"
+    assert gitops.git(a.root, "stash", "list").stdout == ""
+    assert any((a.root / "sessions/host-b").rglob("*.md"))                   # the other host's work arrived
+    idx = Index(a.kb_dir / "index.sqlite")
+    assert {x[0] for x in idx.db.execute("SELECT DISTINCT host FROM sessions")} == {"host-a", "host-b"}
+    idx.close()

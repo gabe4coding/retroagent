@@ -58,7 +58,7 @@ def kb(tmp_path):
 def test_update_is_incremental(kb):
     root, idx = kb
     assert idx.update(root) == 0
-    md = next((root / "sessions").rglob("*_11111111.md"))
+    md = next((root / "sessions").rglob("*_55555555.md"))
     md.write_text(md.read_text(encoding="utf-8").replace("Retro done.", "Retro finished."), encoding="utf-8")
     st = md.stat()
     os.utime(md, (st.st_atime, st.st_mtime + 10))
@@ -93,7 +93,7 @@ def test_recent_get_children_sql(kb):
         idx.get("01a0c")
     assert [c["id"] for c in idx.children(SID)] == [AID]
     assert [c["id"] for c in idx.children(T1)] == [T2]
-    assert idx.paths_by_id("h")[SID].endswith("_11111111.md")
+    assert idx.paths_by_id("h")[SID].endswith("_55555555.md")
     cols, rows = run_sql(root / ".kb" / "index.sqlite", "SELECT COUNT(*) AS n FROM sessions")
     assert cols == ["n"] and rows[0][0] == 4
     with pytest.raises(ValueError):
@@ -296,7 +296,7 @@ INSERT INTO sessions_fts(rowid, id, title) VALUES (7, 'stale-1', 'stale');
 """
 
 
-@pytest.mark.parametrize("version", [0, 1])
+@pytest.mark.parametrize("version", [0, 1, 2])
 def test_index_from_another_schema_version_is_dropped_and_rebuilt(tmp_path, version):
     import kb.index
     path = tmp_path / "kb" / ".kb" / "index.sqlite"
@@ -310,7 +310,8 @@ def test_index_from_another_schema_version_is_dropped_and_rebuilt(tmp_path, vers
     try:
         assert idx.rebuilt is True
         assert idx.db.execute("PRAGMA user_version").fetchone()[0] == kb.index.SCHEMA_VERSION
-        assert "md_sig" in [r[1] for r in idx.db.execute("PRAGMA table_info(sessions)")]
+        cols = [r[1] for r in idx.db.execute("PRAGMA table_info(sessions)")]
+        assert "md_sig" in cols and "short" in cols
         assert idx.get("stale-1") is None
         assert idx.update(root) == 1 and idx.get("a-1")
     finally:
@@ -435,3 +436,61 @@ def test_run_sql_aborts_a_runaway_query(kb, monkeypatch):
         run_sql(root / ".kb" / "index.sqlite",
                 "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT COUNT(*) FROM c")
     assert time.perf_counter() - t0 < 5
+
+
+# ---- short ids
+
+def test_short_column_is_filled_and_indexed(kb):
+    _, idx = kb
+    rows = dict(idx.db.execute("SELECT id, short FROM sessions").fetchall())
+    assert rows == {SID: "55555555", AID: "e94ad30f", T1: "92987a24", T2: "00000002"}
+    assert any("short" in [c[2] for c in idx.db.execute(f"PRAGMA index_info({i[1]})")]
+               for i in idx.db.execute("PRAGMA index_list(sessions)"))
+    import kb.index
+    assert kb.index.SCHEMA_VERSION >= 3                                  # old index files are rebuilt
+
+
+V7A, V7B = "01a0d000-0000-7000-8000-5f3c9a1be7d2", "01a0d000-0001-7123-9abc-0e4b7c2d91a6"   # same first 8 characters
+
+
+def test_get_resolves_a_short_id_even_when_the_first_eight_characters_collide(empty):
+    root, idx = empty
+    put(root, "h/a.md", V7A)
+    put(root, "h/b.md", V7B)
+    idx.update(root)
+    assert idx.get("9a1be7d2")["id"] == V7A and idx.get("7c2d91a6")["id"] == V7B
+    assert idx.get("9a1b")["id"] == V7A and idx.get("7c2d")["id"] == V7B       # a prefix of the short id
+    assert idx.get(V7A)["id"] == V7A and idx.get(V7A[:20])["id"] == V7A       # full id, or a longer prefix of it
+    with pytest.raises(AmbiguousId) as e:
+        idx.get("01a0d000")                                                    # the old 8-character prefix is ambiguous
+    assert sorted(e.value.args[0]) == sorted([V7A, V7B])
+
+
+def test_get_needs_four_characters_unless_it_is_an_exact_id(empty):
+    root, idx = empty
+    put(root, "h/a.md", "abc-1")
+    put(root, "h/b.md", "ab")
+    put(root, "h/c.md", "abcd1234-0000")
+    idx.update(root)
+    assert idx.get("ab")["id"] == "ab"                                         # an exact full id works whatever its length
+    assert idx.get("abc") is None and idx.get("a") is None                     # too short to be a prefix
+    assert idx.get("abc-1")["id"] == "abc-1"
+    assert idx.get("abcd")["id"] == "abcd1234-0000"
+    assert idx.get("zzzz") is None
+
+
+def test_an_exact_id_wins_over_longer_ids_that_start_with_it(empty):
+    root, idx = empty
+    put(root, "h/a.md", "dup-1")
+    put(root, "h/b.md", "dup-12")
+    idx.update(root)
+    assert idx.get("dup-1")["id"] == "dup-1"
+    with pytest.raises(AmbiguousId):
+        idx.get("dup-")
+
+
+def test_a_short_id_and_an_id_prefix_that_hit_the_same_session_are_not_ambiguous(empty):
+    root, idx = empty
+    put(root, "h/a.md", "abcd1234abcd1234")                                     # short = "abcd1234", id starts with it too
+    idx.update(root)
+    assert idx.get("abcd1234")["id"] == "abcd1234abcd1234"

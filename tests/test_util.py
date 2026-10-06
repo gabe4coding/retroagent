@@ -4,7 +4,7 @@ import pytest
 
 from kb.util import (
     atomic_write, clean_user_text, first_line, head_lines, hhmm, iso_utc,
-    project_from_cwd, project_from_git_url, rel_path, slug,
+    project_from_cwd, project_from_git_url, rel_path, short_id, slug,
 )
 
 
@@ -160,3 +160,13 @@ def test_clean_user_text_redacts_before_capping():
     assert "ghp_" not in out and GH[4:14] not in out
     assert out.endswith("chars cut]") and out.startswith("y y y")
     assert clean_user_text("my token is " + GH) == "my token is [REDACTED:github-token]"
+
+
+def test_short_id_is_the_random_tail_of_the_id():
+    assert short_id("11111111-2222-3333-4444-555555555555") == "55555555"
+    assert short_id("01a0c87d-996a-7962-9b1b-67ac92987a24") == "92987a24"     # UUIDv7: the head is a timestamp
+    assert short_id("a1d0ec8d8e94ad30f") == "e94ad30f"                          # Claude agent id
+    assert short_id("ab-cd") == "abcd" and short_id("") == ""
+    # two UUIDv7 ids started a few seconds apart share the head, never the tail
+    a, b = "01a0d000-0000-7000-8000-5f3c9a1be7d2", "01a0d000-0001-7123-9abc-0e4b7c2d91a6"
+    assert a[:8] == b[:8] and short_id(a) != short_id(b)

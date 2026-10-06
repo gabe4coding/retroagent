@@ -501,3 +501,101 @@ def test_push_does_not_retry_when_a_server_hook_declines(tmp_path):
         gitops.push(a)
     assert "denied by policy" in str(e.value)
     assert log.read_text().splitlines() == ["call"]
+
+
+# ---------------------------------------------------------------- pull with quarantined (kept) files
+
+def _tracked_pair(tmp_path):
+    """Two clones of a remote that holds sessions/ha/x.md. Returns (a, b)."""
+    remote = init_remote(tmp_path)
+    a = clone(remote, tmp_path / "a")
+    _add(a, "ha", "committed\n")
+    gitops.stage(a, ["sessions/ha"])
+    gitops.commit(a, "a", ["sessions/ha"])
+    gitops.push(a)
+    return a, clone(remote, tmp_path / "b")
+
+
+def _remote_commit(repo, host="hb", text="b"):
+    _add(repo, host, text)
+    gitops.stage(repo, [f"sessions/{host}"])
+    gitops.commit(repo, host, [f"sessions/{host}"])
+    gitops.push(repo)
+
+
+KEPT = "sessions/ha/x.md"
+
+
+def test_pull_with_only_kept_files_dirty_stashes_pulls_and_restores_them(tmp_path):
+    a, b = _tracked_pair(tmp_path)
+    _remote_commit(b)
+    (a / KEPT).write_text("quarantined local edit\n")
+    gitops.pull(a, keep=(KEPT,))
+    assert (a / "sessions/hb/x.md").read_text() == "b"                      # the pull happened
+    assert (a / KEPT).read_text() == "quarantined local edit\n"             # and the local edit is still there
+    assert fgit("status", "--porcelain", cwd=a).stdout == f" M {KEPT}\n"
+    assert fgit("stash", "list", cwd=a).stdout == ""
+
+
+def test_pull_still_refuses_when_another_tracked_file_is_dirty(tmp_path):
+    a, b = _tracked_pair(tmp_path)
+    _remote_commit(b)
+    (a / KEPT).write_text("quarantined local edit\n")
+    (a / "README.md").write_text("edited locally\n")
+    with pytest.raises(gitops.GitError, match="local changes in tracked files; not pulling"):
+        gitops.pull(a, keep=(KEPT,))
+    assert (a / KEPT).read_text() == "quarantined local edit\n" and (a / "README.md").read_text() == "edited locally\n"
+    assert not (a / "sessions/hb").exists() and fgit("stash", "list", cwd=a).stdout == ""
+
+
+def test_kept_files_are_exact_paths_not_folders_or_patterns(tmp_path):
+    a, b = _tracked_pair(tmp_path)
+    _remote_commit(b)
+    (a / KEPT).write_text("local edit\n")
+    for keep in ((), ("sessions/ha",), ("sessions/ha/*.md",), ("sessions/ha/x.md/",), ("x.md",)):
+        with pytest.raises(gitops.GitError, match="local changes in tracked files; not pulling"):
+            gitops.pull(a, keep=keep)
+    assert (a / KEPT).read_text() == "local edit\n" and fgit("stash", "list", cwd=a).stdout == ""
+
+
+def test_pull_with_kept_files_does_not_touch_a_stash_the_user_already_has(tmp_path):
+    a, b = _tracked_pair(tmp_path)
+    (a / "README.md").write_text("user work in progress\n")
+    fgit("stash", "push", "-q", "-m", "mine", cwd=a)
+    _remote_commit(b)
+    gitops.pull(a, keep=(KEPT,))                                          # clean tree: nothing to stash, nothing to pop
+    assert "mine" in fgit("stash", "list", cwd=a).stdout and len(fgit("stash", "list", cwd=a).stdout.splitlines()) == 1
+    (a / KEPT).write_text("local edit\n")
+    _remote_commit(b, "hc", "c")
+    gitops.pull(a, keep=(KEPT,))
+    assert (a / KEPT).read_text() == "local edit\n" and (a / "sessions/hc/x.md").exists()
+    assert len(fgit("stash", "list", cwd=a).stdout.splitlines()) == 1 and "mine" in fgit("stash", "list", cwd=a).stdout
+
+
+def test_a_failed_pull_gives_the_kept_files_back(tmp_path):
+    a, b = _tracked_pair(tmp_path)
+    (b / "README.md").write_text("from b\n")
+    fgit("commit", "-q", "-am", "b readme", cwd=b)
+    gitops.push(b)
+    (a / "README.md").write_text("from a\n")
+    fgit("commit", "-q", "-am", "a readme", cwd=a)                         # a diverging commit: the rebase conflicts
+    (a / KEPT).write_text("local edit\n")
+    with pytest.raises(gitops.GitError, match="git pull --rebase"):
+        gitops.pull(a, keep=(KEPT,))
+    assert (a / KEPT).read_text() == "local edit\n" and fgit("stash", "list", cwd=a).stdout == ""
+    assert not (a / ".git" / "rebase-merge").exists() and not (a / ".git" / "rebase-apply").exists()
+
+
+def test_a_stash_that_cannot_be_restored_is_left_for_the_user(tmp_path):
+    a, b = _tracked_pair(tmp_path)
+    (b / KEPT).write_text("remote edit\n")                                 # the remote changes the same file
+    fgit("commit", "-q", "-am", "b edit", cwd=b)
+    gitops.push(b)
+    (a / KEPT).write_text("local edit\n")
+    with pytest.raises(gitops.GitError, match="stash") as e:
+        gitops.pull(a, keep=(KEPT,))
+    assert "git stash" in str(e.value)
+    assert len(fgit("stash", "list", cwd=a).stdout.splitlines()) == 1        # nothing lost: it is still in the stash
+    assert fgit("stash", "show", "-p", "stash@{0}", cwd=a).stdout.count("local edit") == 1
+    assert fgit("status", "--porcelain", cwd=a).stdout == ""                 # and no conflict markers are left to commit
+    assert (a / KEPT).read_text() == "remote edit\n"

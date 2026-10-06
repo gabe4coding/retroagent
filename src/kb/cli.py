@@ -7,7 +7,8 @@
   kb stats [report]    ready-made analytics; kb sql "<SELECT …>" for custom ones
   kb sync | backfill | status | reindex   maintenance
 
-Ids: any unique prefix (8 characters is normal). Add --help to any command for its flags.
+Ids: the 8-character short id shown in lists (or any unique prefix of it or of the full id, 4 characters at least).
+Add --help to any command for its flags.
 """
 from __future__ import annotations
 
@@ -20,8 +21,9 @@ import sqlite3
 
 from kb import config as config_mod
 from kb.distill import parse_markdown
-from kb.index import AmbiguousId, Filters, Index, run_sql
+from kb.index import MIN_PREFIX, AmbiguousId, Filters, Index, run_sql
 from kb.stats import REPORTS
+from kb.util import short_id
 
 
 def parse_since(value: str) -> str:
@@ -42,8 +44,8 @@ def table(cols, rows, width: int = 80) -> str:
 
 
 def _row(r: dict) -> str:
-    sub = f"↳{r['parent'][:8]} " if r.get("parent") else ""
-    return (f"{r['id'][:8]} {(r.get('started') or '')[:10]} {(r.get('agent') or ''):6} "
+    sub = f"↳{short_id(r['parent'])} " if r.get("parent") else ""
+    return (f"{short_id(r['id'])} {(r.get('started') or '')[:10]} {(r.get('agent') or ''):6} "
             f"{(r.get('project') or ''):<18.18} {sub}{(r.get('title') or '')[:70]}")
 
 
@@ -64,13 +66,15 @@ def _get(idx: Index, prefix: str):
     try:
         r = idx.get(prefix)
     except AmbiguousId as e:
-        print("ambiguous id, candidates: " + " ".join(i[:12] for i in e.args[0]))
+        ids = list(e.args[0])
+        shorts = [short_id(i) for i in ids]
+        print("ambiguous id, candidates: " + " ".join(shorts if len(set(shorts)) == len(shorts) else ids))
         return None
     except ValueError as e:
         print(str(e))
         return None
     if r is None:
-        print(f"no session with id {prefix}")
+        print(f"no session with id {prefix}" + (f" (use at least {MIN_PREFIX} characters)" if len(prefix) < MIN_PREFIX else ""))
     return r
 
 
@@ -84,7 +88,7 @@ def cmd_find(args, cfg) -> int:
     finally:
         idx.close()
     if args.json:
-        print(json.dumps(hits, ensure_ascii=False))
+        print(json.dumps([{**h, "short": short_id(h["id"])} for h in hits], ensure_ascii=False))
         return 0 if hits else 1
     if not hits:
         print("no matches")
@@ -140,7 +144,7 @@ def cmd_summary(args, cfg) -> int:
     for p in json.loads(r.get("prs") or "[]"):
         print(f"pr: {p}")
     for k in kids:
-        print(f"subagent: {k['id'][:8]} {k['title']}")
+        print(f"subagent: {short_id(k['id'])} {k['title']}")
     print(f"md: {r['md_path']}")
     return 0
 
@@ -165,7 +169,7 @@ def cmd_show(args, cfg) -> int:
     if r is None:
         return 1
     _, turns = parse_markdown((cfg.root / r["md_path"]).read_text(encoding="utf-8"))
-    out = f"{r['id'][:8]} · {r['title']} · {len(turns)} turns\n"
+    out = f"{short_id(r['id'])} · {r['title']} · {len(turns)} turns\n"
     for t in select_turns(turns, args.turn, args.around, args.grep):
         out += f"\n## [{t['n']}] {t['role']} · {t['time']}\n{t['text']}\n"
     if len(out) > args.max_chars:

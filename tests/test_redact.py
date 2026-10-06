@@ -163,6 +163,23 @@ NEW_NEGATIVE = [
     "Starts with -----BEGIN RSA PRIVATE KEY----- and that is all",
     "-----BEGIN PRIVATE KEY-----\nshort",
     "-----BEGIN CERTIFICATE-----\n" + B64_LINE + "\n-----END CERTIFICATE-----",
+    # review fixes: command lines, code and prose that looked like secrets
+    "date -u +%Y-%m-%dT%H:%M:%SZ",
+    "ts=$(date -u +%Y%m%d:%H%M%S)",
+    "docker run -u 1000:1000 alpine id",
+    "docker run --user 1000:1000 alpine id",
+    "docker run -u '1000:1000' alpine id",
+    "const password = process.env.DB_PASSWORD;",
+    "password: req.body.password",
+    "passwd=ENV.database_password",
+    "password = ENV.x",
+    "password=config.db.user_password,",
+    "password=process.env.X",
+    "HTTP Basic authentication is required",
+    "Basic authentication",
+    "uses Basic configuration for the proxy",
+    "-----BEGIN PRIVATE KEY----- the quick brown fox jumps over the lazy dog and keeps on running far away",
+    "-----BEGIN RSA PRIVATE KEY-----\nthis is only a prose line that mentions the marker and has many words in it",
 ]
 
 
@@ -336,3 +353,36 @@ def test_redaction_never_breaks_serialized_json_on_random_text():
             json.loads(out)
         except ValueError:
             pytest.fail(f"case {i} broke the JSON:\n  in : {line[:300]!r}\n  out: {out[:300]!r}")
+
+
+REVIEW_POSITIVE = [
+    ("curl-user", "curl -u 1a2b:p4ssw0rd https://x.io", "p4ssw0rd"),
+    ("curl-user", "curl -u 'root:p4ssw0rd' https://x.io", "p4ssw0rd"),
+    ("curl-user", "curl --user 5000x:p4ssw0rd https://x.io", "p4ssw0rd"),
+    ("secret-assignment", "password=hunter.2xyz9abc", "hunter.2xyz9abc"),
+    ("secret-assignment", "PGPASSWORD=correcthorse", "correcthorse"),
+    ("http-basic", "Authorization: Basic " + "dGVzdHVzZXI6dGVzdHBhc3M=", "dGVzdHVzZXI6"),
+    ("http-basic", "Authorization: Basic " + "YWJjZGVmZ2hpamtsbW5vcA==", "YWJjZGVmZ2hpamts"),
+    ("http-basic", "Basic " + "QWxhZGRpbjpvcGVuIHNlc2FtZQ==", "QWxhZGRpbjpv"),
+    ("private-key", "-----BEGIN PRIVATE KEY-----\n" + B64_LINE + "\n" + B64_LINE, "QUJD"),
+    ("private-key", "key: |\n  -----BEGIN PRIVATE KEY-----\n  " + B64_LINE + "\n  " + B64_LINE, "QUJD"),
+    ("private-key", "-----BEGIN PRIVATE KEY-----\r\n" + B64_LINE + "\r\n" + B64_LINE, "QUJD"),
+]
+
+
+@pytest.mark.parametrize("rule,text,secret", REVIEW_POSITIVE)
+def test_the_tighter_rules_still_redact_real_secrets(rule, text, secret):
+    out, counts = redact(text)
+    assert secret not in out and counts[rule] >= 1
+    assert redact(out)[0] == out
+
+
+def test_curl_user_guard_keeps_the_rest_of_the_command_line_intact():
+    assert redact("docker run -u 1000:1000 -e A=1 img")[0] == "docker run -u 1000:1000 -e A=1 img"
+    assert redact("date -u +%FT%T; curl -u admin:p4ssw0rd https://x.io")[0] == \
+        "date -u +%FT%T; curl -u admin:[REDACTED:curl-user] https://x.io"
+
+
+def test_new_rules_agree_with_and_without_the_prefilter():
+    for _, text, _ in REVIEW_POSITIVE:
+        assert redact(text) == _run(text, False), text

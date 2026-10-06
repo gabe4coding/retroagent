@@ -25,6 +25,7 @@ from kb.paths import month_of
 from kb.state import State
 from kb.store import write_session
 from kb.summarize import SummaryUnavailable, summarize
+from kb.util import short_id
 
 SUMMARY_BUDGET_S = 20 * 60        # wall-clock time one run may spend on summaries
 SUMMARY_REGROWTH = 4              # re-summarize a session that has this many more turns than its summary covers
@@ -119,7 +120,8 @@ def process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_
         if dry_run and report.sessions < sample:
             written, sizes = write_session(cfg.kb_dir / "dry-run", cfg.host, s, report.redactions)
         else:
-            written, sizes = write_session(cfg.root, cfg.host, s, report.redactions, dry_run=dry_run, known=known)
+            written, sizes = write_session(cfg.root, cfg.host, s, report.redactions, dry_run=dry_run, known=known,
+                                           touched=months)
         report.sizes.update(sizes)
         months.update(month_of(p) for p in written)
         report.sessions += 1
@@ -156,7 +158,7 @@ def summarize_pending(cfg, idx, state, cap, runner, report, lock, clock=time.tim
             break
         if clock() - start >= SUMMARY_BUDGET_S:
             break
-        key, name = keys[r["id"]], r["id"][:8]
+        key, name = keys[r["id"]], short_id(r["id"])
         attempts = state.summary_attempts.get(key, 0)
         if attempts >= SUMMARY_MAX_ATTEMPTS:
             continue
@@ -246,7 +248,7 @@ def publish(cfg, idx, state, report) -> None:
     has_upstream = gitops.git(root, "rev-parse", "--abbrev-ref", "@{u}", check=False).returncode == 0
     if has_upstream:        # a first push into an empty remote has nothing to pull; push sets the upstream
         try:
-            gitops.pull(root)
+            gitops.pull(root, keep=tuple(state.quarantine))     # held-back files are set aside during the pull
         except gitops.GitError as e:
             note = f" ({len(state.quarantine)} quarantined file(s) stay in the working tree; see kb status)" \
                 if state.quarantine and "local changes" in str(e) else ""

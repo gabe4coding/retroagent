@@ -10,16 +10,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kb.distill import parse_markdown
+from kb.util import short_id
 
-SCHEMA_VERSION = 2          # bump when the tables change: the index is disposable, update() rebuilds it
+SCHEMA_VERSION = 3          # bump when the tables change: the index is disposable, update() rebuilds it
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS sessions(
   id TEXT PRIMARY KEY, agent TEXT, host TEXT, project TEXT, cwd TEXT, branch TEXT,
   started TEXT, ended TEXT, model TEXT, turns INTEGER, user_turns INTEGER,
   title TEXT, summary TEXT, tags TEXT, outcome TEXT, decisions TEXT, summary_turns INTEGER,
-  files TEXT, prs TEXT, parent TEXT, first_prompt TEXT, md_path TEXT, md_sig TEXT)""",
+  files TEXT, prs TEXT, parent TEXT, first_prompt TEXT, md_path TEXT, md_sig TEXT, short TEXT)""",
     "CREATE INDEX IF NOT EXISTS sessions_parent ON sessions(parent)",
     "CREATE INDEX IF NOT EXISTS sessions_started ON sessions(started)",
+    "CREATE INDEX IF NOT EXISTS sessions_short ON sessions(short)",
     # FTS rows use the rowid of their base row (sessions.rowid, turns.rowid) so they can be deleted by rowid
     """CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
   id UNINDEXED, title, summary, tags, decisions, first_prompt, tokenize='porter unicode61')""",
@@ -32,7 +34,8 @@ SCHEMA = (
     "CREATE INDEX IF NOT EXISTS dups_id ON dups(id)",
 )
 _TABLES = ("sessions_fts", "turns_fts", "sessions", "turns", "dups")
-_COLUMNS = 23
+_COLUMNS = 24
+MIN_PREFIX = 4               # shortest id prefix get() accepts (an exact full id may be shorter)
 SQL_TIMEOUT = 10.0           # seconds a run_sql query may take
 _INT64 = 2 ** 63
 _LEAN = "id, agent, host, project, started, title, parent"
@@ -264,7 +267,8 @@ class Index:
                m.get("branch", ""), m.get("started", ""), m.get("ended", ""), m.get("model", ""),
                m.get("turns", 0), m.get("user_turns", 0), m.get("title", ""), m.get("summary", ""),
                js(m.get("tags")), m.get("outcome", ""), js(m.get("decisions")), m.get("summary_turns", 0),
-               js(m.get("files")), js(m.get("prs")), m.get("parent", "") or "", first, rel, sig)
+               js(m.get("files")), js(m.get("prs")), m.get("parent", "") or "", first, rel, sig,
+               short_id(m["id"]))
         cur = self.db.execute(f"INSERT INTO sessions VALUES ({','.join('?' * _COLUMNS)})", row)
         self.db.execute("INSERT INTO sessions_fts(rowid, id, title, summary, tags, decisions, first_prompt) "
                         "VALUES (?,?,?,?,?,?,?)",
@@ -372,16 +376,23 @@ class Index:
         return [dict(r) for r in self.db.execute(sql, params + [limit])]
 
     def get(self, prefix: str):
+        """One session by full id, by the start of its id, or by the start of its short id. None when nothing matches.
+
+        An exact full id always wins. Otherwise the prefix needs MIN_PREFIX characters, and several candidates raise
+        AmbiguousId (with their full ids). An empty prefix raises ValueError."""
         if not prefix:
             raise ValueError("empty id prefix")
-        rows = self.db.execute("SELECT * FROM sessions WHERE substr(id, 1, ?) = ? ORDER BY started DESC LIMIT 6",
-                               (len(prefix), prefix)).fetchall()
-        if not rows:
+        row = self.db.execute("SELECT * FROM sessions WHERE id = ?", (prefix,)).fetchone()
+        if row is not None:
+            return dict(row)
+        if len(prefix) < MIN_PREFIX:
             return None
-        exact = [r for r in rows if r["id"] == prefix]
-        if len(rows) > 1 and not exact:
+        n = len(prefix)
+        rows = self.db.execute("SELECT * FROM sessions WHERE substr(id, 1, ?) = ? OR substr(short, 1, ?) = ? "
+                               "ORDER BY started DESC, id LIMIT 6", (n, prefix, n, prefix)).fetchall()
+        if len(rows) > 1:
             raise AmbiguousId([r["id"] for r in rows])
-        return dict(exact[0] if exact else rows[0])
+        return dict(rows[0]) if rows else None
 
     def children(self, sid: str) -> list:
         return [dict(r) for r in self.db.execute(

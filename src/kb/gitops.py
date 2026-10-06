@@ -93,17 +93,70 @@ def has_remote(root) -> bool:
     return bool(git(root, "remote", check=False).stdout.strip())
 
 
-def pull(root) -> None:
-    """Rebase onto the upstream. Refuses when tracked files have local changes; a failed rebase is aborted."""
-    if git(root, "status", "--porcelain", "--untracked-files=no").stdout.strip():
+def _dirty_tracked(root) -> set:
+    """Paths of tracked files with local changes (staged or not). Untracked files are not listed."""
+    entries = git(root, "status", "--porcelain", "-z", "--untracked-files=no").stdout.split("\0")
+    paths, i = set(), 0
+    while i < len(entries):
+        entry, i = entries[i], i + 1
+        if len(entry) < 4:
+            continue
+        paths.add(entry[3:])
+        if entry[0] in "RC" or entry[1] in "RC":      # a rename or copy lists the original path next
+            if i < len(entries) and entries[i]:
+                paths.add(entries[i])
+            i += 1
+    return paths
+
+
+def _put_back(root, paths: set, pull_error) -> None:
+    """Restore the stash made by pull(). If that fails, leave the stash for the user and say so."""
+    p = git(root, "stash", "pop", "--quiet", check=False)
+    if p.returncode == 0:
+        return
+    # a conflict leaves markers in the files and unmerged entries in the index: put the files back to HEAD so
+    # nothing half-merged is staged or committed later; the stash entry itself stays
+    pathspecs = [f":(literal){x}" for x in sorted(paths)]
+    git(root, "reset", "--quiet", "--", *pathspecs, check=False)
+    git(root, "checkout", "--", *pathspecs, check=False)
+    note = f"git stash pop: {(p.stderr or p.stdout).strip()}; your local changes to {len(paths)} held-back file(s) " \
+           f"are still in the stash (see `git stash list`; restore with `git stash pop`)"
+    if pull_error is not None:
+        note += f"; the pull itself failed too: {pull_error}"
+    raise GitError(note)
+
+
+def pull(root, keep=()) -> None:
+    """Rebase onto the upstream. Refuses when tracked files have local changes; a failed rebase is aborted.
+
+    `keep` lists files (exact repo-relative paths) that may stay modified, such as quarantined files that were held
+    back from a commit. If they are the only tracked files with changes, they are stashed for the pull and restored
+    after it, whether or not it worked. If the stash cannot be restored, GitError says so and the stash is left.
+    """
+    dirty = _dirty_tracked(root)
+    if dirty - set(keep):
         raise GitError("local changes in tracked files; not pulling")
-    p = git(root, "pull", "--rebase", "--quiet", check=False, timeout=PULL_TIMEOUT)
-    if p.returncode != 0:
-        try:
-            git(root, "rebase", "--abort", check=False)
-        except GitError:
-            pass
-        raise GitError(f"git pull --rebase: {(p.stderr or p.stdout).strip()}")
+    stashed = False
+    if dirty:
+        before = git(root, "rev-parse", "-q", "--verify", "refs/stash", check=False).stdout.strip()
+        git(root, "stash", "push", "--quiet", "-m", "kb sync: held-back files during pull",
+            "--", *[f":(literal){x}" for x in sorted(dirty)])
+        stashed = git(root, "rev-parse", "-q", "--verify", "refs/stash", check=False).stdout.strip() != before
+    error = None
+    try:
+        p = git(root, "pull", "--rebase", "--quiet", check=False, timeout=PULL_TIMEOUT)
+        if p.returncode != 0:
+            try:
+                git(root, "rebase", "--abort", check=False)
+            except GitError:
+                pass
+            error = GitError(f"git pull --rebase: {(p.stderr or p.stdout).strip()}")
+    except GitError as e:                  # a timeout
+        error = e
+    if stashed:
+        _put_back(root, dirty, error)
+    if error is not None:
+        raise error
 
 
 def repair(root) -> str:

@@ -39,7 +39,7 @@ Let me run the tests.
 
 - Bash `GITHUB_TOKEN=[REDACTED:github-token] npm test` → ERROR: FAIL tests/motion.spec.ts / Expected 3, received 2 / line3
 - Edit `src/motion.ts` (+3 −2)
-- Agent `Explore tests` → [subagent](2026-10-06_demo_11111111_sub-a1d0ec8d.md): Found 2 flaky tests.
+- Agent `Explore tests` → [subagent](2026-10-06_demo_55555555_sub-e94ad30f.md): Found 2 flaky tests.
 
 Fixed: the timer was not awaited.
 

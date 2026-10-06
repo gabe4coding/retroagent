@@ -51,7 +51,10 @@ def _add(name: str, pattern: str, hints: tuple, flags: int = 0) -> None:
 
 # --- private keys (a full block, then a block that was cut off)
 _add("private-key", _PK_BEGIN + _PK_BODY + "{0,20000}" + _PK_END, ("private key",))
-_add("private-key", _PK_BEGIN + rf"(?={_WS}*(?:{_B64}{_WS}*){{40}})(?:{_B64}|{_WS}){{1,20000}}", ("private key",))
+# A key that lost its END marker is cut only when 40 base64 characters follow in one unbroken run. A line break (and the
+# indentation after it) does not break the run, a space does: prose after a bare BEGIN marker stays.
+_BRK = r"(?:\r?\n|\\[nr])[ \t]*"
+_add("private-key", _PK_BEGIN + rf"(?={_WS}*(?:{_B64}(?:{_BRK})*){{40}})(?:{_B64}|{_WS}){{1,20000}}", ("private key",))
 # --- vendor token formats
 _add("github-token", r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})",
      ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"))
@@ -77,8 +80,10 @@ _add("jwt", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}
 # --- credentials in headers, commands and URLs
 # a bearer value needs a digit, so "Bearer authentication-scheme-middleware" stays
 _add("bearer", r"(?P<keep>\bBearer\s+)(?=[A-Za-z0-9._~+/-]*\d)[A-Za-z0-9._~+/-]{16,}=*", ("bearer",), re.I)
-_add("http-basic", r"(?P<keep>\bBasic\s+)[A-Za-z0-9+/]{12,}={0,2}", ("basic",))
-_add("curl-user", r"""(?P<keep>(?:^|\s)(?:-u|--user)\s+["']?[^\s:"']+:)[^\s"'\\]+""", ("-u",))
+# a Basic value needs a digit, a "+", "/" or "=" (padding): "Basic authentication" is prose
+_add("http-basic", r"(?P<keep>\bBasic\s+)(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{12,}={0,2}", ("basic",))
+# not `date -u +%Y-%m-%d...` (a format) or `docker run -u 1000:1000` (uid:gid)
+_add("curl-user", r"""(?P<keep>(?:^|\s)(?:-u|--user)\s+["']?(?![+%])(?!\d+:)[^\s:"']+:)[^\s"'\\]+""", ("-u",))
 _add("url-credentials", r"""(?P<keep>\b[a-z][a-z0-9+.-]{0,31}://[^\s:/@"']*:)[^\s@/"']+(?=@)""", ("://",), re.I)
 _add("aws-secret",
      rf"(?P<keep>aws_secret_access_key(?:{_Q})?[ \t]*[=:][ \t]*(?:{_Q})?)[A-Za-z0-9/+=]{{40}}",
@@ -92,9 +97,11 @@ _add("secret-assignment",
      r"""(?P<oq>(?P<bs>\\)?(?P<q>["'])))"""
      r"""(?![$<*{\[/~])(?:(?!(?P=q))[^\\\r\n"]|\\(?(bs)(?!(?P=q)))[^\r\n]){4,200}(?=(?(bs)\\)(?P=q))""",
      ("pass", "pwd", "secret"), re.I)
-# An unquoted password of 6 or more characters, digit or not.
+# An unquoted password of 6 or more characters, digit or not. A dotted identifier (process.env.X, req.body.pw) is code
+# that reads a password, not a password: it ends at white space, a quote, a delimiter or a bracket.
+_CODE_REF = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+(?=[\s\"'\\,;)}(\[\]]|$))"
 _add("secret-assignment",
-     rf"""(?P<keep>{_NAME_START}(?:{_PASSWORDS})[ \t]*[=:][ \t]*)(?![$<*{{\[/~"'\\])[^{_VALUE_END}]{{6,}}""",
+     rf"""(?P<keep>{_NAME_START}(?:{_PASSWORDS})[ \t]*[=:][ \t]*)(?![$<*{{\[/~"'\\]){_CODE_REF}[^{_VALUE_END}]{{6,}}""",
      ("pass", "mysql_pwd"), re.I)
 # Any other secret-like name: the value needs 8 or more characters and a digit in its first 256 (the bound
 # keeps the look-ahead, and so the whole scan, linear).
