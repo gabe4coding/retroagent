@@ -314,3 +314,37 @@ def test_list_commands_are_joined_with_spaces(tmp_path):
              codex_call("shell", "c2", {"command": ["bash", "-lc", "git status"], "workdir": CWD}),
              codex_call("exec_command", "c3", {"cmd": "ls -la\nsecond line"})]
     assert [t.arg for t in _tools(_parse(tmp_path, items))] == ["npm run test", "bash -lc git status", "ls -la"]
+
+
+def _agent_msg(author, recipient, text):
+    return ("response_item", {"type": "agent_message", "author": author, "recipient": recipient,
+                              "content": [{"type": "input_text", "text": text}]})
+
+
+def test_subagent_task_from_parent_becomes_the_first_user_turn(tmp_path):
+    from fixtures import T2, codex_msg, write_codex_unit
+    spawn = {"parent_thread_id": T1, "agent_path": "/root/finder", "agent_nickname": "Maxwell"}
+    unit = write_codex_unit(tmp_path, [
+        codex_msg("developer", "rules for subagents"),
+        _agent_msg("/root", "/root/finder", "Find all fetch calls\nin src/"),
+        codex_msg("assistant", "Found 3 calls."),
+    ], tid=T2, meta={"source": {"subagent": {"thread_spawn": spawn}}, "agent_path": "/root/finder"})
+    s = codex.parse_unit(unit, {})
+    assert [t.role for t in s.turns] == ["user", "assistant"]
+    assert s.turns[0].text == "[from /root] Find all fetch calls\nin src/"
+    assert s.title == "Find all fetch calls"
+    assert "response_item:agent_message" not in s.skipped
+
+
+def test_top_level_thread_keeps_reports_from_children_and_ignores_its_own_messages(tmp_path):
+    from fixtures import codex_msg, write_codex_unit
+    unit = write_codex_unit(tmp_path, [
+        codex_msg("user", "Audit the repo"),
+        _agent_msg("/root", "/root/finder", "Find all fetch calls"),
+        _agent_msg("/root/finder", "/root", "Found 3 calls in src/api.ts"),
+        codex_msg("assistant", "Done."),
+    ])
+    s = codex.parse_unit(unit, {})
+    assert [t.role for t in s.turns] == ["user", "user", "assistant"]
+    assert s.turns[1].text == "[from /root/finder] Found 3 calls in src/api.ts"
+    assert s.title == "Audit the repo"

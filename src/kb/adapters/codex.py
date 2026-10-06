@@ -44,6 +44,9 @@ def _segment_order(path: Path):
     return (m.group(1) if m else "", path.name)
 
 
+_FROM_PREFIX = re.compile(r"^\[from [^\]]*\]\s*")
+
+
 def discover(dirs) -> list:
     groups = defaultdict(dict)                  # thread -> {file name: path}
     for d in dirs:
@@ -279,6 +282,12 @@ def parse_unit(unit: Unit, titles=None):
                 parent=parent or _str(meta.get("parent_thread_id")))
     git = meta.get("git") if isinstance(meta.get("git"), dict) else {}
     s.branch = _str(git.get("branch"))
+    me = {_str(meta.get("agent_path")), _str(meta.get("agent_nickname"))}
+    if isinstance(spawn, dict):
+        me |= {_str(spawn.get("agent_path")), _str(spawn.get("agent_nickname"))}
+    me.discard("")
+    if not s.parent:
+        me.add("/root")
     stamps, calls, files = [], {}, []
     current = None
     for r in recs:
@@ -329,6 +338,17 @@ def parse_unit(unit: Unit, titles=None):
                 action = p.get("action")
                 query = action.get("query") if isinstance(action, dict) else ""
                 current.items.append(ToolCall(name="web_search", arg=first_line(str(query or ""), 100)))
+            elif pt == "agent_message":
+                # Messages between agents. Incoming ones (a task from the parent, a report from a child) are
+                # turns; outgoing ones are already visible as the send/spawn tool call.
+                if _str(p.get("author")) in me:
+                    continue
+                content = p.get("content")
+                text = "\n".join(str(c.get("text") or "") for c in content if isinstance(c, dict)).strip() \
+                    if isinstance(content, list) else _str(content).strip()
+                if text:
+                    s.add_turn("user", ts, [clean_user_text(f"[from {_str(p.get('author')) or 'agent'}] {text}")])
+                    current = None
             elif pt in ("reasoning", "compaction"):
                 continue
             else:
@@ -339,7 +359,7 @@ def parse_unit(unit: Unit, titles=None):
     s.ended = max(stamps) if stamps else ""
     s.project = project_from_git_url(_str(git.get("repository_url"))) or project_from_cwd(s.cwd)
     s.files = files
-    s.title = (titles or {}).get(tid) or s.first_prompt() or "(untitled)"
+    s.title = (titles or {}).get(tid) or _FROM_PREFIX.sub("", s.first_prompt()) or "(untitled)"
     s.skipped = dict(skipped)
     return s
 
