@@ -37,6 +37,7 @@ _TABLES = ("sessions_fts", "turns_fts", "sessions", "turns", "dups")
 _COLUMNS = 24
 MIN_PREFIX = 4               # shortest id prefix get() accepts (an exact full id may be shorter)
 SQL_TIMEOUT = 10.0           # seconds a run_sql query may take
+SNIPPET_CHARS = 200          # longest snippet find() returns
 _INT64 = 2 ** 63
 _LEAN = "id, agent, host, project, started, title, parent"
 _SESSION_SNIPPET = "snippet(sessions_fts, -1, '«', '»', '…', 10)"
@@ -115,6 +116,22 @@ def _why(e: Exception) -> str:
     return str(e) if isinstance(e, ValueError) and str(e) else f"{type(e).__name__}: {e}"
 
 
+def _short(snippet: str) -> str:
+    """One line of at most SNIPPET_CHARS characters, still showing the match (a 3,000-character token next to it
+    would fill the screen)."""
+    text = " ".join((snippet or "").split())
+    if len(text) <= SNIPPET_CHARS:
+        return text
+    hit = text.find("«")
+    start = max(hit - SNIPPET_CHARS // 3, 0)           # some context before the match
+    chunk = text[start: start + SNIPPET_CHARS]
+    if start:
+        chunk = "…" + chunk[1:]
+    if start + SNIPPET_CHARS < len(text):
+        chunk = chunk[:-1] + "…"
+    return chunk
+
+
 def fts_queries(text: str) -> list:
     """Safe FTS5 queries for free text: all terms (AND), then any term (OR)."""
     terms = [t.strip(".-/") for t in _TERM.findall(text or "")]
@@ -124,16 +141,72 @@ def fts_queries(text: str) -> list:
     return [" ".join(quoted), " OR ".join(quoted)] if len(quoted) > 1 else quoted
 
 
+def _probe(uri: str) -> sqlite3.Connection:
+    con = sqlite3.connect(uri, uri=True, timeout=10, isolation_level=None)
+    try:
+        con.execute("PRAGMA user_version").fetchone()       # the first read: this is where a WAL database needs its files
+    except BaseException:
+        con.close()
+        raise
+    return con
+
+
+def connect_readonly(path) -> sqlite3.Connection:
+    """A connection that cannot write, for a folder that may be read-only (a sandbox). Raises sqlite3.Error.
+
+    A WAL database needs its -wal and -shm files even to be read. They are gone after the last writer closed it, and a
+    read-only folder cannot get them back. Then no writer is active, so the file is read as it is (immutable)."""
+    uri = Path(path).resolve().as_uri() + "?mode=ro"
+    try:
+        return _probe(uri)
+    except sqlite3.OperationalError:
+        return _probe(uri + "&immutable=1")
+
+
 class Index:
-    def __init__(self, path):
+    def __init__(self, path, readonly: bool = False):
+        """readonly: open an existing index without ever writing (no schema step, update() raises). It sees one
+        snapshot for as long as it is open. Otherwise the file and its folder are created if needed."""
         self.path = Path(path)
+        self.errors = []                       # (path, error) of files skipped by the last update()
+        if readonly:
+            self.db = connect_readonly(self.path)
+            self.db.row_factory = sqlite3.Row
+            self.db.execute("PRAGMA query_only=1")
+            self.db.execute("BEGIN")           # one snapshot for the whole command, even if a sync commits meanwhile
+            self.rebuilt = False
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.path), timeout=10, isolation_level=None)   # explicit transactions
         self.db.row_factory = sqlite3.Row
-        self.errors = []                       # (path, error) of files skipped by the last update()
-        self.rebuilt = self._open_schema()     # True when the tables are new, so update() has to fill them
+        try:
+            self.rebuilt = self._open_schema()     # True when the tables are new, so update() has to fill them
+        except BaseException:
+            self.db.close()
+            raise
+
+    @classmethod
+    def open_current(cls, path):
+        """A read-only Index of an existing index file with this version's schema. None if the file is missing,
+        unreadable or from another version (the caller then has to build it)."""
+        if not Path(path).is_file():
+            return None
+        try:
+            idx = cls(path, readonly=True)
+        except sqlite3.Error:
+            return None
+        try:
+            if idx.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION:
+                return idx
+        except sqlite3.Error:
+            pass
+        idx.close()
+        return None
 
     def _open_schema(self) -> bool:
+        # WAL: a reader never waits for the writer (a sync). The mode is kept in the file; a file system that cannot
+        # do WAL answers with another mode and the index keeps working the old way.
+        self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("BEGIN IMMEDIATE")
         try:
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
@@ -368,7 +441,7 @@ class Index:
             sql, rid = f"SELECT {_SESSION_SNIPPET} FROM sessions_fts WHERE sessions_fts MATCH ? AND rowid = ?", c["srid"]
         snip = self.db.execute(sql, (c["q"], rid)).fetchone()
         row = self.db.execute(f"SELECT {_LEAN} FROM sessions WHERE id=?", (c["id"],)).fetchone()
-        return {**dict(row), "snippet": snip[0] if snip else "", "turn": c["turn"]}
+        return {**dict(row), "snippet": _short(snip[0] if snip else ""), "turn": c["turn"]}
 
     def recent(self, f: Filters = None, limit: int = 20) -> list:
         where, params = self._where(f or Filters(subagents=False))
@@ -406,7 +479,7 @@ def run_sql(path, query: str, limit: int = 200):
     """Read-only SQL (one SELECT/WITH statement, at most SQL_TIMEOUT seconds). Returns (columns, rows)."""
     if not re.match(r"^\s*(select|with)\b", query or "", re.I):
         raise ValueError("only SELECT/WITH queries are allowed")
-    con = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+    con = connect_readonly(path)
     try:
         con.execute("PRAGMA query_only=1")
         deadline = time.monotonic() + SQL_TIMEOUT

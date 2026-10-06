@@ -235,3 +235,54 @@ def test_catalog_survives_a_lone_surrogate_in_front_matter(tmp_path):
     write_catalog(root, "h", {"2026/10"})
     row = json.loads((root / "catalog/h/2026-10.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert row["id"] == "x-1" and row["title"].startswith("half ") and row["title"].endswith(" emoji")
+
+
+def _md(root, name, front, body="body\n"):
+    path = root / "sessions/h/claude/2026/10" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(("---\n" + "".join(f"{k}: {v}\n" for k, v in front.items()) + "---\n\n" + body).encode("utf-8"))
+    return path
+
+
+def test_catalog_reads_a_non_utf8_markdown_file_with_replacement_characters(tmp_path):
+    root = tmp_path / "kb"
+    _md(root, "2026-10-06_demo_00000001.md", {"id": '"ok-1"', "started": '"2026-10-06T10:00:00Z"', "raw": '""'})
+    bad = root / "sessions/h/claude/2026/10/2026-10-06_demo_00000002.md"
+    bad.write_bytes(b'---\nid: "bad-2"\nstarted: "2026-10-06T11:00:00Z"\ntitle: "caf\xe9 \xff"\nraw: ""\n---\n\nbody\n')
+    skipped = write_catalog(root, "h", {"2026/10"})
+    rows = [json.loads(l) for l in (root / "catalog/h/2026-10.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [r["id"] for r in rows] == ["ok-1", "bad-2"] and skipped == []
+    assert rows[1]["title"].startswith("caf") and "�" in rows[1]["title"]
+
+
+def test_catalog_skips_a_file_that_fails_to_parse_and_lists_it(tmp_path):
+    root = tmp_path / "kb"
+    _md(root, "2026-10-06_demo_00000001.md", {"id": '"ok-1"', "started": '"2026-10-06T10:00:00Z"', "raw": '""'})
+    _md(root, "2026-10-06_demo_00000002.md", {"id": '"odd-2"', "files": "5", "started": '"2026-10-06T11:00:00Z"'})
+    (root / "sessions/h/claude/2026/10/2026-10-06_demo_00000003.md").mkdir()          # a folder that looks like a file
+    _md(root, "2026-10-06_demo_00000004.md", {"id": '"ok-4"', "started": '"2026-10-06T12:00:00Z"', "raw": '""'})
+    skipped = write_catalog(root, "h", {"2026/10"})                                   # must not raise
+    rows = [json.loads(l) for l in (root / "catalog/h/2026-10.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [r["id"] for r in rows] == ["ok-1", "ok-4"]
+    assert sorted(p for p, _ in skipped) == ["sessions/h/claude/2026/10/2026-10-06_demo_00000002.md",
+                                             "sessions/h/claude/2026/10/2026-10-06_demo_00000003.md"]
+    assert all(isinstance(why, str) and why and "\n" not in why for _, why in skipped)
+
+
+def test_catalog_keeps_the_old_file_when_every_markdown_of_a_month_is_skipped(tmp_path):
+    root = tmp_path / "kb"
+    _md(root, "2026-10-06_demo_00000001.md", {"id": '"ok-1"', "started": '"2026-10-06T10:00:00Z"', "raw": '""'})
+    write_catalog(root, "h", {"2026/10"})
+    _md(root, "2026-10-06_demo_00000001.md", {"id": '"ok-1"', "files": "5"})
+    assert len(write_catalog(root, "h", {"2026/10"})) == 1
+    assert (root / "catalog/h/2026-10.jsonl").exists()
+    (root / "sessions/h/claude/2026/10/2026-10-06_demo_00000001.md").unlink()
+    assert write_catalog(root, "h", {"2026/10"}) == [] and not (root / "catalog/h/2026-10.jsonl").exists()
+
+
+def test_catalog_sorts_rows_whose_started_is_not_text(tmp_path):
+    root = tmp_path / "kb"
+    _md(root, "2026-10-06_demo_00000001.md", {"id": '"a-1"', "started": "20261006"})
+    _md(root, "2026-10-06_demo_00000002.md", {"id": '"b-2"', "started": '"2026-10-06T11:00:00Z"'})
+    assert write_catalog(root, "h", {"2026/10"}) == []
+    assert len((root / "catalog/h/2026-10.jsonl").read_text(encoding="utf-8").splitlines()) == 2

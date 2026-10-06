@@ -20,6 +20,20 @@ def test_session_turn_helpers():
     assert a.text == "answer"
 
 
+def test_agent_messages_are_not_user_prompts():
+    from kb.model import Turn
+    assert Turn(n=1, role="user", ts="").origin == ""
+    s = Session(id="abc", agent="codex")
+    s.add_turn("user", "2026-10-06T13:00:00Z", ["real prompt"])
+    s.add_turn("user", "2026-10-06T13:00:10Z", ["[from /root/finder] Found 3 calls"], origin="agent")
+    s.add_turn("assistant", "2026-10-06T13:01:00Z", ["answer"])
+    assert [t.origin for t in s.turns] == ["", "agent", ""]
+    assert len(s.turns) == 3 and s.user_turns == 1                      # the agent message is a turn, not a prompt
+    only_agents = Session(id="def", agent="codex")
+    only_agents.add_turn("user", "2026-10-06T13:00:00Z", ["[from /root] task"], origin="agent")
+    assert only_agents.user_turns == 0 and only_agents.first_prompt() == "[from /root] task"   # titles still use it
+
+
 def test_unit_fingerprint_changes_with_content(tmp_path):
     f = tmp_path / "a.jsonl"
     f.write_text("x\n")

@@ -1,10 +1,13 @@
 import json
+import os
+import re
 import sqlite3
 
 import pytest
 from fixtures import AID, SID, T1
 from test_index import OLD_SCHEMA, build_kb, put
 
+from kb import cli
 from kb.cli import main
 from kb.state import State
 from kb.stats import REPORTS
@@ -225,3 +228,161 @@ def test_summary_caps_the_subagent_list(kb_env, capsys, monkeypatch):
     lines = [l for l in out.splitlines() if l.startswith("subagent")]
     assert code == 0 and len(lines) == 11
     assert lines[-1] == "subagents: … and 4 more"
+
+
+# ---- review fixes: read-only readers, one-line errors, short find output
+
+def _freeze(kb_dir):
+    """Read-only like a sandbox: checkpoint the WAL, drop its side files, 0o444 on the files, 0o555 on the folder."""
+    if (kb_dir / "index.sqlite").exists():
+        con = sqlite3.connect(kb_dir / "index.sqlite")
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        con.close()
+    for f in kb_dir.glob("index.sqlite-*"):
+        f.unlink()
+    for f in kb_dir.iterdir():
+        if f.is_file():
+            f.chmod(0o444)
+    kb_dir.chmod(0o555)
+
+
+def _thaw(path):
+    path.chmod(0o755)
+    for f in path.iterdir():
+        if f.is_file():
+            f.chmod(0o644)
+
+
+needs_permissions = pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+
+
+@needs_permissions
+def test_read_commands_work_when_the_kb_folder_is_read_only(kb_env, capsys):
+    run(capsys, "reindex")
+    kb_dir = kb_env / ".kb"
+    _freeze(kb_dir)
+    try:
+        code, out = run(capsys, "find", "flaky", "motion")
+        assert code == 0 and out.startswith("55555555 2026-10-06 claude")
+        code, out = run(capsys, "sql", "SELECT COUNT(*) AS n FROM sessions")
+        assert code == 0 and out.splitlines()[1].strip() == "4"
+        for argv in (("recent",), ("summary", SID[:8]), ("show", SID[:8]), ("stats", "overview"), ("status",)):
+            code, out = run(capsys, *argv)
+            assert code == 0 and "kb:" not in out and "not built" not in out, argv
+        assert [p.name for p in kb_dir.iterdir() if p.is_dir()] == [] and not (kb_dir / "sync-state.json").exists()
+    finally:
+        _thaw(kb_dir)
+
+
+@needs_permissions
+@pytest.mark.parametrize("state", ["no folder", "no index", "old index"])
+def test_read_commands_say_the_index_is_not_built_when_they_cannot_build_it(kb_env, capsys, state):
+    kb_dir = kb_env / ".kb"
+    if state == "old index":
+        kb_dir.mkdir()
+        con = sqlite3.connect(kb_dir / "index.sqlite")
+        con.executescript(OLD_SCHEMA)                                         # user_version 0: not this version's schema
+        con.close()
+    elif state == "no index":
+        kb_dir.mkdir()
+    guarded = kb_dir if kb_dir.exists() else kb_env
+    _freeze(guarded)
+    try:
+        for argv in (("find", "flaky"), ("recent",), ("summary", SID[:8]), ("show", SID[:8]), ("stats", "overview"),
+                     ("sql", "SELECT 1"), ("status",)):
+            code, out = run(capsys, *argv)
+            assert (code, out) == (2, "index not built yet; run: kb reindex\n"), (state, argv, out)
+    finally:
+        _thaw(guarded)
+
+
+def test_a_missing_or_old_index_is_still_built_when_the_folder_is_writable(kb_env, capsys):
+    assert not (kb_env / ".kb").exists()
+    code, out = run(capsys, "find", "flaky", "motion")
+    assert code == 0 and out.startswith("55555555") and (kb_env / ".kb" / "index.sqlite").exists()
+
+
+def test_a_reader_does_not_wait_for_a_sync_that_holds_a_write_transaction(kb_env, capsys):
+    import time
+
+    from kb.index import Index
+    run(capsys, "reindex")
+    writer = Index(kb_env / ".kb" / "index.sqlite")                           # what a running sync looks like to a reader
+    writer.db.execute("BEGIN IMMEDIATE")
+    writer.db.execute("DELETE FROM sessions")
+    try:
+        started = time.monotonic()
+        code, out = run(capsys, "find", "flaky", "motion")
+        assert code == 0 and out.startswith("55555555")
+        code, out = run(capsys, "sql", "SELECT COUNT(*) AS n FROM sessions")
+        assert code == 0 and out.splitlines()[1].strip() == "4"
+        assert time.monotonic() - started < 3
+    finally:
+        writer.db.execute("ROLLBACK")
+        writer.close()
+
+
+def test_a_bad_grep_regex_is_one_line(kb_env, capsys):
+    code, out = run(capsys, "show", SID[:8], "--grep", "(")
+    assert code == 2 and out.startswith("kb: bad --grep regex: ") and len(out.splitlines()) == 1
+    code, out = run(capsys, "show", SID[:8], "--grep", "timer|[")
+    assert code == 2 and out.startswith("kb: bad --grep regex: ")
+
+
+def test_show_says_so_when_the_markdown_file_is_missing(kb_env, capsys):
+    run(capsys, "reindex")
+    md = next((kb_env / "sessions").rglob("*_55555555.md"))
+    md.unlink()
+    code, out = run(capsys, "show", SID[:8])
+    assert code == 2 and out == f"kb: session file missing: {md}; run: kb reindex\n"
+
+
+def test_show_reads_a_markdown_file_that_is_not_utf8(kb_env, capsys):
+    run(capsys, "reindex")
+    md = next((kb_env / "sessions").rglob("*_55555555.md"))
+    md.write_bytes(md.read_bytes().replace(b"Fixed: the timer", b"Fixed: the caf\xe9 timer"))
+    code, out = run(capsys, "show", SID[:8], "--turn", "2")
+    assert code == 0 and "caf" in out and "kb:" not in out
+
+
+@pytest.mark.parametrize("error", [sqlite3.OperationalError("disk I/O error"), OSError(28, "No space left on device"),
+                                   re.error("unbalanced parenthesis"), ValueError("something\nwith lines")])
+def test_unexpected_errors_are_one_line_and_exit_2(kb_env, capsys, monkeypatch, error):
+    def boom(args, cfg):
+        raise error
+    monkeypatch.setattr(cli, "cmd_recent", boom)
+    code, out = run(capsys, "recent")
+    assert code == 2 and out.startswith("kb: ") and len(out.splitlines()) == 1 and "Traceback" not in out
+    assert out == "kb: " + " ".join(str(error).split()) + "\n"
+
+
+def test_reindex_in_a_read_only_folder_fails_with_one_line(kb_env, capsys):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores file permissions")
+    run(capsys, "reindex")
+    _freeze(kb_env / ".kb")
+    try:
+        code, out = run(capsys, "reindex")
+        assert code == 2 and out.startswith("kb: ") and len(out.splitlines()) == 1
+    finally:
+        _thaw(kb_env / ".kb")
+
+
+def test_a_closed_pipe_is_not_an_error(kb_env, capsys, monkeypatch):
+    def gone(args, cfg):
+        raise BrokenPipeError(32, "Broken pipe")
+    monkeypatch.setattr(cli, "cmd_recent", gone)
+    code, out = run(capsys, "recent")
+    assert code == 0 and "kb:" not in out
+
+
+def test_find_output_stays_short_with_a_huge_token(kb_env, capsys):
+    put(kb_env, "h/claude/2026/10/big.md", "99999999-0000-0000-0000-00000000bbbb",
+        turns=("alpha " + "z" * 3000 + " beta needle", "ok"), title="Huge token")
+    code, out = run(capsys, "find", "needle")
+    assert code == 0 and "Huge token" in out and "«needle»" in out
+    assert max(len(line) for line in out.splitlines()) < 330 and len(out) < 700
+    code, out = run(capsys, "find", "needle", "--json")
+    snippets = [h["snippet"] for h in json.loads(out)]
+    assert snippets and all(0 < len(s) <= 200 and s == " ".join(s.split()) for s in snippets)
+    assert len(out) < 1500

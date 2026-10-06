@@ -351,7 +351,8 @@ def parse_unit(unit: Unit, titles=None):
                 text = "\n".join(str(c.get("text") or "") for c in content if isinstance(c, dict)).strip() \
                     if isinstance(content, list) else _str(content).strip()
                 if text:
-                    s.add_turn("user", ts, [clean_user_text(f"[from {_str(p.get('author')) or 'agent'}] {text}")])
+                    s.add_turn("user", ts, [clean_user_text(f"[from {_str(p.get('author')) or 'agent'}] {text}")],
+                               origin="agent")
                     current = None
             elif pt in ("reasoning", "compaction"):
                 continue

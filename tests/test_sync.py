@@ -500,12 +500,28 @@ def test_summary_budget_stops_the_pass(hosts, monkeypatch):
     monkeypatch.setattr(sync_mod, "SUMMARY_BUDGET_S", 150)
     clock = FakeClock()
     runner = FakeRunner(tick=lambda: clock.advance(100))
-    r = run_sync(a, now=True, runner=runner, clock=clock, summary_cap=None)
+    r = run_sync(a, now=True, runner=runner, clock=clock, summary_cap=10)      # a capped run keeps the wall-clock budget
     assert len(runner.calls) == 2 and r.summarized == 2                        # t=0 and t=100 run; t=200 is over budget
     clock2 = FakeClock()
     runner = FakeRunner(tick=lambda: clock2.advance(100))
-    run_sync(a, now=True, runner=runner, clock=clock2, summary_cap=None)       # the next run starts a fresh budget
+    run_sync(a, now=True, runner=runner, clock=clock2, summary_cap=10)         # the next run starts a fresh budget
     assert len(runner.calls) == 2
+
+
+def test_backfill_without_a_cap_ignores_the_wall_clock_budget(hosts, monkeypatch):
+    """Item 2: `kb backfill --summaries` (summary_cap=None) must not stop after SUMMARY_BUDGET_S."""
+    a, _ = hosts
+    _add_sessions(a, 6)
+    monkeypatch.setattr(sync_mod, "SUMMARY_BUDGET_S", 150)
+    clock = FakeClock()
+    runner = FakeRunner(tick=lambda: clock.advance(100))                       # 100 s per call: far past the budget
+    r = run_sync(a, now=True, runner=runner, clock=clock, summary_cap=None)
+    assert len(runner.calls) == r.summarized and r.summarized >= 6             # every session got its call
+    idx = Index(a.kb_dir / "index.sqlite")
+    try:
+        assert sync_mod.needs_summary(idx, a.host) == []
+    finally:
+        idx.close()
 
 
 def test_summaries_only_when_new_or_grown_by_four_turns(hosts):
@@ -775,3 +791,94 @@ def test_a_quarantined_tracked_file_does_not_block_the_pull(hosts, gitleaks):
     idx = Index(a.kb_dir / "index.sqlite")
     assert {x[0] for x in idx.db.execute("SELECT DISTINCT host FROM sessions")} == {"host-a", "host-b"}
     idx.close()
+
+
+# ================================================================ review fixes: lock message, agent messages, dry-run mix
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_sync_says_so_and_exits_0_when_another_sync_runs(hosts, capsys, dry_run):
+    a, _ = hosts
+    lock = Lock(a.kb_dir / "lock")
+    assert lock.acquire()
+    try:
+        args = argparse.Namespace(now=True, dry_run=dry_run, sample=0, no_summaries=True)
+        assert cmd_sync(args, a) == 0
+    finally:
+        lock.release()
+    assert capsys.readouterr().out == "another sync is running\n"
+
+
+def test_agent_messages_do_not_count_as_prompts_or_trigger_summaries(tmp_path):
+    from collections import Counter
+
+    from fixtures import codex_msg, write_codex_unit
+
+    from kb.adapters import codex
+    from kb.index import run_sql
+    from kb.stats import REPORTS
+    from kb.store import write_session
+
+    def report(author, text):
+        return ("response_item", {"type": "agent_message", "author": author, "recipient": "/root",
+                                  "content": [{"type": "input_text", "text": text}]})
+
+    unit = write_codex_unit(tmp_path / "src", [
+        codex_msg("user", "Audit the repo"),
+        report("/root/finder", "Found 3 calls"),
+        report("/root/mapper", "Mapped the modules"),
+        codex_msg("assistant", "Done."),
+    ])
+    root = tmp_path / "kb"
+    write_session(root, "h", codex.parse_unit(unit, {}), Counter())
+    idx = Index(root / ".kb" / "index.sqlite")
+    try:
+        idx.update(root)
+        row = idx.db.execute("SELECT turns, user_turns FROM sessions").fetchone()
+        assert (row["turns"], row["user_turns"]) == (4, 1)                     # four turns, one human prompt
+        assert sync_mod.needs_summary(idx, "h") == []                          # one prompt is not enough for a summary
+    finally:
+        idx.close()
+    cols, rows = run_sql(root / ".kb" / "index.sqlite", REPORTS["overview"])
+    assert dict(zip(cols, rows[0]))["prompts"] == 1
+
+
+def _dry_run_sample_ids(cfg):
+    from kb.distill import split_front_matter
+    base = cfg.kb_dir / "dry-run" / "sessions"
+    return {split_front_matter(p.read_text(encoding="utf-8"))[0]["id"] for p in base.rglob("*.md")} if base.exists() else set()
+
+
+def _mixed_host(tmp_path):
+    """Claude: SID (newest of the two with subagents), SID2 (older, with subagents), four newer ones without.
+    Codex: T1 (top level) and T2 (its subagent). The four plain Claude sessions are newer than everything else."""
+    from fixtures import claude_main, write_jsonl
+    src = tmp_path / "src"
+    projects = make_claude_tree(src, sid=SID, aid=AID)
+    sid2, aid2 = "22222222-3333-4444-5555-666666666666", "b2b2b2b2b2b2b2b2b"
+    make_claude_tree(src, sid=sid2, aid=aid2)
+    age([p for p in Path(projects).rglob("*.jsonl") if sid2 in str(p)], 7200)
+    plain = []
+    for i in range(4):
+        sid = f"0000000{i}-2222-3333-4444-{i + 1:012x}"
+        proj = next(Path(projects).iterdir())
+        path = write_jsonl(proj / f"{sid}.jsonl", claude_main(sid, f"c{i:016x}"))
+        age([path], 1000 + 100 * i)                                           # plain[0] is the newest of all
+        plain.append(sid)
+    sessions, home = make_codex_tree(src)
+    return make_config(tmp_path / "kb", "h", projects, sessions, home), plain, sid2
+
+
+def test_dry_run_sample_is_a_mix_of_kinds_not_just_the_newest(tmp_path):
+    cfg, plain, sid2 = _mixed_host(tmp_path)
+    report = run_sync(cfg, dry_run=True, sample=3)
+    assert report.sessions == 8 and report.errors == []
+    # the three kinds win over four newer plain Claude sessions: newest Claude with subagents (its subagent file goes
+    # with it), Codex top level, Codex subagent
+    assert _dry_run_sample_ids(cfg) == {SID, AID, T1, T2}
+
+
+def test_dry_run_sample_fills_up_with_the_newest_others(tmp_path):
+    cfg, plain, sid2 = _mixed_host(tmp_path)
+    run_sync(cfg, dry_run=True, sample=5)
+    assert _dry_run_sample_ids(cfg) == {SID, AID, T1, T2, plain[0], plain[1]}
+    assert not (cfg.root / "sessions").exists()                                # still nothing outside .kb/

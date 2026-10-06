@@ -15,9 +15,11 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import shutil
 import sqlite3
+import sys
 
 from kb import config as config_mod
 from kb.distill import parse_markdown
@@ -52,10 +54,27 @@ def _row(r: dict) -> str:
             f"{(r.get('project') or ''):<18.18} {sub}{(r.get('title') or '')[:70]}")
 
 
+class IndexNotBuilt(Exception):
+    pass
+
+
 def _open_index(cfg) -> Index:
-    idx = Index(cfg.kb_dir / "index.sqlite")
-    if idx.rebuilt:                         # new file, or dropped because another kb version wrote it
-        idx.update(cfg.root)
+    """The index for a read command. It is opened read-only, so reading works where nothing can be written (a sandbox)
+    and never waits for a running sync. Only a missing or outdated index is built, which needs write access."""
+    path = cfg.kb_dir / "index.sqlite"
+    idx = Index.open_current(path)
+    if idx is not None:
+        return idx
+    try:
+        idx = Index(path)                       # new file, or dropped because another kb version wrote it
+    except (sqlite3.Error, OSError):            # the folder or the file cannot be written
+        raise IndexNotBuilt("index not built yet; run: kb reindex") from None
+    try:
+        if idx.rebuilt:
+            idx.update(cfg.root)
+    except BaseException:
+        idx.close()
+        raise
     return idx
 
 
@@ -97,9 +116,8 @@ def cmd_find(args, cfg) -> int:
         print("no matches")
         return 1
     for h in hits:
-        snip = " ".join((h.get("snippet") or "").split())
         turn = f" [turn {h['turn']}]" if h.get("turn") else ""
-        print(f"{_row(h)} · {snip}{turn}")
+        print(f"{_row(h)} · {h.get('snippet') or ''}{turn}")
     return 0
 
 
@@ -168,12 +186,24 @@ def select_turns(turns: list, turn=None, around: int = 0, grep=None) -> list:
 
 
 def cmd_show(args, cfg) -> int:
+    if args.grep:
+        try:
+            re.compile(args.grep, re.I)
+        except re.error as e:
+            print(f"kb: bad --grep regex: {e}")
+            return 2
     idx = _open_index(cfg)
     r = _get(idx, args.id)
     idx.close()
     if r is None:
         return 1
-    _, turns = parse_markdown((cfg.root / r["md_path"]).read_text(encoding="utf-8"))
+    path = cfg.root / r["md_path"]
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        print(f"kb: session file missing: {path}; run: kb reindex")
+        return 2
+    _, turns = parse_markdown(text)
     out = f"{short_id(r['id'])} · {r['title']} · {len(turns)} turns\n"
     for t in select_turns(turns, args.turn, args.around, args.grep):
         out += f"\n## [{t['n']}] {t['role']} · {t['time']}\n{t['text']}\n"
@@ -221,6 +251,9 @@ def cmd_sync(args, cfg) -> int:
     from kb.sync import now_iso, run_sync
     rep = run_sync(cfg, now=args.now, dry_run=args.dry_run, sample=args.sample,
                    summary_cap=0 if args.no_summaries else "default")
+    if rep.locked_out:                      # the hook starts syncs freely: a second one is not an error
+        print("another sync is running")
+        return 0
     if args.dry_run:
         print(dry_run_text(rep))
         return 0
@@ -243,14 +276,14 @@ def cmd_status(args, cfg) -> int:
     from kb.state import State
     from kb.sync import needs_summary, pending_units
     st = State.load(cfg.kb_dir / "sync-state.json")
+    idx = _open_index(cfg)                  # first: without an index the command prints that one line and nothing else
+    backlog = len(needs_summary(idx, cfg.host))
+    idx.close()
     print(f"root: {cfg.root} · host: {cfg.host}")
     print(f"last sync: {st.last_ok or 'never'}" + (f" · {st.last_result}" if st.last_result else ""))
     if st.last_error:
         print(f"last error: {st.last_error}")
     print(f"pending sessions: {len(pending_units(cfg, st, now=True))}")
-    idx = _open_index(cfg)
-    backlog = len(needs_summary(idx, cfg.host))
-    idx.close()
     print(f"summary backlog: {backlog}")
     print("gitleaks: installed" if shutil.which("gitleaks") else "gitleaks: not installed (built-in redaction only)")
     if st.quarantine:
@@ -325,12 +358,14 @@ def build_parser() -> argparse.ArgumentParser:
     sy = sub.add_parser("sync", help="sync local sessions into the KB, commit, push")
     sy.add_argument("--now", action="store_true", help="ignore the quiet period")
     sy.add_argument("--dry-run", action="store_true", help="write nothing outside .kb/; print counts")
-    sy.add_argument("--sample", type=int, default=0, help="with --dry-run: write N sessions to .kb/dry-run/")
+    sy.add_argument("--sample", type=int, default=0,
+                    help="with --dry-run: write N sessions to .kb/dry-run/ (the newest Claude session with subagents, "
+                         "the newest Codex top-level and subagent session, then the newest others)")
     sy.add_argument("--no-summaries", action="store_true")
     sy.set_defaults(func=cmd_sync)
 
     b = sub.add_parser("backfill", help="process every pending session now")
-    b.add_argument("--summaries", action="store_true", help="also summarize everything (no per-run cap)")
+    b.add_argument("--summaries", action="store_true", help="also summarize everything (no per-run cap, no time limit)")
     b.set_defaults(func=cmd_backfill)
 
     sub.add_parser("status", help="last sync, pending sessions, summary backlog").set_defaults(func=cmd_status)
@@ -344,4 +379,17 @@ def main(argv=None) -> int:
     if not getattr(args, "func", None):
         parser.print_help()
         return 0
-    return args.func(args, config_mod.load())
+    try:
+        return args.func(args, config_mod.load())
+    except IndexNotBuilt as e:
+        print(e)
+        return 2
+    except BrokenPipeError:                     # `kb find … | head`: the reader left, which is not an error
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())     # no second error when Python flushes
+        except (OSError, ValueError):
+            pass
+        return 0
+    except (sqlite3.Error, OSError, re.error, ValueError) as e:
+        print("kb: " + " ".join(str(e).split()))
+        return 2

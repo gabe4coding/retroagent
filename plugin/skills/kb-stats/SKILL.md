@@ -6,7 +6,7 @@ description: Use when the user asks for numbers about their own Claude Code or C
 # kb-stats
 
 Ready-made reports (fast, small output):
-- `kb stats overview` — sessions, turns, prompts and date range per agent
+- `kb stats overview` — sessions, turns, prompts (typed by the user; messages from other agents do not count) and date range per agent
 - `kb stats projects` — top projects
 - `kb stats agents` — sessions per agent and model
 - `kb stats outcomes` — done / partial / abandoned / question

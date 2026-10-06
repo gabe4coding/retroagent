@@ -494,3 +494,104 @@ def test_a_short_id_and_an_id_prefix_that_hit_the_same_session_are_not_ambiguous
     put(root, "h/a.md", "abcd1234abcd1234")                                     # short = "abcd1234", id starts with it too
     idx.update(root)
     assert idx.get("abcd1234")["id"] == "abcd1234abcd1234"
+
+
+# ---- read-only readers, WAL, short snippets
+
+def _freeze(kb_dir, keep_wal_files=True):
+    """Make a folder read-only like a sandbox does: checkpoint the WAL, 0o444 on the files, 0o555 on the folder."""
+    con = sqlite3.connect(kb_dir / "index.sqlite")
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    con.close()
+    if not keep_wal_files:                                          # a clean close deletes them on most builds of SQLite
+        for suffix in ("-wal", "-shm"):
+            if (kb_dir / f"index.sqlite{suffix}").exists():
+                (kb_dir / f"index.sqlite{suffix}").unlink()
+    for f in kb_dir.iterdir():
+        if f.is_file():
+            f.chmod(0o444)
+    kb_dir.chmod(0o555)
+
+
+def _thaw(kb_dir):
+    kb_dir.chmod(0o755)
+    for f in kb_dir.iterdir():
+        if f.is_file():
+            f.chmod(0o644)
+
+
+def test_the_writer_switches_the_index_to_wal(empty):
+    _, idx = empty
+    assert idx.db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_open_current_gives_a_read_only_index_only_for_a_current_file(tmp_path, kb):
+    root, idx = kb
+    path = root / ".kb" / "index.sqlite"
+    ro = Index.open_current(path)
+    try:
+        assert ro is not None and ro.rebuilt is False and ro.find("flaky motion")[0]["id"] == SID
+        assert ro.get(SID[:8])["title"] == "Fix flaky motion test" and len(ro.recent(Filters(subagents=False))) == 2
+        with pytest.raises(sqlite3.OperationalError):               # it cannot write, not even to update itself
+            ro.update(root)
+    finally:
+        ro.close()
+    assert Index.open_current(tmp_path / "missing" / "index.sqlite") is None            # no file
+    old = tmp_path / "old.sqlite"
+    con = sqlite3.connect(old)
+    con.executescript(OLD_SCHEMA + "PRAGMA user_version=1;")
+    con.close()
+    assert Index.open_current(old) is None                                              # another schema version
+    junk = tmp_path / "junk.sqlite"
+    junk.write_bytes(b"this is not a database" * 100)
+    assert Index.open_current(junk) is None                                             # not a database at all
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+@pytest.mark.parametrize("keep_wal_files", [True, False])
+def test_a_read_only_folder_can_still_be_read(tmp_path, kb, keep_wal_files):
+    root, idx = kb
+    idx.close()
+    kb_dir = root / ".kb"
+    _freeze(kb_dir, keep_wal_files)
+    try:
+        ro = Index.open_current(kb_dir / "index.sqlite")
+        try:
+            assert ro is not None and ro.find("flaky motion")[0]["id"] == SID
+        finally:
+            ro.close()
+        cols, rows = run_sql(kb_dir / "index.sqlite", "SELECT COUNT(*) AS n FROM sessions")
+        assert rows[0][0] == 4
+    finally:
+        _thaw(kb_dir)
+
+
+def test_a_reader_is_not_blocked_by_a_writer_in_a_write_transaction(kb):
+    root, writer = kb
+    path = root / ".kb" / "index.sqlite"
+    writer.db.execute("BEGIN IMMEDIATE")
+    writer.db.execute("DELETE FROM turns")
+    writer.db.execute("DELETE FROM sessions")                                           # not committed yet
+    try:
+        started = time.monotonic()
+        ro = Index.open_current(path)
+        try:
+            assert ro.find("flaky motion")[0]["id"] == SID and ro.get(SID[:8]) is not None     # the last committed state
+        finally:
+            ro.close()
+        assert run_sql(path, "SELECT COUNT(*) FROM sessions")[1][0][0] == 4
+        assert time.monotonic() - started < 3                                           # no waiting for the writer
+    finally:
+        writer.db.execute("ROLLBACK")
+
+
+def test_a_snippet_is_one_line_of_at_most_200_characters(empty):
+    root, idx = empty
+    put(root, "h/a.md", "big-1", turns=("alpha " + "z" * 3000 + " beta needle", "ok"))
+    put(root, "h/b.md", "multi-2", turns=("line one\n\n   line   two\tneedle\nline three", "ok"))
+    idx.update(root)
+    for sid in ("big-1", "multi-2"):
+        hit = next(h for h in idx.find("needle") if h["id"] == sid)
+        snip = hit["snippet"]
+        assert 0 < len(snip) <= 200 and "needle" in snip.lower() and "«" in snip, sid
+        assert snip == " ".join(snip.split()), sid                                      # whitespace collapsed

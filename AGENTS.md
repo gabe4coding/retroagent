@@ -5,11 +5,13 @@ Personal knowledge base of Claude Code and Codex sessions, synced from every mac
 ## Find information (cheap first)
 1. `kb find "<words>" [--project P] [--agent claude|codex] [--since 30d]` — one line per session.
 2. `kb summary <short>` — summary, decisions, files, PRs, subagents.
-3. `kb show <short> --turn N --around 1` or `--grep PATTERN` — only the part you need.
+3. `kb show <short> --turn N --around 1` or `--grep REGEX` (a regular expression) — only the part you need.
 
 `<short>` is the 8-character id shown in every list: the last 8 characters of the session id, without dashes (the first 8 of a Codex id are a timestamp).
 
 Analytics: `kb stats <report>`, `kb sql "SELECT …"`. Help: `kb --help`.
+
+Reading needs no write access, except to build a missing or outdated index. If `kb` says `index not built yet; run: kb reindex`, run `kb reindex` once from a shell that can write to the KB folder. `kb sync --now --no-summaries` brings the KB up to date fast.
 
 ## Hard rules
 - Use `kb` first. Never `cat` or read whole files in `sessions/`.

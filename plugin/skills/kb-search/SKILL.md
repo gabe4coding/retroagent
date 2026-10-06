@@ -12,10 +12,11 @@ description: Use when the user asks about past work in any Claude Code or Codex 
    - Use distinctive words: error text, file names, service or tool names. Add filters when you know them.
    - No match: try synonyms or fewer words. `kb recent --project NAME` lists the latest sessions.
 2. **Summarize:** `kb summary <short>` on the 1–3 best hits: summary, decisions, outcome, files, PRs, subagents.
-3. **Read only what you need:** `kb show <short> --turn N --around 1` or `kb show <short> --grep "pattern"`. Output stops at `--max-chars` (default 4000).
+3. **Read only what you need:** `kb show <short> --turn N --around 1` or `kb show <short> --grep "regex"`. `--grep` takes a regular expression (case-insensitive, up to 5 matching turns): write `\(` for a literal parenthesis. Output stops at `--max-chars` (default 4000).
 
 Rules:
 - Never `cat`, `Read` or `rg` whole files under `sessions/` or `raw/`. Use `kb`.
 - When you report a finding, cite it as `short [turn N]` so the user can open it.
-- The KB lags a little: a session is synced after it has been idle 15 minutes. `kb sync --now` syncs now. `kb status` shows the last sync and its error, if any.
+- The KB lags a little: a session is synced after it has been idle 15 minutes. `kb sync --now --no-summaries` syncs now and is fast (plain `kb sync --now` also writes summaries and can take minutes). `kb status` shows the last sync and its error, if any.
+- Reading needs no write access, except to build a missing or outdated index. If `kb` answers `index not built yet; run: kb reindex`, run that once from a shell that can write to the KB folder.
 - All flags: `kb <command> --help`.

@@ -25,6 +25,7 @@ class Turn:
     role: str                     # user | assistant
     ts: str
     items: list = field(default_factory=list)   # str (text) or ToolCall, in order
+    origin: str = ""              # "" = typed by the user; "agent" = a message from another agent (Codex)
 
     @property
     def text(self) -> str:
@@ -52,10 +53,11 @@ class Session:
 
     @property
     def user_turns(self) -> int:
-        return sum(1 for t in self.turns if t.role == "user")
+        """Human prompts. A user turn that came from another agent (origin set) is not one."""
+        return sum(1 for t in self.turns if t.role == "user" and not t.origin)
 
-    def add_turn(self, role: str, ts: str, items=None) -> Turn:
-        t = Turn(n=len(self.turns) + 1, role=role, ts=ts, items=list(items or []))
+    def add_turn(self, role: str, ts: str, items=None, origin: str = "") -> Turn:
+        t = Turn(n=len(self.turns) + 1, role=role, ts=ts, items=list(items or []), origin=origin)
         self.turns.append(t)
         return t
 

@@ -350,6 +350,26 @@ def test_top_level_thread_keeps_reports_from_children_and_ignores_its_own_messag
     assert s.title == "Audit the repo"
 
 
+def test_incoming_agent_messages_are_marked_and_not_counted_as_user_prompts(tmp_path):
+    from fixtures import T2, codex_msg, write_codex_unit
+    spawn = {"parent_thread_id": T1, "agent_path": "/root/finder"}
+    sub = codex.parse_unit(write_codex_unit(tmp_path / "a", [
+        _agent_msg("/root", "/root/finder", "Find all fetch calls"),
+        codex_msg("assistant", "Found 3 calls."),
+    ], tid=T2, meta={"source": {"subagent": {"thread_spawn": spawn}}, "agent_path": "/root/finder"}), {})
+    assert [(t.role, t.origin) for t in sub.turns] == [("user", "agent"), ("assistant", "")]
+    assert sub.user_turns == 0
+    top = codex.parse_unit(write_codex_unit(tmp_path / "b", [
+        codex_msg("user", "Audit the repo"),
+        _agent_msg("/root/finder", "/root", "Found 3 calls in src/api.ts"),
+        _agent_msg("/root/mapper", "/root", "Mapped the modules"),
+        codex_msg("assistant", "Done."),
+        codex_msg("user", "[from the team] please also check tests/"),     # a human who types this prefix
+    ]), {})
+    assert [t.origin for t in top.turns] == ["", "agent", "agent", "", ""]
+    assert len(top.turns) == 5 and top.user_turns == 2                     # the two real prompts only
+
+
 def test_exec_wrapper_shows_the_real_command_or_tool(tmp_path):
     from fixtures import codex_call, codex_msg, write_codex_unit
     unit = write_codex_unit(tmp_path, [
