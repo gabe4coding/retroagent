@@ -131,3 +131,32 @@ def test_clean_user_text_drops_ci_monitor_events():
            " now")
     assert clean_user_text(raw) == "Check the build  now"
     assert clean_user_text("<ci-monitor-event>x</ci-monitor-event>") == ""
+
+
+GH = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+
+
+def test_first_line_redacts_before_cutting():
+    out = first_line("x " * 75 + GH + " tail", 160)
+    assert "ghp_" not in out and GH[4:14] not in out and out.startswith("x x x")
+    assert first_line("deploy with " + GH, 200) == "deploy with [REDACTED:github-token]"
+    assert first_line(None) == ""
+
+
+def test_head_lines_redacts_before_cutting():
+    out = head_lines("a " * 145 + GH + " tail\nsecond\nthird", 3, 300)
+    assert "ghp_" not in out and GH[4:14] not in out and out.startswith("a a a")
+    assert head_lines("token ok\nexport T=" + GH + "\nlast", 3) == "token ok / export T=[REDACTED:github-token] / last"
+
+
+def test_head_lines_redacts_a_key_that_spans_lines():
+    body = "QUJD" * 16
+    text = "error\n-----BEGIN PRIVATE KEY-----\n" + body + "\n" + body + "\n-----END PRIVATE KEY-----\nafter\nmore"
+    assert head_lines(text, 3) == "error / [REDACTED:private-key] / after"
+
+
+def test_clean_user_text_redacts_before_capping():
+    out = clean_user_text("y " * 1995 + GH + " tail words")
+    assert "ghp_" not in out and GH[4:14] not in out
+    assert out.endswith("chars cut]") and out.startswith("y y y")
+    assert clean_user_text("my token is " + GH) == "my token is [REDACTED:github-token]"

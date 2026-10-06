@@ -26,7 +26,8 @@ def test_write_session_creates_md_and_raw(tmp_path):
     assert "[subagent](2026-10-06_demo_11111111_sub-a1d0ec8d.md)" in md
     assert (root / f"raw/h/claude/2026/10/{SID}.jsonl.gz").exists()
     assert (root / f"raw/h/claude/2026/10/{SID}__sub-{AID}.jsonl.gz").exists()
-    assert red["github-token"] >= 2 and sizes["md"] > 0 and sizes["raw"] > 0
+    # the token in the tool call is now redacted inside first_line (before the cut), so only the raw copy counts it here
+    assert red["github-token"] >= 1 and sizes["md"] > 0 and sizes["raw"] > 0
 
 
 def test_summary_fields_survive_rewrite_and_move(tmp_path):

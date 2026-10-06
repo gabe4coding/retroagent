@@ -1,4 +1,4 @@
-from fixtures import AID, GH_TOKEN, SID, make_claude_tree
+from fixtures import AID, SID, make_claude_tree
 
 from kb.adapters import claude
 from kb.distill import render_markdown
@@ -37,7 +37,7 @@ Fix the flaky test in tests/motion.spec.ts
 
 Let me run the tests.
 
-- Bash `GITHUB_TOKEN=GHTOKEN npm test` → ERROR: FAIL tests/motion.spec.ts / Expected 3, received 2 / line3
+- Bash `GITHUB_TOKEN=[REDACTED:github-token] npm test` → ERROR: FAIL tests/motion.spec.ts / Expected 3, received 2 / line3
 - Edit `src/motion.ts` (+3 −2)
 - Agent `Explore tests` → [subagent](2026-10-06_demo_11111111_sub-a1d0ec8d.md): Found 2 flaky tests.
 
@@ -50,7 +50,7 @@ Fixed: the timer was not awaited.
 ## [4] assistant · 13:11
 
 Retro done.
-""".replace("GHTOKEN", GH_TOKEN)
+"""
 
 
 def _parse(tmp_path):

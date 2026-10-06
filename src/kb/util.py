@@ -5,7 +5,10 @@ import datetime as _dt
 import os
 import re
 import tempfile
+from itertools import islice
 from pathlib import Path
+
+from kb.redact import redact
 
 _FRAC = re.compile(r"\.\d+")
 
@@ -37,15 +40,23 @@ def hhmm(iso: str) -> str:
 
 
 def first_line(text: str, limit: int = 160) -> str:
+    """First non-empty line, redacted, then cut. Redaction comes first: a secret cut in half no longer matches."""
     for line in (text or "").splitlines():
         line = line.strip()
         if line:
+            line = redact(line)[0]
             return line if len(line) <= limit else line[: limit - 1] + "…"
     return ""
 
 
+_HEAD_SCAN = 50          # lines redacted together, so a secret that spans lines (a private key) is seen whole
+
+
 def head_lines(text: str, n: int = 3, limit: int = 300) -> str:
-    lines = [l.strip() for l in (text or "").splitlines() if l.strip()][:n]
+    """First n non-empty lines joined with ' / ', redacted, then cut."""
+    stripped = (l.strip() for l in (text or "").splitlines())
+    head = list(islice((l for l in stripped if l), max(n, _HEAD_SCAN)))
+    lines = [l.strip() for l in redact("\n".join(head))[0].splitlines() if l.strip()][:n]
     out = " / ".join(lines)
     return out if len(out) <= limit else out[: limit - 1] + "…"
 
@@ -96,7 +107,7 @@ USER_TEXT_LIMIT = 4000
 
 
 def clean_user_text(text: str) -> str:
-    """Remove harness wrappers from a user prompt and cap its length."""
+    """Remove harness wrappers from a user prompt, redact secrets, and cap its length."""
     text = text or ""
     name = _CMD_NAME.search(text)
     if name:
@@ -109,6 +120,7 @@ def clean_user_text(text: str) -> str:
     text = _DROP_BLOCKS.sub("", text)
     text = "\n".join(line.rstrip() for line in text.splitlines())
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = redact(text)[0]                      # before the cap: a secret cut in half survives
     if len(text) > USER_TEXT_LIMIT:
         text = text[:USER_TEXT_LIMIT] + f"\n[… {len(text) - USER_TEXT_LIMIT} chars cut]"
     return text
