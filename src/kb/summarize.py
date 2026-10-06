@@ -47,7 +47,7 @@ def build_input(md: str, limit: int = INPUT_LIMIT) -> str:
 
 def command(model: str) -> list:
     return ["claude", "-p", USER_PROMPT, "--model", model, "--no-session-persistence",
-            "--settings", json.dumps({"disableAllHooks": True}),
+            "--settings", json.dumps({"disableAllHooks": True, "alwaysThinkingEnabled": False}),
             "--strict-mcp-config", "--disable-slash-commands", "--tools", "",
             "--system-prompt", SYSTEM_PROMPT, "--output-format", "json"]
 

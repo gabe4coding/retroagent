@@ -40,7 +40,7 @@ def test_command_is_lean_and_has_no_bare():
     for flag in ("--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands", "--system-prompt"):
         assert flag in cmd
     assert "--bare" not in cmd
-    assert json.loads(cmd[cmd.index("--settings") + 1]) == {"disableAllHooks": True}
+    assert json.loads(cmd[cmd.index("--settings") + 1]) == {"disableAllHooks": True, "alwaysThinkingEnabled": False}
     assert cmd[cmd.index("--tools") + 1] == ""
     assert cmd[cmd.index("--model") + 1] == "haiku"
 
