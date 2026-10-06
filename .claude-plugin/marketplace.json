@@ -1,0 +1,11 @@
+{
+  "name": "sessions-kb",
+  "owner": { "name": "gabe4coding" },
+  "plugins": [
+    {
+      "name": "sessions-kb",
+      "source": "./plugin",
+      "description": "Search and analyze your Claude Code and Codex sessions, synced to a private KB repo."
+    }
+  ]
+}
