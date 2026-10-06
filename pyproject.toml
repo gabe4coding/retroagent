@@ -1,0 +1,10 @@
+[project]
+name = "sessions-kb"
+version = "0.1.0"
+description = "Personal knowledge base of Claude Code and Codex sessions"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
