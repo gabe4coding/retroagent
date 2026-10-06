@@ -1,8 +1,9 @@
 import json
+import sqlite3
 
 import pytest
 from fixtures import SID, T1
-from test_index import build_kb
+from test_index import OLD_SCHEMA, build_kb
 
 from kb.cli import main
 from kb.stats import REPORTS
@@ -81,3 +82,28 @@ def test_reindex_and_status(kb_env, capsys):
 def test_help(capsys):
     assert main([]) == 0
     assert "kb find" in capsys.readouterr().out
+
+
+def test_find_rebuilds_an_index_written_by_an_older_schema(kb_env, capsys):
+    path = kb_env / ".kb" / "index.sqlite"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path)
+    con.executescript(OLD_SCHEMA)
+    con.close()
+    code, out = run(capsys, "find", "flaky", "motion")
+    assert code == 0 and out.startswith("11111111 2026-10-06 claude")
+
+
+def test_find_fts_reports_a_bad_query(kb_env, capsys):
+    code, out = run(capsys, "find", "--fts", '"unterminated')
+    assert code == 2 and out.startswith("bad FTS query")
+    code, out = run(capsys, "find", "--fts", "title:flaky", "--json")
+    assert code == 0 and json.loads(out)[0]["id"] == SID
+    assert set(json.loads(out)[0]) == {"id", "agent", "host", "project", "started", "title", "parent", "snippet", "turn"}
+
+
+def test_sql_reports_multiple_statements_and_bad_ids(kb_env, capsys):
+    code, out = run(capsys, "sql", "SELECT 1; SELECT 2")
+    assert code == 2 and "one SQL statement" in out
+    code, out = run(capsys, "summary", "")
+    assert code == 1 and "empty id" in out

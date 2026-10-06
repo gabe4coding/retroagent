@@ -47,10 +47,8 @@ def _row(r: dict) -> str:
 
 
 def _open_index(cfg) -> Index:
-    path = cfg.kb_dir / "index.sqlite"
-    fresh = not path.exists()
-    idx = Index(path)
-    if fresh:
+    idx = Index(cfg.kb_dir / "index.sqlite")
+    if idx.rebuilt:                         # new file, or dropped because another kb version wrote it
         idx.update(cfg.root)
     return idx
 
@@ -67,6 +65,9 @@ def _get(idx: Index, prefix: str):
     except AmbiguousId as e:
         print("ambiguous id, candidates: " + " ".join(i[:12] for i in e.args[0]))
         return None
+    except ValueError as e:
+        print(str(e))
+        return None
     if r is None:
         print(f"no session with id {prefix}")
     return r
@@ -74,8 +75,13 @@ def _get(idx: Index, prefix: str):
 
 def cmd_find(args, cfg) -> int:
     idx = _open_index(cfg)
-    hits = idx.find(" ".join(args.query), _filters(args, not args.no_subagents), args.limit, raw=args.fts)
-    idx.close()
+    try:
+        hits = idx.find(" ".join(args.query), _filters(args, not args.no_subagents), args.limit, raw=args.fts)
+    except ValueError as e:
+        print(str(e))
+        return 2
+    finally:
+        idx.close()
     if args.json:
         print(json.dumps(hits, ensure_ascii=False))
         return 0 if hits else 1
