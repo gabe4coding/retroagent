@@ -471,3 +471,33 @@ def test_secrets_check_with_an_unreadable_staged_raw_file_is_an_error(tmp_path, 
     _fake_gitleaks(tmp_path, monkeypatch, 'echo "[]" > "$report"; exit 0\n')
     r = gitops.secrets_check(a)
     assert r.ran is True and r.files == [] and "bad.jsonl.gz" in r.error
+
+
+def test_push_sets_the_upstream_when_missing(tmp_path):
+    remote = tmp_path / "remote.git"
+    fgit("init", "--bare", "-q", "-b", "main", str(remote))
+    repo = tmp_path / "repo"
+    fgit("init", "-q", "-b", "main", str(repo))
+    _add(repo, "h", "x")
+    fgit("add", ".", cwd=repo)
+    fgit("commit", "-q", "-m", "first", cwd=repo)
+    fgit("remote", "add", "origin", str(remote), cwd=repo)
+    gitops.push(repo)
+    assert gitops.git(repo, "rev-parse", "--abbrev-ref", "@{u}").stdout.strip() == "origin/main"
+    assert gitops.ahead(repo) == 0
+
+
+def test_push_does_not_retry_when_a_server_hook_declines(tmp_path):
+    remote = init_remote(tmp_path)
+    log = tmp_path / "hook.log"
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text(f"#!/bin/sh\necho call >> '{log}'\necho 'denied by policy' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    a = clone(remote, tmp_path / "a")
+    _add(a, "h", "x")
+    gitops.stage(a, ["sessions/h"])
+    gitops.commit(a, "m", ["sessions/h"])
+    with pytest.raises(gitops.GitError) as e:
+        gitops.push(a)
+    assert "denied by policy" in str(e.value)
+    assert log.read_text().splitlines() == ["call"]

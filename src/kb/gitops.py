@@ -272,12 +272,26 @@ def secrets_check(root) -> SecretsResult:
     return result
 
 
+_RETRYABLE = ("[rejected]", "fetch first", "non-fast-forward")
+
+
 def push(root, tries: int = 3) -> None:
-    last = ""
+    """Push without hooks. Sets the upstream on first use. Rebases and retries only when the remote moved;
+    any other failure (auth, server hook, network) raises at once with every message collected."""
+    has_upstream = git(root, "rev-parse", "--abbrev-ref", "@{u}", check=False).returncode == 0
+    args = ["push", "--quiet", "--no-verify"] + ([] if has_upstream else ["-u", "origin", "HEAD"])
+    notes = []
     for _ in range(tries):
-        p = git(root, "push", "--quiet", check=False)
+        p = git(root, *args, check=False, timeout=PULL_TIMEOUT)
         if p.returncode == 0:
             return
-        last = (p.stderr or p.stdout).strip()
-        git(root, "pull", "--rebase", "--autostash", "--quiet", check=False)
-    raise GitError(f"push failed after {tries} tries: {last}")
+        err = (p.stderr or p.stdout).strip()
+        notes.append(f"push: {err}")
+        if not any(marker in err for marker in _RETRYABLE):
+            break
+        try:
+            pull(root)
+        except GitError as e:
+            notes.append(str(e))
+            break
+    raise GitError("push failed: " + " | ".join(notes))
