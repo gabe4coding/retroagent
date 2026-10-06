@@ -17,6 +17,7 @@ from pathlib import Path
 
 DEFAULT_TIMEOUT = 60
 PULL_TIMEOUT = 120
+PUSH_TIMEOUT = 30 * 60        # the first data push can be hundreds of MB
 GITLEAKS_TIMEOUT = 300
 
 
@@ -328,14 +329,14 @@ def secrets_check(root) -> SecretsResult:
 _RETRYABLE = ("[rejected]", "fetch first", "non-fast-forward")
 
 
-def push(root, tries: int = 3) -> None:
+def push(root, tries: int = 3, keep=()) -> None:
     """Push without hooks. Sets the upstream on first use. Rebases and retries only when the remote moved;
     any other failure (auth, server hook, network) raises at once with every message collected."""
     has_upstream = git(root, "rev-parse", "--abbrev-ref", "@{u}", check=False).returncode == 0
     args = ["push", "--quiet", "--no-verify"] + ([] if has_upstream else ["-u", "origin", "HEAD"])
     notes = []
     for _ in range(tries):
-        p = git(root, *args, check=False, timeout=PULL_TIMEOUT)
+        p = git(root, *args, check=False, timeout=PUSH_TIMEOUT)
         if p.returncode == 0:
             return
         err = (p.stderr or p.stdout).strip()
@@ -343,7 +344,7 @@ def push(root, tries: int = 3) -> None:
         if not any(marker in err for marker in _RETRYABLE):
             break
         try:
-            pull(root)
+            pull(root, keep=keep)
         except GitError as e:
             notes.append(str(e))
             break

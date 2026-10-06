@@ -303,7 +303,7 @@ def publish(cfg, idx, state, report) -> None:
     unborn = gitops.git(root, "rev-parse", "-q", "--verify", "HEAD", check=False).returncode != 0
     if report.committed or gitops.ahead(root) or (not has_upstream and not unborn):
         try:
-            gitops.push(root)
+            gitops.push(root, keep=tuple(state.quarantine))
             report.pushed = True
         except gitops.GitError as e:
             report.errors.append(str(e))

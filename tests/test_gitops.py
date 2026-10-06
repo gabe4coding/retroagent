@@ -599,3 +599,29 @@ def test_a_stash_that_cannot_be_restored_is_left_for_the_user(tmp_path):
     assert fgit("stash", "show", "-p", "stash@{0}", cwd=a).stdout.count("local edit") == 1
     assert fgit("status", "--porcelain", cwd=a).stdout == ""                 # and no conflict markers are left to commit
     assert (a / KEPT).read_text() == "remote edit\n"
+
+
+def test_push_retry_keeps_quarantined_files_out_of_the_way(tmp_path):
+    remote = init_remote(tmp_path)
+    a, b = clone(remote, tmp_path / "a"), clone(remote, tmp_path / "b")
+    _add(b, "hb", "v1", name="q.md")
+    gitops.stage(b, ["sessions/hb"])
+    gitops.commit(b, "q", ["sessions/hb"])
+    gitops.push(b)
+    gitops.pull(a)
+    _add(a, "ha", "a")
+    gitops.stage(a, ["sessions/ha"])
+    gitops.commit(a, "a", ["sessions/ha"])
+    gitops.push(a)
+    (b / "sessions/hb/q.md").write_text("held back")            # quarantined: tracked and modified
+    _add(b, "hb", "y", name="y.md")
+    gitops.stage(b, ["sessions/hb/y.md"])
+    gitops.commit(b, "y", ["sessions/hb/y.md"])
+    gitops.push(b, keep=["sessions/hb/q.md"])                   # rejected first, then pull(keep) + push
+    assert (b / "sessions/hb/q.md").read_text() == "held back"
+    assert gitops.git(remote, "show", "main:sessions/hb/q.md").stdout == "v1"
+    assert gitops.git(remote, "show", "main:sessions/hb/y.md").stdout == "y"
+
+
+def test_push_has_a_long_timeout():
+    assert gitops.PUSH_TIMEOUT >= 30 * 60
