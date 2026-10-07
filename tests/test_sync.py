@@ -1577,3 +1577,16 @@ def test_a_session_that_moves_while_its_raw_copy_waits_takes_the_copy_along(host
         assert f"raw/host-a/claude/2026/11/{name}" in tracked and f"raw/host-a/claude/2026/10/{name}" not in tracked
         assert not (a.root / f"raw/host-a/claude/2026/10/{name}").exists()
     assert _clean(a)
+
+
+def test_sync_embeds_new_sessions_when_semantic_search_is_on(hosts):
+    from embed_fakes import FakeEmbedServer
+    a, _ = hosts
+    srv = FakeEmbedServer()
+    try:
+        a.embed_url = srv.url
+        r = run_sync(a, runner=FakeRunner())
+        assert not r.errors and r.embedded >= 2 and "embedded" in r.line()
+        assert run_sync(a, runner=FakeRunner(), now=True).embedded == 0
+    finally:
+        srv.close()

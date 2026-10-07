@@ -8,6 +8,7 @@
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
   kb stats [report]    ready-made analytics; kb sql "<SELECT …>" for custom ones
   kb sync | backfill | status | reindex   maintenance
+  kb embed             turn on semantic search: kb installs and runs a local embedding model (--status, --off)
   kb repair            when every sync fails to pull: reset the data clone to the remote; the next sync makes this
                        host's work again
   kb pages start | plan | digest | finish | due   steps of the cloud routine that writes pages/ (scripts/pages-routine.md)
@@ -130,9 +131,13 @@ def cmd_find(args, cfg) -> int:
     want_memories = not (args.no_memories or args.since or args.until or args.tag or args.role)
     idx = _open_index(cfg)
     try:
-        pages = idx.find_pages(query, args.project or "", PAGE_HITS, raw=args.fts) if want_pages else []
-        mems = idx.find_memories(query, _filters(args), MEMORY_HITS, raw=args.fts) if want_memories else []
-        hits = idx.find(query, _filters(args, not args.no_subagents), args.limit, raw=args.fts)
+        dense = _dense_rankings(cfg, args, idx, query, want_pages, want_memories) or {}
+        pages = idx.find_pages(query, args.project or "", PAGE_HITS, raw=args.fts,
+                               dense=dense.get("page")) if want_pages else []
+        mems = idx.find_memories(query, _filters(args), MEMORY_HITS, raw=args.fts,
+                                 dense=dense.get("memory")) if want_memories else []
+        hits = idx.find(query, _filters(args, not args.no_subagents), args.limit, raw=args.fts,
+                        dense=dense.get("session"))
     except ValueError as e:
         print(str(e))
         return 2
@@ -154,6 +159,41 @@ def cmd_find(args, cfg) -> int:
         turn = f" [turn {h['turn']}]" if h.get("turn") else ""
         print(f"{_row(h)} · {h.get('snippet') or ''}{turn}")
     return 0
+
+
+def _dense_rankings(cfg, args, idx, query: str, want_pages: bool, want_memories: bool):
+    """Embedding rankings per kind for `kb find`, or None: then BM25 alone. Never raises, never downloads, and waits
+    at most embed_runtime.PROBE for the model. A stopped server is started in the background for the next call."""
+    if args.fts or args.no_embed or not (cfg.embed or cfg.embed_url):
+        return None
+    from kb import embed, embed_runtime
+    store = embed.Vectors.open_readonly(cfg.kb_dir / embed.STORE)
+    if store is None:
+        return _no_dense(args, "no vectors yet; run: kb embed")
+    try:
+        ep = embed_runtime.ensure(cfg, wait=False)
+        if ep is None:
+            return _no_dense(args, "the embedding model is starting")
+        q = embed.embed([embed.query_text(query)], ep.url, ep.key, timeout=embed_runtime.PROBE)[0]
+        if not cfg.embed_url:
+            embed_runtime.Server().touch()
+        out = {"session": embed.rank(store, ep.model, "session", q,
+                                     idx.keys("session", _filters(args, not args.no_subagents)))}
+        if want_pages:
+            out["page"] = embed.rank(store, ep.model, "page", q, idx.keys("page", project=args.project or ""))
+        if want_memories:
+            out["memory"] = embed.rank(store, ep.model, "memory", q, idx.keys("memory", _filters(args)))
+        return out
+    except (embed.EmbedError, embed_runtime.EmbedUnavailable, sqlite3.Error, OSError) as e:
+        return _no_dense(args, str(e))
+    finally:
+        store.close()
+
+
+def _no_dense(args, why: str):
+    if getattr(args, "verbose", False):
+        print(f"kb: keyword search only: {why}", file=sys.stderr)
+    return None
 
 
 def cmd_recent(args, cfg) -> int:
@@ -547,6 +587,99 @@ def cmd_update(args, cfg) -> int:
         return 2
 
 
+def cmd_embed(args, cfg) -> int:
+    import shutil
+
+    from kb import embed, embed_runtime as er
+    srv = er.Server()
+    store_path = cfg.kb_dir / embed.STORE
+    if args.status:
+        return _embed_status(cfg, srv, store_path)
+    if args.stop:
+        print("embedding server stopped" if srv.stop() else "embedding server was not running")
+        return 0
+    if args.off or args.remove:
+        config_mod.set_key("embed", False)
+        srv.stop()
+        if args.remove:
+            shutil.rmtree(er.cache_dir(), ignore_errors=True)
+            _drop_store(store_path)
+        print("semantic search is off" + (f"; removed {er.cache_dir()} and the vectors" if args.remove else
+                                           "; kb embed turns it on again"))
+        return 0
+    try:
+        ep = er.ensure(cfg, wait=True, progress=_progress())
+    except er.EmbedUnavailable as e:
+        print(f"kb: {e}")
+        return 2
+    if args.rebuild:
+        _drop_store(store_path)
+    idx = _open_index(cfg)
+    store = embed.Vectors(store_path)
+    try:
+        rep = embed.run_embed(idx.db, store, ep, limit=args.limit)
+        counts = store.counts(embed.model_key(ep.model))
+    finally:
+        store.close()
+        idx.close()
+    if not cfg.embed_url:
+        srv.touch()
+    if not cfg.embed:
+        config_mod.set_key("embed", True)
+    print(f"embedded {rep.done} items ({embed.describe(counts)}; {rep.left} left)" + (f"; stopped: {rep.error}" if rep.error else ""))
+    return 1 if rep.error else 0
+
+
+def _drop_store(path) -> None:
+    """Delete the vector store with its WAL files (a stale -wal next to a new file would be read as its log)."""
+    for p in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+        if p.exists():
+            p.unlink()
+
+
+def _progress():
+    """A download progress printer: one line per 10%, on stderr."""
+    shown = {}
+
+    def show(got: int, size: int) -> None:
+        step = got * 10 // size if size else 10
+        if shown.get(size) != step:
+            shown[size] = step
+            print(f"downloading {size // 1_000_000} MB: {step * 10}%", file=sys.stderr)
+    return show
+
+
+def _embed_status(cfg, srv, store_path) -> int:
+    import time
+
+    from kb import embed, embed_runtime as er
+    print(f"semantic search: {'on' if cfg.embed or cfg.embed_url else 'off'}")
+    if cfg.embed_url:
+        print(f"server: {cfg.embed_url} (embed_url; kb does not manage it)")
+        model = "url:" + cfg.embed_url
+    else:
+        model = er.MODEL
+        key = er.platform_key()
+        print(f"runtime: llama.cpp {er.ASSETS['llama_build']} for {key or 'this platform: not available'}, "
+              f"{'installed' if er.installed() else 'not installed'} ({er.cache_dir()})")
+        s = srv.state()
+        if s and srv.alive(timeout=1.0):
+            idle = int((time.time() - float(s.get("last_used") or 0)) // 60)
+            print(f"server: running, pid {s['pid']}, port {s['port']}, last used {idle} min ago; log {srv.log_path}")
+        else:
+            print(f"server: stopped; log {srv.log_path}")
+    store = embed.Vectors.open_readonly(store_path)
+    if store is None:
+        print("vectors: none yet")
+        return 0
+    try:
+        counts = store.counts(embed.model_key(model))
+    finally:
+        store.close()
+    print(f"vectors ({embed.model_key(model)}): {embed.describe(counts)}")
+    return 0
+
+
 def cmd_reindex(args, cfg) -> int:
     path = cfg.kb_dir / "index.sqlite"
     if path.exists():
@@ -581,6 +714,8 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--no-memories", action="store_true", help="hide memories")
     f.add_argument("--fts", action="store_true", help="pass the query to SQLite FTS5 unchanged")
     f.add_argument("--json", action="store_true")
+    f.add_argument("--no-embed", action="store_true", help="keyword search only, even with semantic search on")
+    f.add_argument("-v", "--verbose", action="store_true", help="say on stderr why semantic search was not used")
     f.set_defaults(func=cmd_find)
 
     pg = sub.add_parser("page", help="a project page or weekly retro (no name: list them)")
@@ -665,6 +800,14 @@ def build_parser() -> argparse.ArgumentParser:
         sw.set_defaults(func=func)
     sub.add_parser("status", help="last sync, pending sessions, summary backlog").set_defaults(func=cmd_status)
     sub.add_parser("reindex", help="rebuild the local index from markdown").set_defaults(func=cmd_reindex)
+    em = sub.add_parser("embed", help="semantic search: install and run a local embedding model, embed what is new")
+    em.add_argument("--rebuild", action="store_true", help="embed everything again")
+    em.add_argument("--limit", type=int, help="embed at most N items")
+    em.add_argument("--status", action="store_true", help="what is installed, running and embedded")
+    em.add_argument("--stop", action="store_true", help="stop the embedding server now (it starts again on use)")
+    em.add_argument("--off", action="store_true", help="turn semantic search off; keep the files")
+    em.add_argument("--remove", action="store_true", help="turn it off and delete the runtime, model and vectors")
+    em.set_defaults(func=cmd_embed)
     su = sub.add_parser("setup", help="set up the data repo and the cloud routine")
     su.add_argument("step", choices=["init", "routine", "check"],
                     help="init: base files of the data repo · routine: files and spec of the pages routine · "
@@ -681,12 +824,22 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _reap_embed_server() -> None:
+    """Stop the embedding server kb started when nobody used it for an hour. Must never break a command."""
+    try:
+        from kb.embed_runtime import Server
+        Server().reap_if_idle()
+    except Exception:  # noqa: BLE001 - a cleanup must not cost the command
+        pass
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):
         parser.print_help()
         return 0
+    _reap_embed_server()
     try:
         return args.func(args, config_mod.load())
     except IndexNotBuilt as e:

@@ -15,6 +15,9 @@ The config lives in `~/.config/retroagent/config.json`. An install from before t
 | `host` | short hostname | This machine's name. Must be unique per machine. See [Installation](./installation.mdx#one-host-name-per-machine). |
 | `auto_sync` | `true` when missing; `install.sh` writes `false` | Whether the SessionStart hook syncs. Set with `kb enable` / `kb disable`. |
 | `auto_update` | `false` | Pull the code once a day. Set with `kb enable updates`. |
+| `embed` | `false` | [Semantic search](./commands.mdx#semantic-search). Set with `kb embed` / `kb embed --off`. |
+| `embed_url` | empty | An OpenAI-compatible `/v1/embeddings` server to use instead of the one `kb` manages. Keep it on localhost: it receives the text of your sessions. |
+| `embed_sync_seconds` | `60` | Longest a sync spends embedding new items. |
 | `branch` | `main` | On any other branch, the sync touches no git. |
 | `raw_settle_hours` | `24` | See below. |
 | `skip_headless_single_prompt` | `true` | Skip `claude -p` / `codex exec` sessions. |
