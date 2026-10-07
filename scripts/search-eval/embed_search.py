@@ -21,12 +21,17 @@ def make_search(idx, flow: Path):
     rep = embed.run_embed(idx.db, store, ep)
     if rep.error:
         raise SystemExit(f"embedding failed: {rep.error}")
-    vecs = store.load("session", ep.model)
-    allowed = idx.keys("session")
+    vecs = {kind: store.load(kind, ep.model) for kind in embed.KINDS}
+    allowed = {kind: idx.keys(kind) for kind in embed.KINDS}
     timeout = float(os.environ.get("EMBED_TIMEOUT", "10"))
 
-    def search(query: str, limit: int) -> list:
+    def search(query: str, limit: int, kind: str = "session") -> list:
         q = embed.embed([embed.query_text(query)], ep.url, ep.key, timeout=timeout)[0]
-        return idx.find(query, Filters(), limit, dense=embed.dense(vecs, q, allowed))
+        dense = embed.dense(vecs[kind], q, allowed[kind])
+        if kind == "page":
+            return idx.find_pages(query, "", limit, dense=dense)
+        if kind == "memory":
+            return idx.find_memories(query, Filters(), limit, dense=dense)
+        return idx.find(query, Filters(), limit, dense=dense)
 
     return search
