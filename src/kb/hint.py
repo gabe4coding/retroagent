@@ -11,9 +11,11 @@ with its source session. Precision comes before recall, so most failures get no 
      error once the page is known.
   4. else keyword: the bullet whose problem side (the text before "→") shares the most words with the error, at least
      `hint_keyword_min`. Words are normalized like `kb stats errors` (kb.stats.error_words).
-A session gets each bullet once; when its best bullet was shown already, nothing (the second best is noise). Every
-hint shown is logged to <root>/.kb/hints/log.jsonl (session, bullet, score, method), so a later report can check
-whether hints helped. Nothing here writes to the tracked files of the data clone.
+A bullet that the page's age rule calls stale (kb.freshness: its date more than `stale_days` older than the page's
+newest bullet) is never a hint; `kb pages finish` moves those to History, so this only catches pages written before.
+The hint shows the date the bullet was last confirmed. A session gets each bullet once; when its best bullet was
+shown already, nothing (the second best is noise). Every hint shown is logged to <root>/.kb/hints/log.jsonl
+(session, bullet, its date, score, method), so a later report can check whether hints helped and how old they were. Nothing here writes to the tracked files of the data clone.
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from kb import freshness
 from kb.pages import parse_page, section
 from kb.stats import error_words
 from kb.util import atomic_write, head_lines, main_checkout, project_from_cwd, project_from_git_url
@@ -56,6 +59,7 @@ class Bullet:
     problem: str       # the text before "→"
     source: str        # "kb summary 1a2b3c4d", "kb memory <ref>" or ""
     key: str           # sha1 of full: one hint per bullet per session, and the vector cache key
+    date: str = ""     # when a session last confirmed it (kb.freshness), "" when the page gives none
 
 
 def bullets(page_text: str) -> list:
@@ -84,8 +88,14 @@ def bullets(page_text: str) -> list:
             if source:
                 text = full[: m.start()].rstrip()
         problem = full.split("→", 1)[0].strip()
-        out.append(Bullet(text, full, problem, source, hashlib.sha1(full.encode("utf-8")).hexdigest()))
+        out.append(Bullet(text, full, problem, source, hashlib.sha1(full.encode("utf-8")).hexdigest(),
+                          freshness.bullet_date(full)))
     return out
+
+
+def fresh(items: list, newest: str, days: int) -> list:
+    """The bullets the page's age rule does not call stale. An undated bullet stays."""
+    return [b for b in items if not freshness.is_stale(b.date, newest, days)]
 
 
 def passes_gate(err: str) -> bool:
@@ -127,7 +137,7 @@ def semantic_match(qvec, items: list, vectors: dict, minimum: float):
 
 
 def format_hint(b: Bullet) -> str:
-    tail = f" ({b.source})" if b.source else ""
+    tail = f" ({b.source}{' · ' + b.date if b.date else ''})" if b.source else ""
     room = MAX_CHARS - len(PREFIX) - len(tail)
     text = b.text if len(b.text) <= room else b.text[: room - 1].rstrip() + "…"
     return PREFIX + text + tail
@@ -178,14 +188,18 @@ def projects(cwd: str) -> list:
 
 
 def page_bullets(root: Path, cwd: str):
-    """(project, bullets) of the first project page for cwd, or ("", [])."""
+    """(project, bullets, the page's newest bullet date) of the first project page for cwd, or ("", [], "")."""
     for project in projects(cwd):
         try:
             text = (root / "pages" / "projects" / f"{project}.md").read_text(encoding="utf-8", errors="replace")
         except (OSError, ValueError):
             continue
-        return project, bullets(text)
-    return "", []
+        try:
+            top = freshness.newest(parse_page(text)[1])
+        except ValueError:
+            top = ""
+        return project, bullets(text), top
+    return "", [], ""
 
 
 # ---- local state under <root>/.kb/hints/
@@ -304,7 +318,8 @@ def run(cfg, event: dict) -> str:
     if not err or not passes_gate(err) or denied(err):
         return ""
     cwd = event.get("cwd") if isinstance(event.get("cwd"), str) else os.getcwd()
-    project, items = page_bullets(cfg.root, cwd)
+    project, items, top = page_bullets(cfg.root, cwd)
+    items = fresh(items, top, freshness.stale_settings(cfg.root)[0])
     session = str(event.get("session_id") or "")
     if not items:
         return ""
@@ -321,6 +336,6 @@ def run(cfg, event: dict) -> str:
         return ""
     state.mark(session, b.key)
     state.log({"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "session": session, "project": project,
-               "tool": str(event.get("tool_name") or ""), "error": err, "bullet": b.full, "score": score,
+               "tool": str(event.get("tool_name") or ""), "error": err, "bullet": b.full, "seen": b.date, "score": score,
                "method": method})
     return format_hint(b)
