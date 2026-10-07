@@ -42,7 +42,26 @@ Two repos are involved: this one (the code, public) and your **data repo** (priv
 ## Quick start
 
 You need git, Python 3.9+, [gitleaks](https://github.com/gitleaks/gitleaks) (`brew install gitleaks`) and the GitHub
-CLI `gh`. In Claude Code:
+CLI `gh`.
+
+### Let your agent do it
+
+Paste this into Claude Code or Codex:
+
+```text
+Set up retroagent on this machine for me: https://github.com/gabe4coding/retroagent
+1. If ~/.retroagent does not exist, clone the repo there.
+2. Read ~/.retroagent/skills/setup/SKILL.md and follow it step by step. Use ~/.retroagent/bin/kb while `kb` is
+   not on my PATH yet.
+3. Ask me one question at a time, and show me each command before it creates a repo, pushes or changes anything
+   outside this machine. My data repo must be private.
+4. Never ask me for a token or a secret: I type those in my own terminal.
+```
+
+The agent creates or picks your private data repo, installs the plugins and the `kb` CLI, runs the first sync and
+turns automatic syncs on, asking you before each step.
+
+### Or with the Claude Code plugin
 
 ```
 /plugin marketplace add gabe4coding/retroagent
@@ -50,8 +69,7 @@ CLI `gh`. In Claude Code:
 /retroagent:setup
 ```
 
-The `setup` skill creates or picks your data repo, installs the `kb` CLI, runs the first sync and turns automatic
-syncs on. For Codex or a manual install, see [Installation](docs/installation.mdx).
+For a manual install, see [Installation](docs/installation.mdx).
 
 ## Use it
 

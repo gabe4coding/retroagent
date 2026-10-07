@@ -12,6 +12,21 @@ description: Set up retroagent on a machine, give it a unique host name, and kee
 - [gitleaks](https://github.com/gitleaks/gitleaks) 8.25 or newer — strongly recommended (`brew install gitleaks`)
 - The GitHub CLI `gh`, to create the data repo and the routine's secrets
 
+## Let your agent do it
+
+Paste this prompt into Claude Code or Codex. The agent clones the code and follows the same steps as the `setup`
+skill, asking you one question at a time.
+
+```text
+Set up retroagent on this machine for me: https://github.com/gabe4coding/retroagent
+1. If ~/.retroagent does not exist, clone the repo there.
+2. Read ~/.retroagent/skills/setup/SKILL.md and follow it step by step. Use ~/.retroagent/bin/kb while `kb` is
+   not on my PATH yet.
+3. Ask me one question at a time, and show me each command before it creates a repo, pushes or changes anything
+   outside this machine. My data repo must be private.
+4. Never ask me for a token or a secret: I type those in my own terminal.
+```
+
 ## With the Claude Code plugin
 
 ```
