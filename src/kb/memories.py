@@ -9,6 +9,11 @@ A KB memory file is front matter (the same JSON-valued lines as a session file) 
   name, description, type, origin_session, modified: from the memory's own front matter, when it has one
 The source's YAML front matter is not copied: its fields are lifted into the JSON front matter.
 
+A memory whose own front matter has no modified time gets the source file's mtime (UTC), so every memory is dated
+(kb.freshness dates page bullets by their sources). Not the day a sync committed it: a first sync commits old
+memories on one day. A file whose mtime moved but whose copy would not change otherwise (touched, restored from a
+backup) keeps the date of its KB copy, so the sync writes nothing.
+
 A memory is a curated note, not a log: when it is deleted or renamed on this machine, the KB copy goes too. That holds
 only while the source folder exists. A whole folder that is gone (a project moved or cleaned up) keeps its KB copies,
 like a session whose transcript is gone. A file that cannot be read is never removed from the KB.
@@ -20,9 +25,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from kb.distill import dump_front_matter
+from kb.distill import dump_front_matter, split_front_matter
 from kb.redact import redact
-from kb.util import atomic_write, main_checkout, project_from_cwd
+from kb.util import atomic_write, iso_utc, main_checkout, project_from_cwd
 
 MAX_BYTES = 256 * 1024          # a memory is a short note; a bigger file is reported and left out
 CWD_SCAN_LINES = 200            # lines of a transcript read to learn the cwd of a project folder
@@ -93,14 +98,28 @@ def split_yaml(text: str):
     return fields, body[1:] if body.startswith("\n") else body
 
 
-def render(host: str, src: Source, text: str) -> str:
+def render(host: str, src: Source, text: str, modified: str = "") -> str:
+    """The KB copy of a memory. modified is used when the memory's own front matter has none."""
     fields, body = split_yaml(text)
     meta = {"kind": "memory", "agent": src.agent, "host": host, "project": src.project, "cwd": src.cwd,
             "folder": src.folder, "file": src.file}
     for key, out in _LIFTED.items():
         meta[out] = fields.get(key, "")
     meta["name"] = meta["name"] or src.file[:-3]
+    meta["modified"] = meta["modified"] or modified
     return dump_front_matter(meta) + "\n" + body.strip("\n") + "\n"
+
+
+def _copy(host: str, src: Source, source: str, modified: str) -> tuple:
+    """(bytes of the redacted KB copy, redactions found)."""
+    text, found = redact(render(host, src, source, modified))
+    return text.encode("utf-8", errors="replace"), found
+
+
+def _modified(copy) -> str:
+    """The modified time in the front matter of a KB copy (bytes or None), or ''."""
+    value = split_front_matter(copy.decode("utf-8", errors="replace"))[0].get("modified") if copy else ""
+    return value if isinstance(value, str) else ""
 
 
 def _owns(folder: str, cwd: str) -> str:
@@ -207,16 +226,22 @@ def sync_memories(cfg, idx, report, excluded, dry_run: bool = False) -> int:
             data = src.path.read_bytes()
             if len(data) > MAX_BYTES:
                 raise ValueError(f"{len(data)} bytes, more than {MAX_BYTES}")
-            text, found = redact(render(cfg.host, src, data.decode("utf-8", errors="replace")))
+            source = data.decode("utf-8", errors="replace")
+            target = cfg.root / rel
+            old = target.read_bytes() if target.is_file() else None
+            kept = _modified(old)
+            if kept:                                    # a copy that only this date would keep unchanged stays
+                new, found = _copy(cfg.host, src, source, kept)
+            if not kept or new != old:                  # new, undated or changed: dated by the source file
+                new, found = _copy(cfg.host, src, source, iso_utc(src.path.stat().st_mtime))
         except (OSError, ValueError) as e:
             report.errors.append(f"memory {src.path}: {type(e).__name__}: {e}")
             continue
         report.redactions.update(found)
-        target = cfg.root / rel
         if dry_run:
-            changed += not target.exists() or target.read_bytes() != text.encode("utf-8", errors="replace")
+            changed += new != old
         else:
-            changed += atomic_write(target, text.encode("utf-8", errors="replace"))
+            changed += atomic_write(target, new)
     for folder in folders:
         base = cfg.root / folder
         for p in sorted(base.rglob("*.md")) if base.is_dir() else []:
