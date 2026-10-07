@@ -25,6 +25,9 @@ Rules:
 - Memories are the notes agents kept between sessions (user preferences, project facts, feedback). `kb memory
   --project NAME` lists one project's; a memory names the session it came from (`kb summary <short>`).
 - When you report a finding, cite it as `short [turn N]` so the user can open it.
+- A result shows what was true on its date. When two results disagree, the newer one wins. Before you act on an old
+  result (a path, a command, a fix), check it against the current code. Page bullets end with the date a session last
+  confirmed them (`(a1b2c3d4 · 2026-10-07)`); a page's "History" holds superseded and unconfirmed facts.
 - The KB lags a little: a session is synced after it has been idle 15 minutes. `kb sync --now --no-summaries` syncs now and is fast (plain `kb sync --now` also writes summaries and can take minutes). `kb status` shows the last sync and its error, if any.
 - Reading needs no write access, except to build a missing or outdated index. If `kb` answers `index not built yet; run: kb reindex`, run that once from a shell that can write to the KB folder.
 - All flags: `kb <command> --help`.
