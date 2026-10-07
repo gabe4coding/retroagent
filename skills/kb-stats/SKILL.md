@@ -14,7 +14,7 @@ Ready-made reports:
 - `kb stats daily` — sessions and prompts per day, last 30 days
 - `kb stats subagents` — subagent transcripts per agent
 
-Custom questions: `kb sql "<SELECT …>"` (read-only).
+Custom questions: `kb sql "<SELECT …>"` (read-only). Cells over 80 chars end with `…`; add `--width 0` to see them whole.
 Before you write a custom query, read `references/schema.md` in this skill's folder: the tables and columns.
 
 Report the numbers exactly as returned and say which filters you used.
