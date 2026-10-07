@@ -22,13 +22,14 @@ Reading needs no write access, except to build a missing or outdated index. If `
 ## Hard rules
 - Use `kb` first. Never `cat` or read whole files in `sessions/`.
 - Never read `raw/` unless the task is to fix or re-run the distiller.
-- `sessions/`, `raw/`, `catalog/` and `memories/` are written by `kb sync`. Do not edit them by hand.
+- `sessions/`, `raw/`, `catalog/`, `memories/` and `vectors/` are written by `kb sync`. Do not edit them by hand.
 - `pages/` is written by the cloud routine through `kb pages finish`. Only `pages/config.json` is edited by hand.
 - The sync works in its own data clone (the `root` of `~/.config/retroagent/config.json`). Do not edit or commit there
   by hand. The code lives in the retroagent repo; change it there.
-- Only the machine that owns a host writes `sessions/<host>`, `raw/<host>`, `catalog/<host>` and `memories/<host>`,
-  summaries included. Make summaries on that machine with `kb backfill --summaries`; never from another machine or a
-  cloud session, never with `--force-host` unless the owner asks. Otherwise the owner's next sync conflicts.
+- Only the machine that owns a host writes `sessions/<host>`, `raw/<host>`, `catalog/<host>`, `memories/<host>` and
+  `vectors/<host>`, summaries included. Make summaries on that machine with `kb backfill --summaries`; never from
+  another machine or a cloud session, never with `--force-host` unless the owner asks. Otherwise the owner's next
+  sync conflicts.
 - If every sync fails with `run: kb repair`, run `kb repair` on that machine, then `kb sync --now --no-summaries`.
 
 ## Layout
@@ -39,3 +40,6 @@ Reading needs no write access, except to build a missing or outdated index. If `
 - `pages/projects/<project>.md`, `pages/retro/<YYYY-Www>.md` — written by the cloud routine; `pages/config.json` its
   settings, `pages/.state.json` its watermark.
 - `raw/<host>/<agent>/<YYYY>/<MM>/<id>.jsonl.gz` — slim, redacted raw transcript.
+- `vectors/<host>/sessions/…/<file>.vec`, `vectors/<host>/memories/…/<file>.vec` — semantic search vectors of a
+  session (summary and the user's messages) or a memory, binary; only when semantic search is on (`kb embed`).
+  `kb sync` imports other machines' files, so nothing needs embedding twice.

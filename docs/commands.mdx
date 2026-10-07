@@ -63,8 +63,10 @@ You manage nothing after that:
   fails because of it.
 - The server unloads the model after 5 minutes idle (it uses about 500 MB of RAM while loaded), and any `kb` command
   stops the process after an hour without use.
-- Vectors live in `<data clone>/.kb/embeddings.sqlite` (a few MB: each keeps 256 of the model's 768 numbers). They
-  never sync; each machine embeds its own copy.
+- Vectors live in `<data clone>/.kb/embeddings.sqlite` (a few MB: each keeps 256 of the model's 768 numbers). Each
+  sync also commits this machine's vectors to `vectors/<host>/` in the data repo (about 2 KB per session, in half
+  precision), and imports the files other machines committed. So another machine, or a cloud session, gets them
+  without running the model. Pages are not committed; every machine embeds them, in seconds.
 - Searches stay fast as the KB grows. From 5,000 session and message vectors on, a small sign-bit index
   (`.kb/embeddings.bits`, rebuilt when the vectors change) picks the 3,000 closest candidates first, and only those
   are compared exactly. Measured: about 30 ms at 30,000 vectors and 55 ms at 95,000, where comparing every vector takes
