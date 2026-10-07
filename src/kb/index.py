@@ -67,6 +67,15 @@ _TEXT_FIELDS = ("agent", "host", "project", "cwd", "branch", "started", "ended",
 _COUNT_FIELDS = ("turns", "user_turns", "summary_turns")
 _LIST_FIELDS = ("tags", "decisions", "files", "prs")
 _TERM = re.compile(r"\w[\w.\-/]*", re.U)
+# Function words of English and Italian queries: in the OR fallback they match almost every session and push the
+# real hits out. Dropped from free-text queries unless the query has nothing else.
+_STOPWORDS = frozenset("""
+a about after all also am an and any are as at be been before but by can could did do does doing done for from had
+has have how i if in into is it its last me my no not of on or our so than that the their them then there these
+they this those to too was we were what when where which who why will with would you your
+al alla alle allo ai agli che chi come con cosa da dal dalla dei del della delle dello di e ed gli ha ho il in la
+le lo ma mi nel nella nelle non per più quando se si sono su sul sulla un una uno
+""".split())
 
 
 @dataclass
@@ -152,8 +161,9 @@ def _short(snippet: str) -> str:
 
 
 def fts_queries(text: str) -> list:
-    """Safe FTS5 queries for free text: all terms (AND), then any term (OR)."""
+    """Safe FTS5 queries for free text: all terms (AND), then any term (OR). Stopwords are dropped first."""
     terms = [t.strip(".-/") for t in _TERM.findall(text or "")]
+    terms = [t for t in terms if t.lower() not in _STOPWORDS] or terms
     quoted = ['"' + t.replace('"', "") + '"' for t in terms if t]
     if not quoted:
         return []
@@ -472,20 +482,20 @@ class Index:
         return "".join(" AND " + c for c in clauses), params
 
     def find(self, query: str, f: Filters = None, limit: int = 10, raw: bool = False) -> list:
-        """Ranked sessions, best first: every word (AND) matches come first, any-word (OR) matches top them up.
+        """Ranked sessions, best first: the every-word (AND) ranking when it fills the list, else the any-word (OR)
+        ranking. OR holds every AND match too, so a few weak AND matches cannot push stronger OR matches out.
 
         Rows: id, agent, host, project, started, title, parent, snippet, turn (turn is None for a session-level hit).
         raw=True passes the query to FTS5 unchanged; a bad query raises ValueError."""
         f = f or Filters()
         if limit <= 0 or not (query or "").strip():
             return []
-        ranked = {}
+        cands = []
         for q in [query] if raw else fts_queries(query):
-            for cand in self._candidates(q, f, max(200, limit * 20), raw):
-                ranked.setdefault(cand["id"], cand)
-            if len(ranked) >= limit:
+            cands = self._candidates(q, f, max(200, limit * 20), raw)
+            if len(cands) >= limit:
                 break
-        return [self._hit(c) for c in list(ranked.values())[:limit]]
+        return [self._hit(c) for c in cands[:limit]]
 
     def _fts(self, sql: str, params: list, raw: bool) -> list:
         try:

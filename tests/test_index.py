@@ -8,7 +8,7 @@ from fixtures import AID, SID, T1, T2, make_claude_tree, make_codex_tree
 
 from kb.adapters import claude, codex
 from kb.distill import dump_front_matter
-from kb.index import AmbiguousId, Filters, Index, run_sql
+from kb.index import AmbiguousId, Filters, Index, fts_queries, run_sql
 from kb.store import write_session
 
 
@@ -83,6 +83,22 @@ def test_find_filters_and_fallback(kb):
     assert idx.find("fetch zzznotthere")[0]["id"] in (T1, T2)     # AND finds nothing, OR fallback
     assert idx.find("") == []
     idx.find('a "b" (c) *d* OR NEAR')                              # must not raise
+
+
+def test_few_and_matches_do_not_outrank_strong_or_matches(empty):
+    root, idx = empty
+    filler = " ".join(f"word{i}" for i in range(300))
+    put(root, "a/weak.md", "weak", turns=(f"deploy {filler} flaky",))       # every word, once, in a long turn
+    put(root, "a/strong.md", "strong", turns=("flaky flaky flaky",), title="flaky test fix")
+    idx.update(root)
+    assert [h["id"] for h in idx.find("deploy flaky")] == ["strong", "weak"]   # OR ranking: AND has < limit hits
+    assert [h["id"] for h in idx.find("deploy flaky", limit=1)] == ["weak"]    # AND fills the list: AND ranking
+
+
+def test_fts_queries_drop_stopwords():
+    assert fts_queries("how did I fix the flaky test") == ['"fix" "flaky" "test"', '"fix" OR "flaky" OR "test"']
+    assert fts_queries("analisi dei test più lenti") == ['"analisi" "test" "lenti"', '"analisi" OR "test" OR "lenti"']
+    assert fts_queries("the") == ['"the"']                          # only stopwords: keep them
 
 
 def test_recent_get_children_sql(kb):
