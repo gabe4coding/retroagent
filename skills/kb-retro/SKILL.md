@@ -8,9 +8,8 @@ description: Use when the user asks for a retrospective, review or lessons learn
 Goal: changes to the agent's **environment** (steering files, checks, tools, docs) that make the next sessions better,
 ranked by severity. Every claim points to evidence (`short [turn N]`). A diary of what happened is not a retro.
 
-1. **Scope.** Period (default: last 7 days) and project (default: all), or one session if the user names it. Ask
-   only if the request is unclear.
-2. **Overview (cheap).**
+1. **Scope.** Period (default: last 7 days) and project (default: all), or one session if the user names it.
+2. **Overview.**
    - `kb stats outcomes` and `kb stats projects`
    - `kb sql "SELECT short, substr(started,1,10) day, project, turns, outcome, title, summary FROM sessions WHERE parent='' AND started >= date('now','-7 days') ORDER BY started"`
    - Corrections saved as memories: `kb sql "SELECT project, name, description FROM memories WHERE type='feedback' AND modified >= date('now','-7 days')"`
@@ -36,7 +35,7 @@ ranked by severity. Every claim points to evidence (`short [turn N]`). A diary o
      to read it, read-only.
 6. **Check before you propose.** Read the file you want to change (`CLAUDE.md`, `AGENTS.md`, lint config, CI
    workflow, skill). Do not propose a rule that already exists: then the finding is why it did not work.
-7. **Write the retro** (under one page, short sentences):
+7. **Write the retro** (under one page):
    - Findings ranked by severity (time or rework lost, how often it came back). Each: category, what happened with
      evidence, root cause (not the symptom), and the concrete change: which file, which check, which command.
    - What went well (1–3 bullets), only if it is worth keeping on purpose.
