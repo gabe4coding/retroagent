@@ -1,4 +1,4 @@
-# Pages routine (setup step 10)
+# Pages routine (setup step 12)
 
 Explain in two lines: a cloud routine on claude.ai writes one page per project and one retro per closed week into
 the data repo, fired by a GitHub workflow in the data repo at most every 3 hours (routine runs count against the
