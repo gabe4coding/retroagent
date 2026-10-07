@@ -10,10 +10,11 @@ description: Use when the user asks about past work in any Claude Code or Codex 
 0. **Project page:** for a question about one project, `kb page <project> [--section "Key decisions"]` first: its
    state, decisions, files, errors → fixes and open threads, each with the short id of its session. `kb page` lists the
    pages; weekly retros are named like `2026-W41`.
-1. **Find:** `kb find "<2-5 distinctive words>" [--project NAME] [--agent claude|codex] [--since 30d] [--tag TAG]`
+1. **Find:** `kb find "<2-5 distinctive words>" [--project NAME] [--agent claude|codex] [--since 30d] [--tag TAG] [--role user]`
    - Matching pages come first (`page date kind name title`), then memories (`memory date agent project name`;
      read one with `kb memory <ref>`, the ref is in brackets), then one line per session: `short date agent project title · «snippet» [turn N]`. `short` is the 8-character session id (the last 8 characters, no dashes). Lines with `↳parent` are subagent transcripts.
    - Use distinctive words: error text, file names, service or tool names. Add filters when you know them.
+   - The exact phrase ranks first. `--role user --no-subagents` searches only the user's own messages (what they asked or corrected).
    - No match: try synonyms or fewer words. `kb recent --project NAME` lists the latest sessions.
 2. **Summarize:** `kb summary <short>` on the 1–3 best hits: summary, decisions, outcome, files, PRs, subagents.
 3. **Read only what you need:** `kb show <short> --turn N --around 1` or `kb show <short> --grep "regex"`. `--grep` takes a regular expression (case-insensitive, up to 5 matching turns): write `\(` for a literal parenthesis. Output stops at `--max-chars` (default 4000).
