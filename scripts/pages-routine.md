@@ -65,9 +65,18 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
    - When the digest is not enough for an important point, look closer, at most 5 times per page:
      `kb summary <short>`, `kb show <short> --grep "<regex>" --around 1`, or `kb memory <path>` for a memory the
      digest cut or only listed.
-   - Write the page in the format below. On `update`, merge: keep what is still true, change "Current state", add new
-     decisions, errors and threads, mark superseded decisions, close threads that later sessions finished. Add the new
-     short ids to `sources`. Do not duplicate what is already there.
+   - Write the page in the format below. On `update`, merge: add new decisions, errors and threads, close threads
+     that later sessions finished, add the new short ids to `sources`, and do not duplicate what is already there. For
+     each bullet of "Current state", "Key decisions", "Important files", "Errors seen → fixes" and "Open threads":
+     - A new session **confirms** it (the same fact, still true): add the session's short id to the bullet's
+       parentheses. This keeps the fact current: `finish` dates each bullet by its newest source, and moves bullets
+       of "Current state", "Errors seen" and "Open threads" that recent sessions no longer confirm to History.
+     - A new session **contradicts** it: write the new bullet, and move the old one to History as
+       `- superseded <date of the new session> by <short> (<section>): <old text> (<old sources>)`.
+     - Two **memories** disagree: follow the newer one (by its `modified` date in the digest), and add an "Open
+       threads" bullet that names both refs, so the owner can delete the old one. Never edit a memory.
+     - Not sure whether it confirms or contradicts: leave the bullet as it is.
+     Never write dates into the parentheses: `finish` writes them (`· YYYY-MM-DD`) and replaces any you write.
    - If the digest says it was cut, run the `kb pages digest --only …` command it prints for the rest.
 4. **Retros.** For each item in `retros` (a closed week, Monday to Sunday, Europe/Rome time):
    - `kb pages digest --since <since> --until <until>`
@@ -96,7 +105,8 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
 ## Project page format
 
 Front matter values are JSON (strings in double quotes). `finish` sets `updated` and `sessions` (the number of
-`sources`); keep the lines, their values do not matter. Keep the page under 25,000 characters (the hard limit is in
+`sources`); keep the lines, their values do not matter. Every bullet cites its sources in parentheses at its end;
+`finish` adds ` · <date>` inside them on the sections that age (keep it when you copy a bullet, it is replaced anyway). Keep the page under 25,000 characters (the hard limit is in
 `pages/config.json`); when it grows, shorten the History section first.
 
 ```markdown
@@ -131,6 +141,8 @@ sources: ["<short>", "<short>"]
 
 ## History
 - <YYYY-MM to YYYY-MM>: <compact summary of older work and superseded decisions> (<short>, <short>)
+- superseded <YYYY-MM-DD> by <short> (<section>): <old text> (<old sources>)
+- unconfirmed since <YYYY-MM-DD> (<section>): <text> (<sources · date>)   ← written by `finish`
 ```
 
 ## Retro format
