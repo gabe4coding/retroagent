@@ -25,7 +25,7 @@ AGING = ("Current state", "Errors seen", "Open threads")     # "Key decisions" a
 HISTORY = "History"
 STALE_DAYS = 90                  # default of pages/config.json `stale_days`
 STALE_DAYS_CURRENT = 30          # default of pages/config.json `stale_days_current`
-_TAIL = re.compile(r"\s*\(([^()]*)\)\s*$")
+_TAIL = re.compile(r"\s*\(([^()]*)\)(\.?)\s*$")       # a writer sometimes ends the bullet with a period
 _DATE = re.compile(r"\s*·\s*(\d{4}-\d{2}-\d{2})\s*$")
 _SHORT = re.compile(r"\b[0-9a-f]{8}\b")
 _MEMORY = re.compile(r"\bmemory\s+([^\s,·]+)")
@@ -41,7 +41,7 @@ class Ref:
 
 def parse_tail(line: str):
     """(text before the parentheses, Ref, parentheses content without its date) of a "- " bullet, or
-    (line, None, "") when it cites no session and no memory."""
+    (line, None, "") when it cites no session and no memory. A period after the parentheses is dropped."""
     m = _TAIL.search(line)
     if not m:
         return line, None, ""
@@ -147,8 +147,10 @@ def sweep(body: str, stale_days: int = STALE_DAYS, stale_days_current: int = STA
 
 def index_lookup(idx):
     """lookup(Ref) for stamp(): the newest date of a bullet's sources in the index, or "". A short id that matches
-    no session or several is skipped. A memory ref may be cut by the writer, so a ref also matches by its start; a
-    memory with no modified time counts with the start of the session that wrote it."""
+    no session or several is skipped. A memory ref may be cut by the writer, so a ref also matches by its start. A
+    memory with no modified time counts with the start of the session that wrote it, else not at all. (Not with the
+    day a sync committed it: a first sync commits old memories on one day, which would make the whole page look
+    newer than it is and age out its other bullets.)"""
     from kb.index import AmbiguousId
 
     def lookup(ref: Ref) -> str:

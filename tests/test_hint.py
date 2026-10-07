@@ -166,6 +166,8 @@ def test_a_dated_bullet_keeps_its_date_and_a_clean_text():
     yaml = bullets(DATED)[0]
     assert yaml.date == "2026-09-20" and yaml.source == "kb summary 1a2b3c4d"
     assert yaml.text.endswith("`pip install -e .[dev]`") and bullets(PAGE)[0].date == ""
+    dot = bullets(DATED.replace("(1a2b3c4d · 2026-09-20)", "(1a2b3c4d · 2026-09-20)."))[0]   # a period after
+    assert (dot.date, dot.source, dot.text) == (yaml.date, yaml.source, yaml.text)
 
 
 def test_a_stale_bullet_is_never_a_hint_and_the_hint_shows_the_date(kb):
