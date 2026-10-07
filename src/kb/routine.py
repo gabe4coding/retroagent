@@ -658,7 +658,7 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
             pending["projects"][item["name"]] = sorted(back | set(pending["projects"].get(item["name"], [])))
             returned.append(item["name"])
     for item in plan["retros"]:
-        if item["action"] == "create" and item["page"] not in written and item["week"] not in skip:
+        if item["page"] not in written and item["week"] not in skip and item["week"] not in pending["weeks"]:
             pending["weeks"].append(item["week"])
             returned.append(item["week"])
     state = {"version": 1, "sha": plan["head"], "last_run": _iso(now), "mode": plan["mode"],

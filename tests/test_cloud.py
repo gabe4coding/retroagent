@@ -122,28 +122,40 @@ def test_a_branch_with_other_changes_is_kept(setup_):
     idx.close()
 
 
-def test_an_older_copy_on_a_kept_branch_never_replaces_a_newer_import(setup_):
+def _records(path, n):
+    with open(path, "w", encoding="utf-8") as fh:
+        for i in range(1, n + 1):
+            fh.write(json.dumps({"type": "user", "sessionId": "late-session", "timestamp": f"2026-10-06T14:00:{i:02d}Z",
+                                 "message": {"role": "user", "content": "Continue working on the same task."}}) + "\n")
+
+
+def test_an_older_copy_of_the_same_size_never_replaces_a_newer_one(setup_, monkeypatch):
     remote, cfg, transcript, home = setup_
+    late = transcript.parent / "99999999-0000-0000-0000-000000000099.jsonl"
     (cfg.root / "notes.md").write_text("work\n")
     git("add", "notes.md", cwd=cfg.root)
     git("commit", "-q", "-m", "notes", cwd=cfg.root)
     git("push", "-q", "origin", BRANCH, cwd=cfg.root)
-    cloud.push(cfg, str(transcript))                                         # the old copy, on a kept branch
-    with open(transcript, "a", encoding="utf-8") as fh:
-        for i in range(3):
-            fh.write(json.dumps({"type": "user", "sessionId": SID, "timestamp": f"2026-10-06T14:0{i}:00.000Z",
-                                 "message": {"role": "user", "content": f"turn {i} " * 20}}) + "\n")
-    git("checkout", "-q", "-b", "claude/other-z9", "origin/main", cwd=cfg.root)
-    cloud.push(cfg, str(transcript))                                         # the newer copy, on another branch
+    _records(late, 34)
+    cloud.push(cfg, str(late))                                               # the old copy, on a kept branch
+    _records(late, 35)
+    git("checkout", "-q", "-b", "claude/inbox", "origin/main", cwd=cfg.root)
+    cloud.push(cfg, str(late))                                               # the newer copy, on another branch
+    real = cloud._inbox_blobs                    # two gzip copies can have the same size: the size tells nothing
+    monkeypatch.setattr(cloud, "_inbox_blobs", lambda root, tip: {p: (b, 0) for p, (b, _) in real(root, tip).items()})
     ccfg = cloud.lane(home)
+    local = Path(ccfg.claude_dir) / late.parent.name / late.name
     written, errors, done = cloud.import_inbox(home, ccfg)
-    assert errors == [] and [name for name, _ in done] == ["claude/other-z9"]
+    assert errors == [] and "claude/inbox" in [name for name, _ in done]
+    assert len(local.read_text().splitlines()) == 35                         # both branches there: the newer wins
     assert cloud.delete_branches(home.root, done) == []
-    local = next(Path(ccfg.claude_dir).glob("*/*.jsonl"))
-    newer = local.read_bytes()
-    assert b"turn 2" in newer
+    assert _has_branch(remote, BRANCH) and not _has_branch(remote, "claude/inbox")
     written, errors, _ = cloud.import_inbox(home, ccfg)
-    assert errors == [] and written == 0 and local.read_bytes() == newer
+    assert errors == [] and written == 0 and len(local.read_text().splitlines()) == 35
+    local.write_text("another history\n" * 400)                              # the kept copy no longer fits it
+    written, errors, done = cloud.import_inbox(home, ccfg)
+    assert written == 0 and "does not extend the one imported before" in errors[0] and done == []
+    assert local.read_text() == "another history\n" * 400
 
 
 def test_a_second_importer_stops_with_a_note(setup_, tmp_path):
