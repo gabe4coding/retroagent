@@ -19,6 +19,8 @@ from kb.state import State
 from kb.sync import Report, pending_units, run_sync
 from kb.util import short_id
 
+pytestmark = pytest.mark.slow          # starts git and other processes; runs with scripts/test --all
+
 SUMMARY = {"summary": "Did the thing.", "tags": ["demo"], "outcome": "done", "decisions": []}
 GOOD = json.dumps({"type": "result", "is_error": False, "result": json.dumps(SUMMARY)})
 

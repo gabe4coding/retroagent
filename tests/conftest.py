@@ -1,6 +1,38 @@
+import subprocess
+
 import pytest
 
 from kb import gitops
+
+
+def pytest_addoption(parser):
+    parser.addoption("--all", action="store_true", help="also run the tests marked slow")
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: starts processes (git, gitleaks, sh, python) or takes seconds; runs only with --all")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Without --all, the tests marked slow are left out: the fast run must stay under a few seconds."""
+    if config.getoption("--all"):
+        return
+    slow = [item for item in items if item.get_closest_marker("slow")]
+    if slow:
+        config.hook.pytest_deselected(items=slow)
+        items[:] = [item for item in items if not item.get_closest_marker("slow")]
+
+
+@pytest.fixture(autouse=True)
+def _no_processes_unless_slow(request, monkeypatch):
+    """A test that starts a process must be marked slow: each process costs tens of milliseconds."""
+    if request.node.get_closest_marker("slow"):
+        return
+
+    def refuse(self, args, *a, **k):
+        raise AssertionError(f"this test starts a process ({args!r}): mark it @pytest.mark.slow")
+
+    monkeypatch.setattr(subprocess.Popen, "_execute_child", refuse)
 
 
 @pytest.fixture(autouse=True)

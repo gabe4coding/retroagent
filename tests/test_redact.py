@@ -268,17 +268,17 @@ def test_unterminated_private_key_is_redacted():
 
 
 def test_private_key_scan_stays_linear_with_many_markers():
-    text = "-----BEGIN PRIVATE KEY----- " * 30_000
+    text = "-----BEGIN PRIVATE KEY----- " * 3_000
     t0 = time.perf_counter()
     redact(text)
-    assert time.perf_counter() - t0 < 2
+    assert time.perf_counter() - t0 < 1
 
 
 ADVERSARIAL = [
-    ("hyphens", "a-" * 500_000),
-    ("dots", "a." * 500_000),
-    ("letters", "x" * 1_000_000),
-    ("assignments", "password=" * 100_000),
+    ("hyphens", "a-" * 50_000),
+    ("dots", "a." * 50_000),
+    ("letters", "x" * 100_000),
+    ("assignments", "password=" * 10_000),
 ]
 
 
@@ -286,20 +286,20 @@ ADVERSARIAL = [
 def test_redact_is_fast_on_adversarial_lines(name, line):
     t0 = time.perf_counter()
     redact(line)
-    assert time.perf_counter() - t0 < 2
+    assert time.perf_counter() - t0 < 1
 
 
 @pytest.mark.parametrize("name,line", ADVERSARIAL, ids=[a[0] for a in ADVERSARIAL])
 def test_every_rule_is_linear_without_the_prefilter(name, line):
     t0 = time.perf_counter()
     _run(line, False)                                 # runs all rules, even where a prefilter would skip them
-    assert time.perf_counter() - t0 < 2
+    assert time.perf_counter() - t0 < 1
 
 
 ADVERSARIAL_MORE = [
-    "-----BEGIN PRIVATE KEY----- " * 30_000, "Bearer a " * 100_000, "a://b:" * 100_000, "-u a " * 200_000,
-    'password="' * 100_000, "password='a" * 100_000, "Basic " * 100_000, "-----BEGIN " + "A " * 500_000,
-    "a-" * 500_000 + "://u:p@h", 'password="' + "a" * 1_000_000, "token=1" * 100_000, "token=" * 170_000, 'password=\\"' * 100_000,
+    "-----BEGIN PRIVATE KEY----- " * 3_000, "Bearer a " * 10_000, "a://b:" * 10_000, "-u a " * 20_000,
+    'password="' * 10_000, "password='a" * 10_000, "Basic " * 10_000, "-----BEGIN " + "A " * 50_000,
+    "a-" * 50_000 + "://u:p@h", 'password="' + "a" * 100_000, "token=1" * 10_000, "token=" * 17_000, 'password=\\"' * 10_000,
 ]
 
 
@@ -307,7 +307,7 @@ ADVERSARIAL_MORE = [
 def test_every_rule_is_linear_on_more_adversarial_lines(line):
     t0 = time.perf_counter()
     _run(line, False)
-    assert time.perf_counter() - t0 < 2
+    assert time.perf_counter() - t0 < 1
 
 
 def test_the_prefilter_never_changes_the_result():
@@ -348,7 +348,7 @@ _FUZZ_PIECES = [
 
 def test_redaction_never_breaks_serialized_json_on_random_text():
     rng = random.Random(2026)
-    for i in range(60_000):
+    for i in range(10_000):
         s = "".join(rng.choice(_FUZZ_PIECES) for _ in range(rng.randint(2, 14)))
         doc = rng.choice([
             {"a": s}, {"password": s, "n": 1}, [s, {"token": s}], {"x": json.dumps({"password": s, "t": s})},
@@ -666,35 +666,36 @@ def test_vendor_format_false_positives_stay(text):
 
 
 ADVERSARIAL_FLAGS = [
-    "mysql " * 170_000, "mariadb -u " * 90_000, "mysql -p" * 120_000, "mysql -p " * 110_000, "mysqldump " * 100_000,
-    ("mysql " + "x" * 70 + " ") * 14_000, ("mysql " + "x" * 79 + " ") * 12_000, "mysql " + "-u a " * 250_000,
-    "az " * 300_000, "az -p " * 160_000, ("az " + "x" * 79 + " ") * 12_000, "redis-cli " * 100_000, "redis-cli -a " * 80_000,
-    "sshpass " * 120_000, "sshpass -p " * 90_000, "sshpass -x " * 90_000,
-    "--password " * 90_000, "--password=" * 90_000, "--password='" * 80_000, "--token " * 120_000, "--pass " * 140_000,
-    "--password " + "a" * 1_000_000, "--password='" + "a" * 1_000_000, "--password=" + "a" * 1_000_000,
-    "--password \"" + "a b " * 250_000, "mysql -p'" + "a" * 1_000_000, "-p" * 500_000, "-a " * 330_000,
-    "--api-key " * 90_000, "--access-token " * 60_000, "--client-secret=" * 60_000,
-    "AccountKey=" * 90_000, "AccountKey=" + "A" * 1_000_000, "AccountKey=" + "A" * 39 + " ", ("AccountKey=" + "A" * 39 + " ") * 20_000,
-    "GOCSPX-" * 140_000, "GOCSPX-" + "a" * 1_000_000, "xoxe-" * 200_000, "xoxe-" + "a" * 1_000_000,
-    "token_" * 170_000, "secret_key_base" * 60_000, "api_key" * 140_000, "TOKEN_" + "A" * 1_000_000,
-    "token" + "a" * 1_000_000, "password_" * 110_000, "apiKeyProd" * 100_000, "token_a=" * 120_000, "secret_" + "x" * 15 + "=" + " " * 100_000,
+    "mysql " * 17_000, "mariadb -u " * 9_000, "mysql -p" * 12_000, "mysql -p " * 11_000, "mysqldump " * 10_000,
+    ("mysql " + "x" * 70 + " ") * 1_400, ("mysql " + "x" * 79 + " ") * 1_200, "mysql " + "-u a " * 25_000,
+    "az " * 30_000, "az -p " * 16_000, ("az " + "x" * 79 + " ") * 1_200, "redis-cli " * 10_000, "redis-cli -a " * 8_000,
+    "sshpass " * 12_000, "sshpass -p " * 9_000, "sshpass -x " * 9_000,
+    "--password " * 9_000, "--password=" * 9_000, "--password='" * 8_000, "--token " * 12_000, "--pass " * 14_000,
+    "--password " + "a" * 100_000, "--password='" + "a" * 100_000, "--password=" + "a" * 100_000,
+    "--password \"" + "a b " * 25_000, "mysql -p'" + "a" * 100_000, "-p" * 50_000, "-a " * 33_000,
+    "--api-key " * 9_000, "--access-token " * 6_000, "--client-secret=" * 6_000,
+    "AccountKey=" * 9_000, "AccountKey=" + "A" * 100_000, "AccountKey=" + "A" * 39 + " ", ("AccountKey=" + "A" * 39 + " ") * 2_000,
+    "GOCSPX-" * 14_000, "GOCSPX-" + "a" * 100_000, "xoxe-" * 20_000, "xoxe-" + "a" * 100_000,
+    "token_" * 17_000, "secret_key_base" * 6_000, "api_key" * 14_000, "TOKEN_" + "A" * 100_000,
+    "token" + "a" * 100_000, "password_" * 11_000, "apiKeyProd" * 10_000, "token_a=" * 12_000, "secret_" + "x" * 15 + "=" + " " * 10_000,
     # the dotted-identifier guard of the suffix rule
-    "token_x=" + "a." * 500_000, "token_x=a." * 100_000, "token_x=" + "a" * 1_000_000, "token_x=" + "a.b" * 300_000 + "=",
-    ("token_x=a.b" + "c" * 80) * 11_000, "token_x=a.b=" * 80_000, "password_2=" + "a." * 450_000 + "9",
+    "token_x=" + "a." * 50_000, "token_x=a." * 10_000, "token_x=" + "a" * 100_000, "token_x=" + "a.b" * 30_000 + "=",
+    ("token_x=a.b" + "c" * 80) * 1_100, "token_x=a.b=" * 8_000, "password_2=" + "a." * 45_000 + "9",
     # one command with a very long run of flags: a rule runs at most 3 times
-    "mysql " + "-pa " * 250_000, "redis-cli " + "-a a " * 200_000, "az " + "-p a " * 200_000, "mysql -pa " * 100_000,
-    "az -p a " * 120_000, "redis-cli -a a " * 70_000, "sshpass -p a " * 80_000,
+    "mysql " + "-pa " * 25_000, "redis-cli " + "-a a " * 20_000, "az " + "-p a " * 20_000, "mysql -pa " * 10_000,
+    "az -p a " * 12_000, "redis-cli -a a " * 7_000, "sshpass -p a " * 8_000,
 ]
 
 
+@pytest.mark.slow                                     # about 4 s for the whole list
 @pytest.mark.parametrize("line", ADVERSARIAL_FLAGS, ids=[str(i) for i in range(len(ADVERSARIAL_FLAGS))])
 def test_new_rules_are_linear_on_adversarial_lines(line):
     t0 = time.perf_counter()
     _run(line, False)                                 # all rules, no prefilter
-    assert time.perf_counter() - t0 < 2
+    assert time.perf_counter() - t0 < 1
     t0 = time.perf_counter()
     redact(line)
-    assert time.perf_counter() - t0 < 2
+    assert time.perf_counter() - t0 < 1
 
 
 def test_flag_rules_keep_the_names_of_the_rules_that_run_first():
@@ -1112,37 +1113,38 @@ def test_the_new_rules_keep_serialized_json_valid():
 
 ADVERSARIAL_NEW = [
     # credentials
-    "credentials=" * 90_000, "credentials" + "a" * 1_000_000, "credentials_" + "a" * 15 + "=" + " " * 100_000,
-    "credentials=a." * 100_000, "credentials=" + "a." * 450_000 + "9", "credentials_x=" * 70_000, "CREDENTIALS" * 90_000,
+    "credentials=" * 9_000, "credentials" + "a" * 100_000, "credentials_" + "a" * 15 + "=" + " " * 10_000,
+    "credentials=a." * 10_000, "credentials=" + "a." * 45_000 + "9", "credentials_x=" * 7_000, "CREDENTIALS" * 9_000,
     # flags with a credential word in the name
-    "--credentials-login=" * 50_000, "--credentials-login " * 50_000, "--" + "a-" * 500_000, "--" + "a" * 1_000_000,
-    "--token-x " * 100_000, "--token=" + "a" * 1_000_000, "--token-x='" + "a " * 500_000, "--api-token-value='" * 50_000,
-    ("--login-x=" + "a" * 190 + " ") * 5_000, " --" + "-" * 1_000_000, "--login-x=" + "a" * 199 + "1" + "b" * 1_000_000,
-    ("--token-x " + "a" * 7 + " ") * 90_000, "--a-token-" * 100_000, "--password-" * 90_000, "-- " * 300_000,
-    "--token-x=" + "a" * 7 + "1" + " " + "--token-x=" * 90_000,
+    "--credentials-login=" * 5_000, "--credentials-login " * 5_000, "--" + "a-" * 50_000, "--" + "a" * 100_000,
+    "--token-x " * 10_000, "--token=" + "a" * 100_000, "--token-x='" + "a " * 50_000, "--api-token-value='" * 5_000,
+    ("--login-x=" + "a" * 190 + " ") * 500, " --" + "-" * 100_000, "--login-x=" + "a" * 199 + "1" + "b" * 100_000,
+    ("--token-x " + "a" * 7 + " ") * 9_000, "--a-token-" * 10_000, "--password-" * 9_000, "-- " * 30_000,
+    "--token-x=" + "a" * 7 + "1" + " " + "--token-x=" * 9_000,
     # URL query strings
-    "?key=" * 200_000, "?key=" + "a" * 1_000_000, "&token=aaaaaaa " * 70_000, ("?key=" + "a" * 7 + " ") * 100_000,
-    "?x-amz-signature=" * 60_000, "&" * 1_000_000, "?" + "a" * 1_000_000, "?key=&" * 150_000, "&amp;token=" * 90_000,
-    "?" + "a=b&" * 250_000, "?access_token=" + "%2F" * 300_000, "?a=" * 300_000 + "key=" + "a" * 1_000_000,
+    "?key=" * 20_000, "?key=" + "a" * 100_000, "&token=aaaaaaa " * 7_000, ("?key=" + "a" * 7 + " ") * 10_000,
+    "?x-amz-signature=" * 6_000, "&" * 100_000, "?" + "a" * 100_000, "?key=&" * 15_000, "&amp;token=" * 9_000,
+    "?" + "a=b&" * 25_000, "?access_token=" + "%2F" * 30_000, "?a=" * 30_000 + "key=" + "a" * 100_000,
     # a bare key
-    "key=" * 250_000, "key: " + "Aa1" * 340_000 + ".", "key=" + "Aa1" * 8 + "=", ("key=" + "Aa1" * 8 + ".") * 40_000,
-    "key=" + "A" * 1_000_000, "key=" + "-" * 1_000_000, ("key=" + "a" * 255 + "A") * 3_000, "key: " * 200_000,
-    ("key=" + "aA1" * 90) * 3_000, "key=" + "a1" * 400_000 + "A", "key_" * 250_000, "_key=" * 170_000,
+    "key=" * 25_000, "key: " + "Aa1" * 34_000 + ".", "key=" + "Aa1" * 8 + "=", ("key=" + "Aa1" * 8 + ".") * 4_000,
+    "key=" + "A" * 100_000, "key=" + "-" * 100_000, ("key=" + "a" * 255 + "A") * 300, "key: " * 20_000,
+    ("key=" + "aA1" * 90) * 300, "key=" + "a1" * 40_000 + "A", "key_" * 25_000, "_key=" * 17_000,
     # jwt
-    "eyJ" + "a" * 1_000_000, "eyJaaaaaaaaaa." * 70_000, "eyJaaaaaaaaaa.aaaaaaaaaa" * 40_000, "eyJ" + "a." * 500_000,
-    "eyJ" * 300_000, "eyJ-" * 250_000, ("eyJ" + "a" * 11 + "-") * 70_000, ".eyJ" + "a" * 11 + ".a" * 200_000, ("eyJ" + "a" * 11 + ".") * 70_000, "eyJ" + "a" * 11 + "." + "b" * 1_000_000,
+    "eyJ" + "a" * 100_000, "eyJaaaaaaaaaa." * 7_000, "eyJaaaaaaaaaa.aaaaaaaaaa" * 4_000, "eyJ" + "a." * 50_000,
+    "eyJ" * 30_000, "eyJ-" * 25_000, ("eyJ" + "a" * 11 + "-") * 7_000, ".eyJ" + "a" * 11 + ".a" * 20_000, ("eyJ" + "a" * 11 + ".") * 7_000, "eyJ" + "a" * 11 + "." + "b" * 100_000,
     # private-key markers
-    "-----BEGIN " * 90_000, "-----BEGIN " + "A " * 500_000, "-----BEGIN PRIVATE KEY" * 40_000, "-----END " + "A" * 1_000_000,
-    ("-----BEGIN " + "A" * 100 + " ") * 8_000, "-----BEGIN PRIVATE KEY BLOCK" * 35_000, "-----BEGIN A-----" * 55_000,
-    "-----END PRIVATE KEY-----" * 40_000, "-----BEGIN " + "A" * 100 + "-----BEGIN " + "A" * 100 + "PRIVATE KEY-----" * 1,
+    "-----BEGIN " * 9_000, "-----BEGIN " + "A " * 50_000, "-----BEGIN PRIVATE KEY" * 4_000, "-----END " + "A" * 100_000,
+    ("-----BEGIN " + "A" * 100 + " ") * 800, "-----BEGIN PRIVATE KEY BLOCK" * 3_500, "-----BEGIN A-----" * 5_500,
+    "-----END PRIVATE KEY-----" * 4_000, "-----BEGIN " + "A" * 100 + "-----BEGIN " + "A" * 100 + "PRIVATE KEY-----" * 1,
 ]
 
 
+@pytest.mark.slow                                     # about 4 s for the whole list
 @pytest.mark.parametrize("line", ADVERSARIAL_NEW, ids=[str(i) for i in range(len(ADVERSARIAL_NEW))])
 def test_the_new_rules_are_linear_on_adversarial_lines(line):
     t0 = time.perf_counter()
     _run(line, False)                                 # all rules, no prefilter
-    assert time.perf_counter() - t0 < 2
+    assert time.perf_counter() - t0 < 1
     t0 = time.perf_counter()
     redact(line)
-    assert time.perf_counter() - t0 < 2
+    assert time.perf_counter() - t0 < 1

@@ -13,6 +13,8 @@ from kb.index import Index
 from kb.pages import parse_page
 from kb.routine import PagesError
 
+pytestmark = pytest.mark.slow          # starts git and other processes; runs with scripts/test --all
+
 NOW = dt.datetime(2026, 10, 7, 9, 0, tzinfo=dt.timezone.utc)      # a Wednesday in 2026-W41
 ROME = routine.zone("Europe/Rome")
 

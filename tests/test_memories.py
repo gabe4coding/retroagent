@@ -263,6 +263,7 @@ def test_cli_find_and_memory(indexed, capsys, monkeypatch):
 
 # ---------------------------------------------------------------- sync, two machines
 
+@pytest.mark.slow
 def test_memories_are_committed_pushed_and_searchable_on_the_other_host(tmp_path):
     remote = init_remote(tmp_path)
     a = make_config(clone(remote, tmp_path / "a"), "host-a", make_claude_tree(tmp_path / "sa"),
