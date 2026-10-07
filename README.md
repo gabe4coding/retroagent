@@ -160,10 +160,8 @@ only its markdown follows each change. `0` writes the raw copy at every sync. `-
 
 ## Develop
 The whole repo is the plugin (`.claude-plugin/`, `.codex-plugin/`, `bin/`, `hooks/`, `skills/`); the Python package
-is `src/kb` (stdlib only, Python 3.9). `templates/data/` holds the files `kb setup` writes into data repos.
-`scripts/test` runs the fast tests in parallel on `/usr/bin/python3` with pytest from `uv` (a few seconds);
-`scripts/test --all` adds the tests marked `slow`, which start real git and other processes. When skills or hooks
-change, bump `version` in both plugin manifests: Claude Code and Codex cache plugins per version.
+is `src/kb`. `templates/data/` holds the files `kb setup` writes into data repos. Rules for changing code, tests,
+skills and docs: [CODING_STANDARDS.md](CODING_STANDARDS.md).
 
 ## License
 MIT. See `LICENSE`.
