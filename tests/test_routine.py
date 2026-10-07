@@ -95,11 +95,15 @@ def test_batches_leave_the_rest_pending_newest_first(tmp_path):
 def test_sessions_without_a_summary_wait_for_one(tmp_path):
     root = repo(tmp_path / "kb")
     demo(root)
-    session(root, "a0000004", "alpha", "2026-10-07T07:00:00Z", summary="")     # 2 hours old
-    session(root, "a0000005", "alpha", "2026-10-05T07:00:00Z", summary="")     # 2 days old: used as it is
+    for sid, started in (("a0000004", "2026-10-07T07:00:00Z"), ("a0000005", "2026-10-05T07:00:00Z")):
+        put(root, f"h/claude/2026/10/{started[:10]}_alpha_{sid}.md", sid, turns=("ask", "answer", "ask again"),
+            project="alpha", started=started, ended=started, summary="")   # 2 hours old: waits; 2 days old: used
+    put(root, "h/claude/2026/10/2026-10-07_alpha_a0000006.md", "a0000006", turns=("one prompt",), project="alpha",
+        started="2026-10-07T07:30:00Z", ended="2026-10-07T07:30:00Z", summary="")   # 1 prompt: never summarized
     commit(root)
     p = plan(root)
-    assert p["waiting"] == ["a0000004"] and "a0000005" in p["projects"][0]["sessions"]
+    assert p["waiting"] == ["a0000004"]
+    assert "a0000005" in p["projects"][0]["sessions"] and "a0000006" in p["projects"][0]["sessions"]
 
 
 def write_alpha(root, sources=("a0000001", "a0000002", "a0000003")):

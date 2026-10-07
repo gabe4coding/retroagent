@@ -29,7 +29,7 @@ DEFAULTS = {
     "skip_projects": ["scratch", "unknown"],
     "batch_projects": 5,                 # pages written per run; the rest waits in the state's pending list
     "batch_retros": 2,
-    "summary_wait_hours": 24,            # a session without a summary waits this long for one before it is used
+    "summary_wait_hours": 24,            # a session that will get a summary waits this long for it before it is used
     "timezone": "Europe/Rome",           # retro weeks run Monday to Sunday in this zone
     "retro_weeks_back": 4,               # closed weeks that get a retro when they have none
     "retro_late_days": 14,               # a retro is rewritten when new sessions of its week arrive this late
@@ -236,7 +236,7 @@ def make_plan(root, idx: Index, settings, now=None) -> dict:
     mode, base, paths = _changes(root, state, head)
 
     rows = [dict(r) for r in idx.db.execute(
-        "SELECT id, short, project, parent, started, ended, summary, md_path FROM sessions")]
+        "SELECT id, short, project, parent, started, ended, summary, user_turns, md_path FROM sessions")]
     by_id = {r["id"]: r for r in rows}
     top = [r for r in rows if not r["parent"]]
     if paths is None:
@@ -246,7 +246,8 @@ def make_plan(root, idx: Index, settings, now=None) -> dict:
         changed = [by_path[p] for p in sorted(paths) if p in by_path]
     changed += [by_id[i] for i in _strings(st.get("waiting")) if i in by_id]
 
-    # a subagent counts as a change of its parent; a session with no summary yet waits for one, for a while
+    # a subagent counts as a change of its parent; a session with no summary yet waits for one, for a while, unless
+    # it will never get one (kb sync summarizes only sessions with 2 prompts or more)
     wait = dt.timedelta(hours=settings["summary_wait_hours"])
     ready, waiting = {}, []
     for r in changed:
@@ -257,7 +258,7 @@ def make_plan(root, idx: Index, settings, now=None) -> dict:
         if r is None or r["parent"] or r["id"] in ready or r["id"] in waiting:
             continue
         t = _parse(r["ended"] or r["started"])
-        if not r["summary"] and t is not None and now - t < wait:
+        if not r["summary"] and (r["user_turns"] or 0) >= 2 and t is not None and now - t < wait:
             waiting.append(r["id"])
         else:
             ready[r["id"]] = r
