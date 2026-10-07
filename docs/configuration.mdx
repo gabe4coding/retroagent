@@ -18,6 +18,8 @@ The config lives in `~/.config/retroagent/config.json`. An install from before t
 | `embed` | `false` | [Semantic search](./commands.mdx#semantic-search). Set with `kb embed` / `kb embed --off`. |
 | `embed_url` | empty | An OpenAI-compatible `/v1/embeddings` server to use instead of the one `kb` manages. Keep it on localhost: it receives the text of your sessions. |
 | `embed_sync_seconds` | `60` | Longest a sync spends embedding new items. |
+| `cloud_import` | `false` | This machine imports the [cloud sessions](./commands.mdx#capture-cloud-sessions). Set with `kb cloud import --on` / `--off`, on one machine only. |
+| `cloud_host` | `cloud` | The host the imported cloud sessions are written under. |
 | `branch` | `main` | On any other branch, the sync touches no git. |
 | `raw_settle_hours` | `24` | See below. |
 | `skip_headless_single_prompt` | `true` | Skip `claude -p` / `codex exec` sessions. |

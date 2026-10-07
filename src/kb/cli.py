@@ -16,6 +16,8 @@
                        once a day
   kb setup init | routine | cloud | check   set up the data repo, the cloud routine, cloud environments (the setup
                        skill drives these)
+  kb cloud push | hook | install | import   get Claude Code cloud sessions into the KB: the cloud pushes them to
+                       an inbox, one machine imports them as host `cloud`
   kb update            pull the retroagent code and refresh the plugins
 
 Ids: the 8-character short id shown in lists (or any unique prefix of it or of the full id, 4 characters at least).
@@ -575,6 +577,11 @@ def cmd_status(args, cfg) -> int:
     if st.last_error:
         print(f"last error: {st.last_error}")
     print(f"pending sessions: {len(pending_units(cfg, st, now=True))}")
+    if cfg.cloud_import:
+        from kb.cloud import lane
+        ccfg = lane(cfg)
+        waiting = len(pending_units(ccfg, st, now=True)) if ccfg is not None else 0
+        print(f"cloud import: on (host {cfg.cloud_host}) · {waiting} imported session(s) pending")
     print(f"summary backlog: {backlog}")
     if gitops.find_gitleaks(cfg.gitleaks_path):
         print("gitleaks: installed")
@@ -622,6 +629,32 @@ def cmd_setup(args, cfg) -> int:
         else:
             print(setup.dumps(setup.check(cfg, config_mod.config_path())))
     except (setup.SetupError, gitops.GitError) as e:
+        print(f"kb: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def cmd_cloud(args, cfg) -> int:
+    from kb import cloud, setup
+    from kb.config import CODE_ROOT
+    try:
+        if args.step == "hook":
+            cloud.hook(cfg, sys.stdin)
+        elif args.step == "install":
+            print(f"cloud sessions: Stop and SessionEnd hooks in {cloud.install(str(CODE_ROOT / 'bin' / 'kb'))}")
+        elif args.step == "import":
+            if args.on or args.off:
+                path = config_mod.set_key("cloud_import", bool(args.on))
+                print(f"cloud import {'on' if args.on else 'off'} ({path})")
+            else:
+                print(f"cloud import: {'on' if cfg.cloud_import else 'off'} · host: {cfg.cloud_host}")
+        else:
+            transcript = args.transcript or cloud.newest_transcript(cfg.claude_dir)
+            if not transcript:
+                print(f"kb: no transcript in {cfg.claude_dir}", file=sys.stderr)
+                return 2
+            print(f"{transcript}: {cloud.push(cfg, transcript)}")
+    except (cloud.CloudError, setup.SetupError, config_mod.ConfigError, gitops.GitError) as e:
         print(f"kb: {e}", file=sys.stderr)
         return 2
     return 0
@@ -932,6 +965,18 @@ def build_parser() -> argparse.ArgumentParser:
     su.add_argument("--environment", help="environment id for the routine spec")
     su.add_argument("--no-push", action="store_true", help="routine: print the spec only, push no files")
     su.set_defaults(func=cmd_setup)
+    cl = sub.add_parser("cloud", help="Claude Code cloud sessions: push them to the data repo's inbox (in the cloud), "
+                                      "import them (on one machine)")
+    cl.add_argument("step", choices=["push", "hook", "install", "import"],
+                    help="push: this session's transcript to the inbox on the data clone's branch · hook: what the "
+                         "Stop hook runs (a push in the background, only in a cloud session) · install: put that hook "
+                         "in ~/.claude/settings.json (the cloud setup script) · import: show or switch (--on, --off) "
+                         "the import of the inbox by this machine's sync")
+    cl.add_argument("--transcript", help="push: the transcript (default: the newest one)")
+    onoff = cl.add_mutually_exclusive_group()
+    onoff.add_argument("--on", action="store_true", help="import: this machine imports the cloud sessions")
+    onoff.add_argument("--off", action="store_true", help="import: stop importing them here")
+    cl.set_defaults(func=cmd_cloud)
     sub.add_parser("update", help="pull the retroagent code and run install.sh again").set_defaults(func=cmd_update)
     sub.add_parser("repair", help="reset the data clone to the remote when every sync fails to pull (refuses when "
                                   "that could lose anything but this host's own work)").set_defaults(func=cmd_repair)

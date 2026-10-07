@@ -137,15 +137,16 @@ def _build(root, base: str, files: dict, message: str, tmp: Path):
     return sha, written
 
 
-def publish(root, files: dict, message: str, branch: str = "main") -> dict:
+def publish(root, files: dict, message: str, branch: str = "main", start: str = "") -> dict:
     """Commit `files` ({path: (bytes, replace)}) on top of origin/<branch> and push. Retries when the remote moved
-    (a sync pushed meanwhile). In a clone with no commit yet, the pushed commit also becomes its local branch.
+    (a sync pushed meanwhile). A branch the remote lacks starts from origin/<start> when given (else from nothing).
+    In a clone with no commit yet, the pushed commit also becomes its local branch.
     Returns {"written": [...], "commit": sha or "", "branch": branch}."""
     root = Path(root)
     if not gitops.has_remote(root):
         raise SetupError(f"{root} has no remote 'origin'; clone your data repo there first")
     for _ in range(PUSH_TRIES):
-        base = _remote_tip(root, branch)
+        base = _remote_tip(root, branch) or (_remote_tip(root, start) if start else "")
         with tempfile.TemporaryDirectory(prefix="kb-setup-") as td:
             sha, written = _build(root, base, files, message, Path(td))
         if sha is None:
@@ -236,12 +237,15 @@ CLOUD_HOSTS = ("huggingface.co", "*.hf.co", "github.com", "release-assets.github
 
 def cloud_setup_script(code: str, data: str) -> str:
     """The setup script of a cloud environment: kb on PATH, the runtime and model installed and checked, semantic
-    search on. It always exits 0 (a failed download must not block sessions; kb find then uses BM25 alone)."""
+    search on, and the hook that pushes each session to the data repo's inbox (kb.cloud). It always exits 0 (a failed
+    download must not block sessions; kb find then uses BM25 alone)."""
     code_dir, data_dir = f"{CLOUD_HOME}/{code.split('/')[-1]}", f"{CLOUD_HOME}/{data.split('/')[-1]}"
     return (f"#!/bin/bash\n"
-            f"# retroagent: kb and semantic search in cloud sessions with {code} and {data} (kb setup cloud)\n"
+            f"# retroagent: kb, semantic search and session capture in cloud sessions with {code} and {data} "
+            f"(kb setup cloud)\n"
             f"ln -sf {code_dir}/bin/kb /usr/local/bin/kb || true\n"
             f"{code_dir}/bin/kb embed --install --root {data_dir} || true\n"
+            f"{code_dir}/bin/kb cloud install || true\n"
             f"exit 0\n")
 
 
@@ -253,7 +257,7 @@ def cloud(root, code: str = "") -> str:
         raise SetupError(f"{root} has no GitHub origin: cloud sessions clone the data repo from GitHub")
     hosts = "\n".join(CLOUD_HOSTS)
     script = cloud_setup_script(code, data)
-    return f"""Semantic search in Claude Code cloud sessions and routines
+    return f"""Semantic search and session capture in Claude Code cloud sessions and routines
 
 1. At claude.ai/code, open the environment selector (the cloud icon above the message box), then add an
    environment or open the settings of an existing one.
@@ -266,10 +270,15 @@ def cloud(root, code: str = "") -> str:
 ----- 8< -----
 {script}----- 8< -----
 4. Start sessions and routines in that environment with both repositories: {code} and {data}.
+5. On one of your machines (only one), turn on the import of cloud sessions: kb cloud import --on
 
 The first `kb find` in a session starts a background fill: it imports the vectors your machines committed
 (vectors/ in {data}) and starts the model. Until it is done, `kb find` uses BM25 alone. Your machines must have
 semantic search on (`kb embed`) and have synced, or there are no vectors to import.
+
+After each answer, a hook pushes the session's slim, redacted transcript to inbox/ on the session's branch of {data}.
+The sync of the machine from step 5 imports it as host `cloud` (summaries and vectors included) and then deletes
+that branch.
 """
 
 

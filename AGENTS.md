@@ -10,6 +10,7 @@ data; each user's data lives in their own data repo.
   `python3 -m kb` from `src/kb/`.
 - Install or setup → `skills/setup/SKILL.md` and `install.sh`.
 - The cloud routine → `scripts/pages-routine.md`.
+- Cloud sessions: the push from a cloud container and the import by one machine's sync → `src/kb/cloud.py`.
 - The data repo: layout and rules, what `kb setup init` / `kb setup routine` push (with `{{CODE_REPO}}` filled in)
   → `templates/data/`, `AGENTS.md` there first. How much each sync commit grows a data clone → `scripts/raw-growth`
   (read-only).
