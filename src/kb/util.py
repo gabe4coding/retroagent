@@ -86,6 +86,17 @@ def rel_path(path: str, cwd: str) -> str:
     return path
 
 
+_TEMP_ROOTS = ("/private/tmp/", "/tmp/", "/private/var/folders/", "/var/folders/")
+
+
+def is_scratch_path(path: str) -> bool:
+    """True for an absolute path in a temp folder or a scratchpad folder: noise in a session's list of edited files.
+
+    A relative path (rel_path made it relative to the session cwd) is inside the project, so it never is.
+    """
+    return path.startswith("/") and (path.startswith(_TEMP_ROOTS) or "/scratchpad/" in path)
+
+
 _WORKTREE = re.compile(r"^(.*?)/\.(?:claude/)?worktrees/[^/]+")
 
 

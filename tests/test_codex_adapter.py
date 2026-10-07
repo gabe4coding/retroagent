@@ -302,6 +302,32 @@ def test_apply_patch_move_adds_both_paths(tmp_path):
     assert _tools(s)[0].arg == "old.py, pkg/new.py, added.py, gone.py" and _tools(s)[0].diff == "+3 −1"
 
 
+def test_apply_patch_files_skip_temp_and_scratchpad_paths(tmp_path):
+    patch = ("*** Begin Patch\n"
+             "*** Add File: /private/tmp/codex/scratchpad/pr-body.md\n+x\n"
+             f"*** Update File: {CWD}/src/a.py\n@@\n-a\n+b\n"
+             "*** Add File: /tmp/notes.md\n+x\n"
+             "*** Update File: /var/folders/xy/abc/T/t.py\n@@\n-a\n+b\n"
+             "*** Delete File: /private/var/folders/xy/abc/T/gone.py\n"
+             f"*** Update File: {CWD}/old.py\n*** Move to: /tmp/moved.py\n@@\n-a\n+b\n"
+             "*** Add File: /Users/me/.codex/scratchpad/plan.md\n+x\n"
+             "*** Update File: /Users/me/Repositories/other/b.py\n@@\n-a\n+b\n"
+             "*** Update File: lib/c.py\n@@\n-a\n+b\n"
+             "*** Add File: notes/scratchpad/keep.md\n+x\n"
+             "*** End Patch")
+    s = _parse(tmp_path, [codex_patch(patch)])
+    assert s.files == ["src/a.py", "old.py", "/Users/me/Repositories/other/b.py", "lib/c.py",
+                       "notes/scratchpad/keep.md"]
+
+
+def test_apply_patch_files_keep_project_paths_when_the_project_is_under_tmp(tmp_path):
+    cwd = "/private/tmp/demo"
+    patch = (f"*** Begin Patch\n*** Update File: {cwd}/src/a.py\n@@\n-a\n+b\n"
+             "*** Add File: /private/tmp/other/b.py\n+x\n*** End Patch")
+    s = _parse(tmp_path, [codex_patch(patch)], cwd=cwd)
+    assert s.cwd == cwd and s.files == ["src/a.py"]
+
+
 def test_calls_without_a_call_id_are_not_registered(tmp_path):
     items = [codex_call("exec_command", None, {"cmd": "first"}), codex_call("exec_command", None, {"cmd": "second"}),
              codex_output(None, "Chunk ID: 1\nProcess exited with code 1\nOutput:\nboom"),

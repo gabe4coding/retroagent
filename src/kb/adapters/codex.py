@@ -13,7 +13,7 @@ from pathlib import Path
 
 from kb.adapters.common import iter_records
 from kb.model import Session, ToolCall, Unit
-from kb.util import (clean_user_text, first_line, head_lines, iso_utc, project_from_cwd,
+from kb.util import (clean_user_text, first_line, head_lines, is_scratch_path, iso_utc, project_from_cwd,
                      project_from_git_url, rel_path)
 
 _NAME = re.compile(r"^rollout-(\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d)-([0-9a-f-]{36})(?:_([0-9a-f-]{36}))?\.jsonl$")
@@ -201,7 +201,7 @@ def _custom_call(name: str, inp, cwd: str, files: list) -> ToolCall:
     if name == "apply_patch":
         paths = [rel_path(p.strip(), cwd) for p in _PATCH_FILE.findall(text)]
         for p in paths:
-            if p not in files:
+            if p not in files and not is_scratch_path(p):
                 files.append(p)
         # apply_patch has no ---/+++ headers: every line that starts with + or - is a changed line.
         lines = text.splitlines()

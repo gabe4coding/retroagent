@@ -3,7 +3,7 @@ import os
 import pytest
 
 from kb.util import (
-    atomic_write, clean_user_text, first_line, head_lines, hhmm, iso_utc,
+    atomic_write, clean_user_text, first_line, head_lines, hhmm, is_scratch_path, iso_utc,
     project_from_cwd, project_from_git_url, rel_path, short_id, slug,
 )
 
@@ -36,6 +36,32 @@ def test_slug():
 def test_rel_path():
     assert rel_path("/r/demo/src/a.ts", "/r/demo") == "src/a.ts"
     assert rel_path("/other/a.ts", "/r/demo") == "/other/a.ts"
+
+
+@pytest.mark.parametrize("path", [
+    "/private/tmp/claude-501/-Users-me-Repositories-demo/f6f65508/scratchpad/pr-body.md",
+    "/tmp/notes.md",
+    "/private/var/folders/xy/abc123/T/tmp.py",
+    "/var/folders/xy/abc123/T/tmp.py",
+    "/Users/me/.codex/scratchpad/plan.md",
+])
+def test_temp_and_scratchpad_paths_are_scratch(path):
+    assert is_scratch_path(path)
+
+
+@pytest.mark.parametrize("path", [
+    "src/a.py",
+    "notes/scratchpad/plan.md",             # relative: inside the project, so it stays
+    "/Users/me/Repositories/demo/src/a.py",
+    "/Users/me/tmp/a.py",
+    "/tmpfiles/a.py",
+    "/private/tmpx/a.py",
+    "/var/foldersx/a.py",
+    "/Users/me/scratchpad.md",
+    "",
+])
+def test_project_and_other_paths_are_not_scratch(path):
+    assert not is_scratch_path(path)
 
 
 def test_project_names():

@@ -288,6 +288,39 @@ def test_files_lists_only_successful_edits(tmp_path):
     assert s.files == ["written.py", "pending.py", "twice.py"]
 
 
+SCRATCHPAD = "/private/tmp/claude-501/-Users-me-Repositories-demo/" + SID + "/scratchpad"
+
+
+def test_files_skip_temp_and_scratchpad_paths(tmp_path):
+    records = [
+        claude_asst(T(1), [
+            claude_tool("e1", "Write", file_path=SCRATCHPAD + "/pr-body.md", content="x"),
+            claude_tool("e2", "Edit", file_path=CWD + "/src/a.py", old_string="a", new_string="b"),
+            claude_tool("e3", "Write", file_path="/tmp/notes.md", content="x"),
+            claude_tool("e4", "Write", file_path="/var/folders/xy/abc/T/t.py", content="x"),
+            claude_tool("e5", "MultiEdit", file_path="/private/var/folders/xy/abc/T/m.py", edits=[]),
+            claude_tool("e6", "NotebookEdit", notebook_path="/private/tmp/n.ipynb", new_source="x"),
+            claude_tool("e7", "Write", file_path="/Users/me/.claude/scratchpad/plan.md", content="x"),
+            claude_tool("e8", "Edit", file_path="/Users/me/Repositories/other/b.py", old_string="a", new_string="b"),
+            claude_tool("e9", "Write", file_path=CWD + "/notes/scratchpad/keep.md", content="x")]),
+        claude_user(T(2), [claude_result(f"e{i}") for i in range(1, 10)]),
+    ]
+    s = _session(tmp_path, records)
+    assert s.files == ["src/a.py", "/Users/me/Repositories/other/b.py", "notes/scratchpad/keep.md"]
+
+
+def test_files_keep_project_paths_when_the_project_is_under_tmp(tmp_path):
+    cwd = "/private/tmp/demo"
+    records = [
+        claude_user(T(0), "go", cwd=cwd),
+        claude_asst(T(1), [claude_tool("e1", "Write", file_path=cwd + "/src/a.py", content="x"),
+                           claude_tool("e2", "Write", file_path="/private/tmp/other/b.py", content="x")], cwd=cwd),
+        claude_user(T(2), [claude_result("e1"), claude_result("e2")], cwd=cwd),
+    ]
+    s = _session(tmp_path, records)
+    assert s.cwd == cwd and s.files == ["src/a.py"]
+
+
 # ---------------------------------------------------------------- subagent links (C4, C6)
 
 def _sub_records(answer, cwd=CWD):

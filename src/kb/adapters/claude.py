@@ -7,7 +7,8 @@ from pathlib import Path
 
 from kb.adapters.common import iter_records
 from kb.model import Session, ToolCall, Unit
-from kb.util import clean_user_text, first_line, head_lines, iso_utc, project_from_cwd, rel_path
+from kb.util import (clean_user_text, first_line, head_lines, is_scratch_path, iso_utc, project_from_cwd,
+                     rel_path)
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 SUBAGENT_TOOLS = ("Agent", "Task")
@@ -201,7 +202,7 @@ def _parse(path, session_id: str, parent: str = ""):
     s.ended = max(stamps) if stamps else ""
     s.project = project_from_cwd(s.cwd)
     # A failed edit changed nothing; a call that never got a result still counts.
-    s.files = list(dict.fromkeys(rel for rel, tc in edits if tc.status != "error"))
+    s.files = list(dict.fromkeys(rel for rel, tc in edits if tc.status != "error" and not is_scratch_path(rel)))
     s.title = titles.get("custom") or titles.get("ai") or titles.get("agent") or s.first_prompt() or "(untitled)"
     s.skipped = dict(skipped)
     return s, calls
