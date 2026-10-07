@@ -351,11 +351,27 @@ class Index:
         for sid in sorted(freed):               # a duplicate file takes over from a removed winner
             if self.db.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone():
                 continue
-            best = "ORDER BY turns DESC, ended DESC, md_path"
-            for (rel,) in self.db.execute(f"SELECT md_path FROM dups WHERE id=? {best}", (sid,)).fetchall():
+            for rel in self._dups(sid):
                 if rel in files and self._ingest(rel, files, touched, freed) == "own":
                     break
+        with_dups = {r[0] for r in self.db.execute("SELECT DISTINCT id FROM dups")}
+        for sid in sorted(touched & with_dups):  # a winner that changed may now lose to a remembered duplicate
+            row = self.db.execute("SELECT md_path, turns, ended FROM sessions WHERE id=?", (sid,)).fetchone()
+            if row is None:
+                continue
+            for rel in self._dups(sid):
+                if rel in files:
+                    best = self.db.execute("SELECT turns, ended FROM dups WHERE md_path=?", (rel,)).fetchone()
+                    if _ahead((best["turns"] or 0, best["ended"] or "", rel),
+                              (row["turns"] or 0, row["ended"] or "", row["md_path"])):
+                        self._ingest(rel, files, touched, freed)
+                    break
         return len(touched)
+
+    def _dups(self, sid: str) -> list:
+        """Paths of the files that lost to the winner of this session id, the most complete first."""
+        return [r[0] for r in self.db.execute(
+            "SELECT md_path FROM dups WHERE id=? ORDER BY turns DESC, ended DESC, md_path", (sid,)).fetchall()]
 
     def _ingest(self, rel: str, files: dict, touched: set, freed: set) -> str:
         """Index one markdown file. Returns "own" (its session row now comes from this file), "dup" or "skip"."""

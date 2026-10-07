@@ -879,15 +879,18 @@ def cmd_reindex(args, cfg) -> int:
     return 0
 
 
-def _empty_index(path) -> None:
+def _empty_index(path, timeout: float = 10) -> None:
     """Make Index() drop and build the tables again (as for an older schema). A file that is no longer a database is
-    deleted with its WAL files; only the holder of the sync lock does that."""
+    deleted with its WAL files; only the holder of the sync lock does that. A busy database (another writer, a lock
+    timeout) is never deleted: the error goes up."""
     try:
-        con = sqlite3.connect(str(path), timeout=10)
+        con = sqlite3.connect(str(path), timeout=timeout)
         try:
             con.execute("PRAGMA user_version=0")
         finally:
             con.close()
+    except sqlite3.OperationalError:            # busy or locked: a subclass of DatabaseError, but not a broken file
+        raise
     except sqlite3.DatabaseError:
         for p in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
             try:

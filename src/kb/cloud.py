@@ -214,9 +214,11 @@ def _blob(root, blob: str) -> bytes:
 
 
 def import_inbox(cfg, ccfg) -> tuple:
-    """Fetch, then copy every branch's inbox files into ccfg.claude_dir (the largest copy of a file wins: transcripts
-    only grow). A copy smaller than the one imported before is older: it never replaces it, even when the branch of
-    the newer copy is gone. Returns (files written, errors, branches to delete after a clean push: [(name, tip)])."""
+    """Fetch, then copy every branch's inbox files into ccfg.claude_dir. Transcripts only grow, so a copy replaces the
+    local file only when it extends it; the copies of a file are tried smallest first. A copy the local file starts
+    with is older (the branch of the newer one may be gone): it is skipped. A copy that neither extends the local file
+    nor is longer is reported, and no branch with that file is deleted.
+    Returns (files written, errors, branches to delete after a clean push: [(name, tip)])."""
     root = cfg.root
     gitops.git(root, "fetch", "--quiet", "--prune", "origin", timeout=gitops.PULL_TIMEOUT)
     seen_file = cfg.kb_dir / "cloud-inbox.json"
@@ -224,33 +226,43 @@ def import_inbox(cfg, ccfg) -> tuple:
         seen = json.loads(seen_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         seen = {}
-    best, per_branch = {}, []
+    copies, per_branch = {}, []
     for name, tip in _branches(root, cfg.branch):
         blobs = _inbox_blobs(root, tip)
         if blobs:
             per_branch.append((name, tip, blobs))
         for path, (blob, size) in blobs.items():
-            if path not in best or size > best[path][1]:
-                best[path] = (blob, size, tip)
+            copies.setdefault(path, {}).setdefault(blob, (size, tip, name))
     written, errors, failed = 0, [], set()
-    for path, (blob, size, tip) in sorted(best.items()):
-        last = seen.get(path)           # [blob, size] of the copy imported last (a bare blob before sizes were kept)
-        last_blob, last_size = (last[0], last[1]) if isinstance(last, list) and len(last) == 2 else (last, 0)
-        if last_blob == blob or (isinstance(last_size, int) and size < last_size):
-            continue
-        try:
-            target = ccfg.claude_dir / path[len(INBOX) + 1:-len(".gz")]
-            if atomic_write(target, gzip.decompress(_blob(root, blob))):
-                written += 1
-                # the push's time, not now: the sync's quiet period then counts from the session's last activity
-                when = int(gitops.git(root, "show", "-s", "--format=%ct", tip).stdout.strip() or 0)
-                if when:
-                    os.utime(target, (when, when))
-        except (OSError, EOFError, ValueError, gitops.GitError) as e:     # one bad file must not stop the others
-            errors.append(f"cloud: {path}: {type(e).__name__}: {' '.join(str(e).split())[:200]}")
-            failed.add(path)
-            continue
-        seen[path] = [blob, size]
+    for path in sorted(copies):
+        target = ccfg.claude_dir / path[len(INBOX) + 1:-len(".gz")]
+        for blob, (_, tip, name) in sorted(copies[path].items(), key=lambda c: (c[1][0], c[0])):
+            if seen.get(path) == blob:
+                continue
+            try:
+                data = gzip.decompress(_blob(root, blob))
+                try:
+                    have = target.read_bytes()
+                except FileNotFoundError:
+                    have = b""
+                if have.startswith(data):        # the same copy, or an older one
+                    continue
+                if not data.startswith(have) and len(data) <= len(have):
+                    errors.append(f"cloud: {path}: the copy on {name} does not extend the one imported before; "
+                                  f"kept that one")
+                    failed.add(path)
+                    continue
+                if atomic_write(target, data):
+                    written += 1
+                    # the push's time, not now: the sync's quiet period then counts from the session's last activity
+                    when = int(gitops.git(root, "show", "-s", "--format=%ct", tip).stdout.strip() or 0)
+                    if when:
+                        os.utime(target, (when, when))
+            except (OSError, EOFError, ValueError, gitops.GitError) as e:     # one bad file must not stop the others
+                errors.append(f"cloud: {path}: {type(e).__name__}: {' '.join(str(e).split())[:200]}")
+                failed.add(path)
+                continue
+            seen[path] = blob
     atomic_write(seen_file, (json.dumps(seen, indent=1, sort_keys=True) + "\n").encode("utf-8"))
     done = [(name, tip) for name, tip, blobs in per_branch
             if not failed.intersection(blobs) and _only_inbox(root, tip, cfg.branch)]
