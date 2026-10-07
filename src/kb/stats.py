@@ -29,13 +29,18 @@ _STOP = set("the and for with not this that from are was has have you your its u
 SIGNATURE_WORDS = 7
 
 
-def error_signature(err: str) -> str:
-    """The same error from two sessions, with paths, numbers, ids and quoted values left out. Empty: no message."""
+def error_words(err: str) -> list:
+    """The words of an error, in order, with paths, numbers, ids, quoted values and stop words left out."""
     e = _NOISE.sub(" ", err)
     e = _PATH.sub(" ", e)
     e = re.sub(r"`[^`]*`|'[^']*'|\"[^\"]*\"", " ", e)
     e = re.sub(r"\b[0-9a-f]{7,}\b|\d+", " ", e)
-    words = [w for w in re.findall(r"[a-z_]{3,}", e.lower()) if w not in _STOP]
+    return [w for w in re.findall(r"[a-z_]{3,}", e.lower()) if w not in _STOP]
+
+
+def error_signature(err: str) -> str:
+    """The same error from two sessions, with paths, numbers, ids and quoted values left out. Empty: no message."""
+    words = error_words(err)
     return " ".join(words[:SIGNATURE_WORDS]) if len(words) >= 2 else ""
 
 
