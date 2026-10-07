@@ -114,6 +114,21 @@ def test_reindex_during_a_sync_only_updates(kb_env, capsys):
                                               "indexed 0 sessions"]
 
 
+def test_reindex_never_deletes_a_busy_index(kb_env, capsys):
+    run(capsys, "reindex")
+    path = kb_env / ".kb" / "index.sqlite"
+    writer = Index(path)                                                 # a writer outside the sync lock
+    writer.db.execute("BEGIN IMMEDIATE")
+    try:
+        inode = path.stat().st_ino
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            cli._empty_index(path, timeout=0.1)
+        assert path.stat().st_ino == inode
+    finally:
+        writer.db.execute("ROLLBACK")
+        writer.close()
+
+
 def test_reindex_replaces_a_file_that_is_not_a_database(kb_env, capsys):
     path = kb_env / ".kb" / "index.sqlite"
     path.parent.mkdir(parents=True, exist_ok=True)

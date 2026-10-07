@@ -107,6 +107,8 @@ runs `kb cloud install`: it adds a `Stop` and a `SessionEnd` hook to `~/.claude/
 - On one machine, run `kb cloud import --on`. Each sync of that machine then fetches every branch, copies the inbox
   files into `.kb/cloud/`, and processes them as the sessions of host `cloud`: markdown, raw copy, summary, catalog
   and vectors, as for its own sessions. `kb find`, `kb page` and the pages routine see them like any other session.
+- A copy replaces the imported file only when it extends it, so an older copy on a kept branch never wins. A shorter
+  copy with another history is reported in the sync line, and its branches stay.
 - That machine owns `sessions/cloud` (the host marker, see [Sync](./sync.mdx#one-writer-per-host)). A second machine
   with the import on writes nothing for it and says so in its sync line.
 - After a clean push, the sync deletes each branch whose only change from `main` is `inbox/`. A branch with other

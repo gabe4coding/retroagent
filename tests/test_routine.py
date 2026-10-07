@@ -220,6 +220,24 @@ def test_an_unwritten_page_is_planned_again(tmp_path):
     assert [(i["name"], i["action"], i["sessions"]) for i in p["projects"]] == [("alpha", "update", ["a0000004"])]
 
 
+def test_an_unwritten_retro_update_is_planned_again(tmp_path):
+    root = repo(tmp_path / "kb")
+    demo(root)
+    p = plan(root)
+    write_alpha(root)
+    for r in p["retros"]:
+        write_retro(root, r["week"], r["sessions"])
+    routine.finish(root, settings(), now=NOW, push=False)
+    session(root, "b0000003", "beta", "2026-09-30T12:00:00Z")              # a late session of 2026-W40
+    commit(root)
+    p = plan(root)
+    assert [(r["week"], r["action"]) for r in p["retros"]] == [("2026-W40", "update")]
+    res = routine.finish(root, settings(), now=NOW, push=False)            # the update is not written
+    assert "2026-W40" in res["returned"]
+    p = plan(root)
+    assert [(r["week"], r["action"]) for r in p["retros"]] == [("2026-W40", "update")]
+
+
 def test_skip_drops_an_unwritten_page(tmp_path):
     root = repo(tmp_path / "kb")
     demo(root)
