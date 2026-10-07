@@ -53,6 +53,9 @@ class Config:
     embed_sync_seconds: int = 60                # longest a sync spends embedding new items
     cloud_import: bool = False                  # this machine imports the cloud sessions' inbox (`kb cloud import`)
     cloud_host: str = "cloud"                   # the host the imported cloud sessions are written under
+    hints: bool = False                         # `kb hint`: a past fix when a tool call fails (kb.hint)
+    hint_semantic_min: float = 0.78             # cosine a semantic hint needs (embeddinggemma scores are compressed)
+    hint_keyword_min: int = 3                   # shared words a keyword hint needs
 
     @property
     def kb_dir(self) -> Path:
@@ -92,6 +95,14 @@ def _int(raw: dict, key: str, default: int) -> int:
     except (TypeError, ValueError, OverflowError):
         return default
     return n if n >= 0 else default
+
+
+def _float(raw: dict, key: str, default: float) -> float:
+    """A number from 0 to 1 from the config; anything else gives the default."""
+    v = raw.get(key)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return default
+    return float(v) if 0 <= v <= 1 else default
 
 
 def _list(raw: dict, key: str, default: list) -> list:
@@ -171,4 +182,7 @@ def load(path: str | None = None) -> Config:
     cfg.embed_sync_seconds = _int(raw, "embed_sync_seconds", cfg.embed_sync_seconds)
     cfg.cloud_import = _bool(raw, "cloud_import", False, bad=False)
     cfg.cloud_host = slug(_text(raw, "cloud_host") or cfg.cloud_host)
+    cfg.hints = _bool(raw, "hints", False, bad=False)
+    cfg.hint_semantic_min = _float(raw, "hint_semantic_min", cfg.hint_semantic_min)
+    cfg.hint_keyword_min = _int(raw, "hint_keyword_min", cfg.hint_keyword_min) or cfg.hint_keyword_min
     return cfg

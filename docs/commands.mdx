@@ -18,6 +18,7 @@ Run `kb --help` for the full list, and add `--help` to any command for its flags
 | `kb summary <id>` | Summary, decisions, outcome, files, PRs and subagents of one session. |
 | `kb show <id>` | Only the part of a session you need (`--turn N --around K`, `--grep PATTERN`). |
 | `kb stats [report]` | Ready-made analytics: overview, projects, agents, outcomes, tags, daily, subagents, errors. `kb stats errors [--since 7d] [--project P]` lists the tool errors that came back in two or more sessions. |
+| `kb hint --event error [--hook]` | A past fix for a failed tool call: reads the hook event JSON on stdin, prints one line or nothing. `--hook` prints the hook output JSON. See [Hints when a command fails](#hints-when-a-command-fails). |
 | `kb sql "<SELECT …>" [--width N]` | Read-only SQL on the index (tables: `sessions`, `turns`, `pages`, `memories`). Cells longer than `N` chars (default 80) are cut and end with `…`; `--width 0` never cuts. |
 
 Ids are the 8-character short id shown in lists, or any unique prefix of it or of the full id (4 characters at least).
@@ -115,6 +116,41 @@ runs `kb cloud install`: it adds a `Stop` and a `SessionEnd` hook to `~/.claude/
   on `main` or on the routine's bootstrap branch. Errors go to `.kb/cloud.log` in the cloud data clone.
 - A session's project comes from its working directory. A cloud session that starts with more than one repository
   works in `/home/user`, so its project is `user`.
+
+## Hints when a command fails
+
+Optional, off by default. Turn it on with `"hints": true` in the [config](./configuration.mdx). When a tool call
+fails in Claude Code, the `PostToolUseFailure` hook (`bin/kb-hint`) runs `kb hint --event error`. It can add one line
+to the agent's context:
+
+```
+retroagent: seen before → <problem → fix> (kb summary <short>)
+```
+
+The line is a bullet from the "Errors seen → fixes" section of the current project's page, with the session it came
+from. The project comes from the working directory, as for sessions. Most failures get no hint, because a wrong hint
+costs more than a missing one:
+
+1. The first 200 characters of the error must contain an error word (`error`, `failed`, `not found`, `denied`, …). An
+   error with no message, such as `grep` exit 1, or plain command output with exit code 1, gets no hint.
+2. A permission, auto mode classifier, sandbox or safety denial never gets a hint, and a bullet about one is never
+   shown.
+3. When the embedding server of [semantic search](#semantic-search) already runs, the bullet closest in meaning, at
+   least `hint_semantic_min` (cosine). The hint never starts the server. The bullet vectors are kept in
+   `.kb/hints/vectors/`, so a hint embeds only the error.
+4. Else, the bullet whose problem side (the text before `→`) shares at least `hint_keyword_min` words with the error.
+   Paths, numbers, ids, quoted values and common words do not count.
+
+A session gets each bullet once. When its best bullet was shown already, it gets nothing. The hook exits 0 on every
+problem and prints nothing; when hints are off it exits before Python starts. Each hint shown is logged to
+`.kb/hints/log.jsonl` in the data clone (local, never committed) with the session, the bullet, the score and the
+rule.
+
+Codex has no event for a failed tool call, and its `PostToolUse` shell response has no exit code, so Codex gets no
+hints yet. `kb hint` still reads a Codex `PostToolUse` event whose response starts with `Exit code: N`.
+
+`scripts/hint-replay` replays the hint rules on the tool errors of your data clone (read-only) and prints how many
+hints each rule would show. `--semantic --start` also runs the semantic rule, `--show N` prints examples.
 
 ## Read-only by design
 
