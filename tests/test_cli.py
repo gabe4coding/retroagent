@@ -70,7 +70,10 @@ def test_recent_stats_sql(kb_env, capsys):
     _, out = run(capsys, "stats", "overview")
     assert "claude" in out and "codex" in out
     code, out = run(capsys, "stats", "nope")
-    assert code == 2 and "overview" in out
+    assert code == 2 and "overview" in out and "errors" in out
+    assert run(capsys, "stats", "errors", "--since", "30d")[0] == 0
+    code, out = run(capsys, "stats", "overview", "--project", "demo")
+    assert code == 2 and "kb stats errors" in out
     _, out = run(capsys, "sql", "SELECT COUNT(*) AS n FROM sessions")
     assert out.splitlines()[1].strip() == "4"
     code, out = run(capsys, "sql", "DELETE FROM sessions")
