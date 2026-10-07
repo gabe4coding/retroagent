@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
-from fixtures import (AID, CWD, SID, claude_asst, claude_result, claude_tool, claude_user, make_claude_tree,
-                      write_claude_session)
+from fixtures import (AID, AID_B, CWD, SID, SID_B, claude_asst, claude_result, claude_tool, claude_user, make_claude_tree,
+                      make_shared_pair, write_claude_session)
 
 from kb.adapters import claude
 from kb.distill import render_markdown
@@ -410,3 +412,62 @@ def test_the_fixture_session_is_not_headless(tmp_path):
 def test_only_the_main_transcript_decides_headless(tmp_path):
     assert _headless(tmp_path, ["cli"], sub_entrypoint="sdk-cli").headless is False
     assert _headless(tmp_path, ["sdk-cli"], sub_entrypoint="cli").headless is True
+
+
+# ---------------------------------------------------------------- a subagent copied under two sessions (resume / fork)
+
+def _pair(tmp_path, **kw):
+    units = claude.discover(make_shared_pair(tmp_path, **kw))
+    return {Path(u.main).stem: u for u in units}
+
+
+def test_discover_tells_each_holder_of_a_copied_subagent_about_the_others(tmp_path):
+    units = _pair(tmp_path)
+    a, b = units[SID], units[SID_B]
+    copy_a = next(p for p in a.paths if p.endswith(f"agent-{AID}.jsonl"))
+    copy_b = next(p for p in b.paths if p.endswith(f"agent-{AID}.jsonl"))
+    assert a.shared == b.shared == {AID: {a.main: copy_a, b.main: copy_b}}       # AID_B is b's alone
+    assert a.related == [b.main, copy_b] and b.related == [a.main, copy_a]
+
+
+def test_a_change_to_the_other_holder_changes_the_fingerprint(tmp_path):
+    units = _pair(tmp_path)
+    before = units[SID].fingerprint()
+    with open(units[SID_B].main, "a", encoding="utf-8") as fh:
+        fh.write("{}\n")
+    assert units[SID].fingerprint() != before
+
+
+def test_a_subagent_held_by_one_session_has_no_shared_entry(tmp_path):
+    unit = claude.discover(make_claude_tree(tmp_path))[0]
+    assert unit.shared == {} and unit.related == []
+
+
+@pytest.mark.parametrize("names, first", [
+    (["A", "A", "B", "B"], SID),            # started under a, kept running under the resumed b
+    (["B", "B", "A", "A"], SID_B),
+    (["X", "B", "A", "A"], SID_B),          # X: a session that no longer exists names nobody here
+    (["X", "X", "X", "X"], SID),            # nobody named: smallest id
+    ([None, None, None, None], SID),
+])
+def test_owner_order_puts_the_session_the_subagent_ran_under_first(tmp_path, names, first):
+    ids = {"A": SID, "B": SID_B, "X": "77777777-0000-0000-0000-000000000000", None: None}
+    units = _pair(tmp_path, names=[ids[n] for n in names])
+    order = claude.owner_order(units[SID].shared[AID])
+    assert [Path(m).stem for m in order] == [first, SID_B if first == SID else SID]
+    assert order == claude.owner_order(units[SID_B].shared[AID])               # both holders agree
+
+
+def test_copies_that_name_their_own_holder_at_the_same_time_go_by_session_id(tmp_path):
+    units = _pair(tmp_path, names=[SID] * 4)
+    copies = units[SID].shared[AID]
+    copy_b = copies[units[SID_B].main]
+    Path(copy_b).write_text(Path(copy_b).read_text().replace(SID, SID_B))    # a copy that rewrote the sessionId
+    assert [Path(m).stem for m in claude.owner_order(copies)] == [SID, SID_B]
+
+
+def test_owner_order_skips_a_copy_that_is_gone(tmp_path):
+    units = _pair(tmp_path)
+    copies = units[SID].shared[AID]
+    Path(copies[units[SID].main]).unlink()
+    assert [Path(m).stem for m in claude.owner_order(copies)] == [SID, SID_B]  # the other copy still names a first

@@ -1316,3 +1316,144 @@ def test_catalog_files_that_are_skipped_become_one_error_line_each(hosts):
 def test_a_clean_catalog_adds_no_error(hosts):
     a, _ = hosts
     assert run_sync(a, runner=FakeRunner(), summary_cap=0).errors == []
+
+
+# ================================================================ a subagent copied under two sessions (resume / fork)
+
+def _pair_host(tmp_path, name="root", **kw):
+    """One host whose Claude folder holds SID and SID_B (a resume of SID) sharing the subagent AID."""
+    from fixtures import make_shared_pair
+    excl = kw.pop("exclude_cwd_globs", None)
+    root = clone(init_remote(tmp_path / name), tmp_path / name / "root")
+    src = tmp_path / name / "src"
+    projects = make_shared_pair(src, **kw)
+    (src / "codex" / "sessions").mkdir(parents=True)
+    extra = {"exclude_cwd_globs": excl} if excl is not None else {}
+    return make_config(root, "host-a", projects, src / "codex" / "sessions", src / "codex", **extra)
+
+
+def _files(cfg):
+    """Every file the sync writes, path -> bytes (the machine marker aside: it is random per clone)."""
+    return {p.relative_to(cfg.root).as_posix(): p.read_bytes()
+            for d in ("sessions", "raw", "catalog") for p in sorted((cfg.root / d).rglob("*"))
+            if p.is_file() and not p.name.startswith(".")}
+
+
+def _rerender(cfg, **kw):
+    """A full re-render: forget what was processed, then sync."""
+    (cfg.kb_dir / "sync-state.json").unlink()
+    return run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0, **kw)
+
+
+def _subs_of(cfg, aid):
+    return sorted(n for n in (p.relative_to(cfg.root).as_posix() for p in cfg.root.rglob("*"))
+                  if n.endswith(f"_sub-{short_id(aid)}.md") or n.endswith(f"__sub-{aid}.jsonl.gz"))
+
+
+def _owned_by(cfg, sid, aid=AID):
+    md = f"sessions/host-a/claude/2026/10/2026-10-06_demo_{short_id(sid)}_sub-{short_id(aid)}.md"
+    return [md, f"raw/host-a/claude/2026/10/{sid}__sub-{aid}.jsonl.gz"]
+
+
+def _links(cfg, sid):
+    text = (cfg.root / _md(cfg, f"_{short_id(sid)}.md")).read_text(encoding="utf-8")
+    return re.findall(r"\[subagent\]\(([^)]*)\)", text)
+
+
+def test_a_shared_subagent_is_written_once_by_the_session_it_ran_under_and_both_link_to_it(tmp_path):
+    from fixtures import AID_B, SID_B
+    cfg = _pair_host(tmp_path)
+    r = run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.sessions == 2 and r.pushed
+    assert _subs_of(cfg, AID) == sorted(_owned_by(cfg, SID))
+    name = _owned_by(cfg, SID)[0].rsplit("/", 1)[1]
+    assert _links(cfg, SID) == [name]
+    assert _links(cfg, SID_B) == [name, f"2026-10-06_demo_{short_id(SID_B)}_sub-{short_id(AID_B)}.md"]
+    assert _subs_of(cfg, AID_B) == sorted(_owned_by(cfg, SID_B, AID_B))
+    idx = Index(cfg.kb_dir / "index.sqlite")
+    rows = idx.db.execute("SELECT parent FROM sessions WHERE id=?", (AID,)).fetchall()
+    dups = idx.db.execute("SELECT COUNT(*) FROM dups").fetchone()[0]
+    idx.close()
+    assert [x[0] for x in rows] == [SID] and dups == 0
+
+
+def test_both_processing_orders_write_the_same_files(tmp_path, monkeypatch):
+    seen, outputs = [], []
+    real_pending, real_process = sync_mod.pending_units, sync_mod.process_unit
+    monkeypatch.setattr(sync_mod, "process_unit", lambda cfg, st, rep, unit, *a, **k:
+                        (seen.append(Path(unit.main).stem), real_process(cfg, st, rep, unit, *a, **k))[1])
+    for name, flip in (("one", False), ("two", True)):
+        monkeypatch.setattr(sync_mod, "pending_units",
+                            lambda *a, flip=flip, **k: real_pending(*a, **k)[::-1] if flip else real_pending(*a, **k))
+        cfg = _pair_host(tmp_path, name)
+        for r in (run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0), _rerender(cfg)):
+            assert r.errors == [] and r.sessions == 2
+        outputs.append(_files(cfg))
+    assert seen[:4] == seen[4:][::-1] and len(set(seen)) == 2
+    assert outputs[0] == outputs[1]
+
+
+def test_re_rendering_twice_is_byte_identical_and_deletes_nothing(tmp_path):
+    cfg = _pair_host(tmp_path)
+    run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0)
+    first = _files(cfg)
+    for _ in range(2):
+        r = _rerender(cfg)
+        assert r.errors == [] and r.sessions == 2 and not r.committed
+        assert _files(cfg) == first
+        assert gitops.git(cfg.root, "status", "--porcelain").stdout == ""
+
+
+@pytest.mark.parametrize("legacy", ["both copies", "only the resumed session's copy"])
+def test_a_copy_an_older_sync_wrote_under_the_resumed_session_goes(tmp_path, monkeypatch, legacy):
+    from fixtures import SID_B
+    cfg = _pair_host(tmp_path)
+    with monkeypatch.context() as m:                    # the old behaviour: every holder writes its copy
+        m.setattr(sync_mod, "place_subagents", lambda *a: None)
+        run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0)
+    assert _subs_of(cfg, AID) == sorted(_owned_by(cfg, SID) + _owned_by(cfg, SID_B))
+    if legacy != "both copies":                          # what a later re-render of the old code left (see the PR)
+        for rel in _owned_by(cfg, SID):
+            git("rm", "-q", rel, cwd=cfg.root)
+        git("commit", "-q", "-m", "old re-render", cwd=cfg.root)
+    r = _rerender(cfg)
+    assert r.errors == [] and r.committed
+    assert _subs_of(cfg, AID) == sorted(_owned_by(cfg, SID))
+    assert _links(cfg, SID_B)[0] == _owned_by(cfg, SID)[0].rsplit("/", 1)[1]
+    after = _files(cfg)
+    assert _rerender(cfg).committed is False and _files(cfg) == after
+
+
+def test_an_owner_the_sync_skips_leaves_the_subagent_to_the_next_holder(tmp_path):
+    from fixtures import SID_B
+    cfg = _pair_host(tmp_path, cwd_b="/Users/me/Repositories/demo-b", exclude_cwd_globs=["/Users/me/Repositories/demo"])
+    r = run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.sessions == 1
+    md = f"sessions/host-a/claude/2026/10/2026-10-06_demo-b_{short_id(SID_B)}_sub-{short_id(AID)}.md"
+    assert _subs_of(cfg, AID) == sorted([md, f"raw/host-a/claude/2026/10/{SID_B}__sub-{AID}.jsonl.gz"])
+
+
+def test_a_subagent_file_whose_parent_transcript_is_gone_stays_where_it_is(tmp_path):
+    from fixtures import SID_B
+    cfg = _pair_host(tmp_path)
+    run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0)
+    before = _files(cfg)
+    main = next(Path(cfg.claude_dir).rglob(f"{SID}.jsonl"))
+    shutil.rmtree(main.with_suffix(""))                 # Claude Code's cleanup deletes the old session
+    main.unlink()
+    r = _rerender(cfg)
+    assert r.errors == [] and r.sessions == 1 and not r.committed
+    assert _files(cfg) == before
+    assert _links(cfg, SID_B)[0] == _owned_by(cfg, SID)[0].rsplit("/", 1)[1]
+
+
+@pytest.mark.parametrize("names, owner", [
+    ("b b b b", "b"),                                   # it only ever ran under the resumed session
+    ("x x x x", "a"),                                   # it names neither: the smallest session id
+])
+def test_the_owner_follows_the_session_the_records_name(tmp_path, names, owner):
+    from fixtures import SID_B
+    ids = {"a": SID, "b": SID_B, "x": "77777777-0000-0000-0000-000000000000"}
+    cfg = _pair_host(tmp_path, names=[ids[n] for n in names.split()])
+    assert run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0).errors == []
+    assert _subs_of(cfg, AID) == sorted(_owned_by(cfg, ids[owner]))

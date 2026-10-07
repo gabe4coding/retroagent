@@ -16,6 +16,7 @@ import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from kb import gitops, machine
 from kb.adapters import claude, codex
@@ -23,9 +24,10 @@ from kb.catalog import write_catalog
 from kb.distill import update_front_matter
 from kb.index import Index
 from kb.lock import Lock
-from kb.paths import month_of
+from kb.model import Unit
+from kb.paths import md_rel, month_of
 from kb.state import State
-from kb.store import write_session
+from kb.store import read_meta, write_session
 from kb.summarize import SummaryUnavailable, summarize
 from kb.util import short_id
 
@@ -156,10 +158,50 @@ def _skip_headless(cfg, s) -> bool:
     return cfg.skip_headless_single_prompt and s.headless and not s.parent and s.user_turns <= 1
 
 
+def _taken(cfg, s) -> bool:
+    """False for a session the sync skips: no turns, an excluded folder, a headless one-prompt run."""
+    return bool(s.turns) and not excluded(cfg, s.cwd) and not _skip_headless(cfg, s)
+
+
+def _kept(cfg, s, sub, unit, known) -> str:
+    """The KB's file of this subagent when it belongs to a session that no longer holds it on disk, else ''.
+    Claude Code deletes old transcripts: the file stays where it is and the sessions that still hold it link to it."""
+    held = known.get(sub.id)
+    if not held or held == md_rel(cfg.host, sub, parent=s):
+        return ""
+    meta = read_meta(cfg.root / held)
+    parent = meta.get("parent")
+    holders = {Path(main).stem for main in unit.shared.get(sub.id, {unit.main: ""})}
+    return held if meta.get("id") == sub.id and isinstance(parent, str) and parent and parent not in holders else ""
+
+
+def _owner_file(cfg, unit, sub) -> str:
+    """'' when this session writes the subagent, else the md path of the session that does: the first holder in
+    claude.owner_order that the sync does not skip."""
+    copies = unit.shared.get(sub.id)
+    for main in claude.owner_order(copies) if copies else []:
+        if main == unit.main:
+            return ""
+        try:
+            other = claude.parse_unit(Unit(key=main, agent="claude", paths=[main, copies[main]], main=main))
+        except OSError:                             # gone since discover
+            continue
+        if _taken(cfg, other):
+            return md_rel(cfg.host, other.subagents[0], parent=other)
+    return ""
+
+
+def place_subagents(cfg, s, unit, known) -> None:
+    """A resumed or forked Claude session copies its parent's subagents, so one subagent can sit under several
+    sessions. It is written once; every other holder links to that file (sub.elsewhere)."""
+    for sub in s.subagents:
+        sub.elsewhere = _kept(cfg, s, sub, unit, known) or _owner_file(cfg, unit, sub)
+
+
 def process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_run, picker=None) -> None:
     try:
         s = claude.parse_unit(unit) if unit.agent == "claude" else codex.parse_unit(unit, titles)
-        if s is None or not s.turns or s.id in seen or excluded(cfg, s.cwd) or _skip_headless(cfg, s):
+        if s is None or s.id in seen or not _taken(cfg, s):
             if not dry_run:
                 state.files[unit.key] = fp
             return
@@ -167,6 +209,8 @@ def process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_
         report.skipped.update(s.skipped)
         for sub in s.subagents:
             report.skipped.update(sub.skipped)
+        if unit.agent == "claude":
+            place_subagents(cfg, s, unit, known)
         written, sizes = write_session(cfg.root, cfg.host, s, report.redactions, dry_run=dry_run, known=known,
                                        touched=months)
         if picker is not None:

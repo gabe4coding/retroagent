@@ -5,6 +5,7 @@ Private knowledge base of my Claude Code and Codex sessions, from every machine.
 ## How it works
 - A SessionStart hook (Claude Code and Codex) runs `kb sync --auto` in the background. It prints nothing. It does nothing until you run `kb enable` (`auto_sync` in the config).
 - `kb sync` turns each session that has been idle for 15 minutes into markdown (`sessions/<host>/…`), keeps a slim redacted raw copy (`raw/<host>/…`), asks Haiku for a 3-line summary, updates `catalog/<host>/…`, scans with gitleaks, commits only this machine's folders, and pushes. Headless one-prompt sessions (`claude -p`, `codex exec`) are skipped.
+- A resumed or forked Claude session can copy its parent's subagents. Such a subagent is written once, under the session that its own records name first (the one it ran under); the other sessions link to that file. A file whose session is gone from `~/.claude` stays where it is.
 - The sync works in its own data clone, `~/.sessions-kb`. Nobody edits it by hand; develop in a separate checkout. It only touches git on the configured `branch` (`main`), and it never pushes commits that touch anything outside this machine's folders.
 - Search is local: `kb` builds a SQLite FTS5 index in `.kb/` from the markdown.
 

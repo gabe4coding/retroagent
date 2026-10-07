@@ -1,6 +1,7 @@
 """Write one session (and its subagents) as distilled markdown + slim raw under this host's folders."""
 from __future__ import annotations
 
+import posixpath
 from collections import Counter
 from pathlib import Path
 
@@ -15,7 +16,7 @@ class PathCollision(Exception):
     """The markdown file a session would be written to already holds another session."""
 
 
-def _meta(path: Path) -> dict:
+def read_meta(path: Path) -> dict:
     """Front matter of a markdown file. {} when the file is missing, unreadable or has no front matter."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -45,21 +46,47 @@ def _old_raw(root: Path, host: str, value, new_rel: str):
     return root / value
 
 
+def _sub_link(host: str, s, sub) -> str:
+    """Link target from a session's markdown to its subagent: a file name, or a relative path to another session's."""
+    if sub.elsewhere:
+        return posixpath.relpath(sub.elsewhere, posixpath.dirname(md_rel(host, s)))
+    return Path(md_rel(host, sub, parent=s)).name
+
+
+def _drop_copy(root: Path, host: str, s, sub, touched) -> None:
+    """Remove the copy an older sync wrote, under this session, of a subagent that another session's file now holds.
+    The copy stays until that file is there."""
+    mine = md_rel(host, sub, parent=s)
+    if mine == sub.elsewhere:
+        return
+    kept, copy = read_meta(root / sub.elsewhere), read_meta(root / mine)
+    if kept.get("id") != sub.id or copy.get("id") != sub.id:
+        return
+    stale_raw = _old_raw(root, host, copy.get("raw"), kept.get("raw"))       # never the kept file's raw
+    if stale_raw is not None and stale_raw.exists():
+        stale_raw.unlink()
+    (root / mine).unlink()
+    if touched is not None:
+        touched.add(month_of(mine))
+
+
 def write_session(root, host: str, s, redactions: Counter, dry_run: bool = False, known=None, touched=None):
     """Return (md paths relative to root, Counter of output sizes).
 
     known: id -> current md path (from the index). When a session's path changes, the old markdown and the raw file it
     names are removed, its summary fields move to the new file (the better of the two files wins), and the old month
     is added to `touched` (a set) so the caller can rebuild that month's catalog.
+    A subagent with `elsewhere` set is another session's to write: it is only linked, and a copy of it that an older
+    sync wrote under this session is removed.
     Raises PathCollision, before anything is written, when a target markdown file holds a different session.
     """
     root = Path(root)
     known = known or {}
-    sub_files = {sub.id: Path(md_rel(host, sub, parent=s)).name for sub in s.subagents}
+    sub_files = {sub.id: _sub_link(host, s, sub) for sub in s.subagents}
     plan, owners = [], {}
-    for sess, parent in [(s, None)] + [(sub, s) for sub in s.subagents]:
+    for sess, parent in [(s, None)] + [(sub, s) for sub in s.subagents if not sub.elsewhere]:
         mrel, rrel = md_rel(host, sess, parent), raw_rel(host, sess, parent)
-        here = _meta(root / mrel) if (root / mrel).exists() else None
+        here = read_meta(root / mrel) if (root / mrel).exists() else None
         if owners.setdefault(mrel, sess.id) != sess.id:
             raise PathCollision(f"{mrel} is the file of two sessions, {owners[mrel]} and {sess.id}")
         if here is not None and here.get("id") != sess.id:
@@ -68,7 +95,7 @@ def write_session(root, host: str, s, redactions: Counter, dry_run: bool = False
         old = known.get(sess.id, "")
         old_meta = {}
         if old and old != mrel:
-            old_meta = _meta(root / old)
+            old_meta = read_meta(root / old)
             if old_meta.get("id") != sess.id:       # gone, or no longer this session's file: leave it alone
                 old_meta = {}
         keep = max([_summary_fields(here or {}), _summary_fields(old_meta)], key=_rank)
@@ -97,4 +124,8 @@ def write_session(root, host: str, s, redactions: Counter, dry_run: bool = False
                     except IndexError:
                         pass
         written.append(mrel)
+    if not dry_run:
+        for sub in s.subagents:
+            if sub.elsewhere:
+                _drop_copy(root, host, s, sub, touched)
     return written, sizes

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from kb.adapters.common import iter_records
@@ -26,7 +26,49 @@ def discover(claude_dir) -> list:
             subs = sorted(sub_dir.rglob("agent-*.jsonl")) if sub_dir.is_dir() else []
             units.append(Unit(key=str(main), agent="claude", paths=[str(main)] + [str(s) for s in subs],
                               main=str(main)))
+    _mark_shared(units)
     return units
+
+
+def agent_id(path) -> str:
+    stem = Path(path).stem
+    return stem[len("agent-"):] if stem.startswith("agent-") else stem
+
+
+def _mark_shared(units) -> None:
+    """A resumed or forked session copies its parent's subagents, so one agent-<id>.jsonl can sit under several
+    sessions. Each of them learns the others (unit.shared) and watches their files (unit.related)."""
+    holders = defaultdict(dict)                     # agent id -> {main transcript: copy}
+    for u in units:
+        for p in u.paths[1:]:
+            holders[agent_id(p)].setdefault(u.main, p)
+    for u in units:
+        for aid in dict.fromkeys(agent_id(p) for p in u.paths[1:]):
+            copies = holders[aid]
+            if len(copies) > 1:
+                u.shared[aid] = dict(sorted(copies.items()))
+                u.related += [x for main, copy in sorted(copies.items()) if main != u.main for x in (main, copy)]
+        u.related = list(dict.fromkeys(u.related))
+
+
+def owner_order(copies: dict) -> list:
+    """The sessions that hold a copy of one subagent ({main transcript: copy}), best owner first.
+
+    A subagent's records carry the sessionId of the session it ran under. The session named by the earliest record,
+    in any copy, is the one that started it; a resumed or forked session is named later or never. Sessions that no
+    record names come last. Equal times go by session id. Every holder reads the same files, so all agree.
+    """
+    ids = {Path(main).stem: main for main in copies}
+    first = {}
+    for copy in copies.values():
+        try:
+            for rec in iter_records(copy, Counter()):
+                sid, ts = rec.get("sessionId"), rec.get("timestamp")
+                if isinstance(sid, str) and sid in ids and isinstance(ts, str) and ts and ts < first.get(sid, "~"):
+                    first[sid] = ts
+        except OSError:                             # gone since discover: it names nobody
+            continue
+    return [ids[k] for k in sorted(ids, key=lambda k: (k not in first, first.get(k, ""), k))]
 
 
 def text_of(content) -> str:
@@ -225,21 +267,20 @@ def parse_unit(unit: Unit) -> Session:
     s, calls = _parse(main, session_id=main.stem)
     by_id = {}
     for p in unit.paths[1:]:
-        p = Path(p)
-        agent_id = p.stem[len("agent-"):] if p.stem.startswith("agent-") else p.stem
-        sub, _ = _parse(p, session_id=agent_id, parent=s.id)
+        p, aid = Path(p), agent_id(p)
+        sub, _ = _parse(p, session_id=aid, parent=s.id)
         meta = _read_meta(p.with_name(p.stem + ".meta.json"))
         sub.title = _str(meta.get("description")) or sub.title
         sub.cwd = sub.cwd or s.cwd
         sub.project = s.project if s.cwd else project_from_cwd(sub.cwd)
         sub.branch = sub.branch or s.branch
         s.subagents.append(sub)
-        by_id[agent_id] = sub
+        by_id[aid] = sub
         # A subagent the parent's tool result did not name (a workflow's) is found through its meta file.
         tool_use_id = meta.get("toolUseId")
         call = calls.get(tool_use_id) if isinstance(tool_use_id, str) else None
         if call is not None and not call.subagent_id:
-            call.subagent_id = agent_id
+            call.subagent_id = aid
     for turn in s.turns:
         for item in turn.items:
             if isinstance(item, ToolCall) and item.subagent_id in by_id:

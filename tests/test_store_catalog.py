@@ -286,3 +286,54 @@ def test_catalog_sorts_rows_whose_started_is_not_text(tmp_path):
     _md(root, "2026-10-06_demo_00000002.md", {"id": '"b-2"', "started": '"2026-10-06T11:00:00Z"'})
     assert write_catalog(root, "h", {"2026/10"}) == []
     assert len((root / "catalog/h/2026-10.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+
+
+# ---------------------------------------------------------------- a subagent another session writes (sub.elsewhere)
+
+KEPT = "sessions/h/claude/2026/09/2026-09-30_demo_aaaaaaaa_sub-e94ad30f.md"
+KEPT_RAW = f"raw/h/claude/2026/09/aaaaaaaa-0000-0000-0000-000000000000__sub-{AID}.jsonl.gz"
+
+
+def _keep_file(root):
+    """The kept file of the subagent, as the session that owns it wrote it."""
+    for rel, data in ((KEPT, f'---\nid: "{AID}"\nraw: "{KEPT_RAW}"\n---\n\nkept\n'), (KEPT_RAW, "raw")):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(data)
+
+
+def test_a_subagent_another_session_writes_is_linked_with_a_relative_path_and_not_written(tmp_path):
+    root = tmp_path / "kb"
+    s = _session(tmp_path)
+    s.subagents[0].elsewhere = KEPT
+    written, _ = write_session(root, "h", s, Counter())
+    assert written == [MAIN]
+    assert "[subagent](../09/2026-09-30_demo_aaaaaaaa_sub-e94ad30f.md)" in (root / MAIN).read_text(encoding="utf-8")
+    assert not (root / SUB).exists() and not (root / f"raw/h/claude/2026/10/{SID}__sub-{AID}.jsonl.gz").exists()
+
+
+def test_an_older_copy_goes_only_once_the_kept_file_is_there(tmp_path):
+    root = tmp_path / "kb"
+    s = _session(tmp_path)
+    write_session(root, "h", s, Counter())                      # an older sync wrote the subagent here
+    copy_raw = root / f"raw/h/claude/2026/10/{SID}__sub-{AID}.jsonl.gz"
+    s.subagents[0].elsewhere = KEPT
+    touched = set()
+    write_session(root, "h", s, Counter(), touched=touched)
+    assert (root / SUB).exists() and copy_raw.exists() and touched == set()    # no kept file yet: keep the copy
+    _keep_file(root)
+    write_session(root, "h", s, Counter(), dry_run=True, touched=touched)
+    assert (root / SUB).exists() and touched == set()
+    write_session(root, "h", s, Counter(), touched=touched)
+    assert not (root / SUB).exists() and not copy_raw.exists() and touched == {"2026/10"}
+    assert (root / KEPT).exists() and (root / KEPT_RAW).exists()
+
+
+def test_a_copy_of_another_session_at_the_path_is_left_alone(tmp_path):
+    root = tmp_path / "kb"
+    s = _session(tmp_path)
+    _keep_file(root)
+    (root / SUB).parent.mkdir(parents=True, exist_ok=True)
+    (root / SUB).write_text('---\nid: "someone-else"\n---\n\nx\n')
+    s.subagents[0].elsewhere = KEPT
+    write_session(root, "h", s, Counter())
+    assert (root / SUB).exists()

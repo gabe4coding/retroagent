@@ -122,6 +122,41 @@ def make_claude_tree(root, sid=SID, aid=AID, cwd=CWD):
     return projects
 
 
+SID_B = "99999999-8888-7777-6666-5555bbbbbbbb"      # resumes SID; sorts after it
+AID_B = "b0b0b0b0b0b0b0b0b"                         # SID_B's own subagent
+
+
+def make_shared_pair(root, a=SID, b=SID_B, aid=AID, names=None, cwd=CWD, cwd_b=CWD):
+    """Session b resumes session a: it copies a's records (with its own sessionId, as Claude Code does), adds one
+    exchange and a subagent of its own (AID_B), and holds a byte-identical copy of a's subagent `aid`. `names` gives
+    the sessionId of each of the subagent's 4 records (default a, a, b, b: it kept running after the resume).
+    Returns the projects dir."""
+    names = names or [a, a, b, b]
+    projects = Path(root) / "projects"
+    sub = [{**r, "sessionId": n} for r, n in zip(claude_sub(a, aid, cwd), names)]
+    meta = json.dumps({"agentType": "Explore", "description": "Explore tests", "toolUseId": "t3"})
+    base = {"sessionId": b, "cwd": cwd_b, "gitBranch": "feat/x"}
+    later = [
+        {**base, "type": "user", "uuid": "b1", "timestamp": "2026-10-06T14:00:00.000Z",
+         "message": {"role": "user", "content": "Now check the other suite"}},
+        {**base, "type": "assistant", "uuid": "b2", "timestamp": "2026-10-06T14:01:00.000Z",
+         "message": {"id": "mb2", "role": "assistant", "model": "claude-opus-5-5", "content": [
+             {"type": "tool_use", "id": "tb1", "name": "Agent", "input": {"description": "Check suite", "prompt": "go"}}]}},
+        {**base, "type": "user", "uuid": "b3", "timestamp": "2026-10-06T14:02:00.000Z",
+         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tb1", "content": "done"}]},
+         "toolUseResult": {"agentId": AID_B, "status": "completed"}},
+    ]
+    files = []
+    for sid, sid_cwd, records in ((a, cwd, claude_main(a, aid, cwd)), (b, cwd_b, claude_main(b, aid, cwd_b) + later)):
+        proj = projects / ("-" + sid_cwd.strip("/").replace("/", "-"))
+        files.append(write_jsonl(proj / f"{sid}.jsonl", records))
+        files.append(write_jsonl(proj / sid / "subagents" / f"agent-{aid}.jsonl", sub))
+        (proj / sid / "subagents" / f"agent-{aid}.meta.json").write_text(meta)
+    files.append(write_jsonl(proj / b / "subagents" / f"agent-{AID_B}.jsonl", claude_sub(b, AID_B, cwd_b)))
+    age(files)
+    return projects
+
+
 def claude_user(ts, content, cwd=CWD, **extra):
     """One synthetic Claude user record (a prompt, or tool results when content is a list of tool_result parts)."""
     return {"type": "user", "timestamp": ts, "cwd": cwd, "sessionId": SID,

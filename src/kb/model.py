@@ -51,6 +51,7 @@ class Session:
     subagents: list = field(default_factory=list)   # list[Session] (Claude only)
     skipped: dict = field(default_factory=dict)     # unhandled record type -> count
     headless: bool = False                          # started by `claude -p` / `codex exec`, not by a person at a prompt
+    elsewhere: str = ""                             # a subagent another session writes: the md file that holds it
 
     @property
     def user_turns(self) -> int:
@@ -76,14 +77,17 @@ class Unit:
     agent: str
     paths: list
     main: str
+    shared: dict = field(default_factory=dict)     # subagent id -> {main transcript: its copy}, for every session
+                                                   # that holds a copy, when there are several (Claude only)
+    related: list = field(default_factory=list)    # the other holders' files: they decide who writes a shared one
 
     def fingerprint(self) -> str:
-        """sha1 of path, size, mtime and ctime of every file. Raises OSError if a file is gone."""
+        """sha1 of path, size, mtime and ctime of every file (related files too). Raises OSError if a file is gone."""
         parts = []
-        for p in sorted(map(str, self.paths)):
+        for p in sorted(map(str, self.paths + self.related)):
             st = os.stat(p)
             parts.append(f"{p}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}")
         return hashlib.sha1("|".join(parts).encode("utf-8", "surrogateescape")).hexdigest()
 
     def newest_mtime(self) -> float:
-        return max(os.stat(p).st_mtime for p in self.paths)
+        return max(os.stat(p).st_mtime for p in self.paths + self.related)
