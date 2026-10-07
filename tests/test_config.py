@@ -194,3 +194,16 @@ def test_embed_keys(tmp_path, monkeypatch):
     p.write_text(json.dumps({"embed": "yes", "embed_url": 3, "embed_sync_seconds": -1}))
     cfg = config.load()
     assert (cfg.embed, cfg.embed_url, cfg.embed_sync_seconds) == (False, "", 60)    # bad values: off, defaults
+
+
+def test_hint_keys(tmp_path, monkeypatch):
+    p = tmp_path / "c.json"
+    monkeypatch.setenv("KB_CONFIG", str(p))
+    cfg = config.load()
+    assert (cfg.hints, cfg.hint_semantic_min, cfg.hint_keyword_min) == (False, 0.78, 3)
+    p.write_text(json.dumps({"hints": True, "hint_semantic_min": 0.8, "hint_keyword_min": 4}))
+    cfg = config.load()
+    assert (cfg.hints, cfg.hint_semantic_min, cfg.hint_keyword_min) == (True, 0.8, 4)
+    p.write_text(json.dumps({"hints": "yes", "hint_semantic_min": 78, "hint_keyword_min": 0}))
+    cfg = config.load()
+    assert (cfg.hints, cfg.hint_semantic_min, cfg.hint_keyword_min) == (False, 0.78, 3)    # bad values: off, defaults
