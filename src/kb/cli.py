@@ -6,7 +6,7 @@
   kb recent            latest sessions
   kb summary <id>      summary, decisions, outcome, files, PRs, subagents of one session
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
-  kb stats [report]    ready-made analytics; kb sql "<SELECT …>" for custom ones
+  kb stats [report]    ready-made analytics (errors: tool errors that came back); kb sql "<SELECT …>" for custom ones
   kb sync | backfill | status | reindex   maintenance
   kb embed             turn on semantic search: kb installs and runs a local embedding model (--status, --off)
   kb repair            when every sync fails to pull: reset the data clone to the remote; the next sync makes this
@@ -36,13 +36,14 @@ import sys
 from kb import config as config_mod
 from kb import gitops
 from kb.distill import parse_markdown, split_front_matter
-from kb.index import MIN_PREFIX, AmbiguousId, Filters, Index, run_sql
+from kb.index import MIN_PREFIX, AmbiguousId, Filters, Index, connect_readonly, run_sql
 from kb.pages import parse_page, section, sections
-from kb.stats import REPORTS
+from kb.stats import REPORTS, repeated_errors
 from kb.util import short_id
 
 
 SUBAGENT_LINES = 10
+STATS = list(REPORTS) + ["errors"]  # errors: tool errors that came back in 2+ sessions (kb.stats)
 PAGE_HITS = 3                    # pages listed before the sessions in `kb find`
 MEMORY_HITS = 3                  # memories listed after the pages, before the sessions
 
@@ -452,12 +453,24 @@ def cmd_show(args, cfg) -> int:
 
 
 def cmd_stats(args, cfg) -> int:
+    if args.report == "errors":
+        _open_index(cfg).close()
+        con = connect_readonly(cfg.kb_dir / "index.sqlite")
+        try:
+            cols, rows = repeated_errors(con, parse_since(args.since), args.project or "")
+        finally:
+            con.close()
+        print(table(cols, rows, args.width) if rows else "no error came back in two sessions")
+        return 0
+    if args.since or args.project:
+        print("--since and --project work only with: kb stats errors")
+        return 2
     sql = REPORTS.get(args.report)
     if sql is None:
-        print("reports: " + ", ".join(REPORTS))
+        print("reports: " + ", ".join(STATS))
         return 2
     _open_index(cfg).close()
-    print(table(*run_sql(cfg.kb_dir / "index.sqlite", sql)))
+    print(table(*run_sql(cfg.kb_dir / "index.sqlite", sql), args.width))
     return 0
 
 
@@ -905,8 +918,11 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("--max-chars", type=int, default=4000)
     sh.set_defaults(func=cmd_show)
 
-    st = sub.add_parser("stats", help="reports: " + ", ".join(REPORTS))
+    st = sub.add_parser("stats", help="reports: " + ", ".join(STATS))
     st.add_argument("report", nargs="?", default="overview")
+    st.add_argument("--since", help="errors: only sessions started since (30d, 2w, 6m, 1y or an ISO date)")
+    st.add_argument("--project", help="errors: only this project")
+    st.add_argument("--width", type=int, default=80, help="cut cells longer than this many chars (0: never cut)")
     st.set_defaults(func=cmd_stats)
 
     q = sub.add_parser("sql", help="read-only SQL on the index (tables: sessions, turns, pages, memories)")

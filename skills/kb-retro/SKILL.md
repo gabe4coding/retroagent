@@ -17,7 +17,9 @@ ranked by severity. Every claim points to evidence (`short [turn N]`). A diary o
 4. **Find patterns with targeted queries, not full reads.**
    - User corrections, in the user's own turns only (a subagent's "user" turn is the parent agent's prompt):
      `kb find "actually" --role user --no-subagents --since 7d`, the same for `"not what I asked"` and `"wrong"`.
-   - Errors that come back: `kb sql "SELECT (SELECT short FROM sessions WHERE id = session_id) short, n, substr(text, instr(text,'→ ERROR'), 160) err FROM turns WHERE text LIKE '%→ ERROR%' AND session_id IN (SELECT id FROM sessions WHERE started >= date('now','-7 days')) LIMIT 60" --width 0`, then group similar errors.
+   - Errors that come back: `kb stats errors --since 7d --width 0`. Errors already grouped, most sessions first. An
+     error that tells the agent what to do and still comes back is an environment finding (a hook message, a rule, a
+     tool), not one for a better prompt.
    - Heavy tool use: `kb sql "SELECT s.short, s.turns, SUM((length(t.text)-length(replace(t.text, char(10)||'- ', '')))/3) calls FROM turns t JOIN sessions s ON s.id=t.session_id WHERE t.role='assistant' AND s.parent='' AND s.started >= date('now','-7 days') GROUP BY s.id ORDER BY calls DESC LIMIT 5"`
    - Details only with `kb show <short> --turn N --around 1`.
 5. **Sort findings into categories.** Each has a "use when" test; skip a category with no evidence.
