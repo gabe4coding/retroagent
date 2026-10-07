@@ -124,11 +124,13 @@ fails in Claude Code, the `PostToolUseFailure` hook (`bin/kb-hint`) runs `kb hin
 to the agent's context:
 
 ```
-retroagent: seen before → <problem → fix> (kb summary <short>)
+retroagent: seen before → <problem → fix> (kb summary <short> · <date>)
 ```
 
 The line is a bullet from the "Errors seen → fixes" section of the current project's page, with the session it came
-from. The project comes from the working directory, as for sessions. Most failures get no hint, because a wrong hint
+from and the date a session last confirmed it (see
+[Old and conflicting facts](./pages-routine.mdx#old-and-conflicting-facts)). A bullet that the page's age rule calls
+stale (`stale_days` in `pages/config.json`) is never shown. The project comes from the working directory, as for sessions. Most failures get no hint, because a wrong hint
 costs more than a missing one:
 
 1. The first 200 characters of the error must contain an error word (`error`, `failed`, `not found`, `denied`, …). An
@@ -143,8 +145,8 @@ costs more than a missing one:
 
 A session gets each bullet once. When its best bullet was shown already, it gets nothing. The hook exits 0 on every
 problem and prints nothing; when hints are off it exits before Python starts. Each hint shown is logged to
-`.kb/hints/log.jsonl` in the data clone (local, never committed) with the session, the bullet, the score and the
-rule.
+`.kb/hints/log.jsonl` in the data clone (local, never committed) with the session, the bullet, its date, the score
+and the rule.
 
 Codex has no event for a failed tool call, and its `PostToolUse` shell response has no exit code, so Codex gets no
 hints yet. `kb hint` still reads a Codex `PostToolUse` event whose response starts with `Exit code: N`.
