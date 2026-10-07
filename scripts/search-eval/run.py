@@ -4,16 +4,20 @@
 Launch:  scripts/search-eval/run.py                      cases.local.jsonl, variant "baseline"
          scripts/search-eval/run.py --variant v1         after a change to src/kb (the code next to this script runs)
          scripts/search-eval/run.py --cases FILE --limit 20
+         scripts/search-eval/run.py --variant v3 --search scripts/search-eval/embed_search.py
 
-Each case is {"id", "tags", "query", "expected": [session id prefixes]}. A hit matches when its id, or its parent's
-id (a subagent of the expected session), starts with an expected prefix. Metrics per case: recall@5 (headline),
+Each case is {"id", "tags", "query", "expected": [...], "kind"?}. kind "session" (default): expected holds session id
+prefixes, and a hit matches when its id, or its parent's id (a subagent of the expected session), starts with one.
+kind "page" or "memory": expected holds paths, scored against Index.find_pages / find_memories. Metrics per case: recall@5 (headline),
 recall@10, reciprocal rank. Only session hits are scored (Index.find), not the pages and memories `kb find` prints
-first. Reads the index read-only; no model call, no cost. Writes .claude/hillclimb/kb-find/<variant>/ in the layout
+first. --search FILE scores another search instead: FILE defines make_search(idx, flow) returning
+search(query, limit, kind) -> rows (id and parent for sessions, path for pages and memories). Reads the index read-only; no model call, no cost. Writes .claude/hillclimb/kb-find/<variant>/ in the layout
 the claude-api report builders read (results.jsonl, traces/, errors.jsonl). Python 3.9, stdlib only.
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import sys
@@ -34,11 +38,31 @@ METRICS = [
 ]
 
 
-def rank_of(hits: list, expected: list):
+def rank_of(hits: list, expected: list, kind: str = "session"):
     for i, h in enumerate(hits, 1):
-        if any((h["id"] or "").startswith(p) or (h.get("parent") or "").startswith(p) for p in expected):
+        if kind != "session":
+            if h.get("path") in expected:
+                return i
+        elif any((h["id"] or "").startswith(p) or (h.get("parent") or "").startswith(p) for p in expected):
             return i
     return None
+
+
+def bm25_search(idx):
+    def search(query: str, limit: int, kind: str = "session") -> list:
+        if kind == "page":
+            return idx.find_pages(query, "", limit)
+        if kind == "memory":
+            return idx.find_memories(query, Filters(), limit)
+        return idx.find(query, Filters(), limit)
+    return search
+
+
+def _exists(idx, kind: str, key: str) -> bool:
+    if kind == "session":
+        return idx.get(key) is not None
+    table = "pages" if kind == "page" else "memories"
+    return idx.db.execute(f"SELECT 1 FROM {table} WHERE path = ?", (key,)).fetchone() is not None
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple:
@@ -57,6 +81,7 @@ def main() -> int:
     ap.add_argument("--variant", default="baseline", help="baseline or v<N>")
     ap.add_argument("--limit", type=int, default=10, help="hits asked from Index.find")
     ap.add_argument("--out", default=str(REPO / ".claude/hillclimb/kb-find"))
+    ap.add_argument("--search", help="python file with make_search(idx, flow); default Index.find")
     a = ap.parse_args()
 
     cfg = config.load()
@@ -64,7 +89,7 @@ def main() -> int:
     if idx is None:
         sys.exit("index missing or outdated; run: kb reindex")
     cases = [json.loads(l) for l in Path(a.cases).read_text().splitlines() if l.strip()]
-    missing = [(c["id"], p) for c in cases for p in c["expected"] if idx.get(p) is None]
+    missing = [(c["id"], p) for c in cases for p in c["expected"] if not _exists(idx, c.get("kind", "session"), p)]
     if missing:                                   # a gold id that no longer resolves would score as a silent miss
         sys.exit(f"expected ids not in the index: {missing}")
 
@@ -75,24 +100,34 @@ def main() -> int:
     if not state.exists():
         state.write_text(json.dumps({"flow": "kb-find", "metrics": METRICS, "perf_fields": ["latency_s"]}, indent=2))
 
+    search = bm25_search(idx)
+    if a.search:
+        spec = importlib.util.spec_from_file_location("search_plugin", a.search)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        search = mod.make_search(idx, flow)
+
     rows = []
     with open(var / "results.jsonl", "w") as out:
         for c in cases:
             t = time.perf_counter()
-            hits = idx.find(c["query"], Filters(), a.limit)
+            kind = c.get("kind", "session")
+            hits = search(c["query"], a.limit, kind)
             lat = round(time.perf_counter() - t, 4)
-            r = rank_of(hits, c["expected"])
+            r = rank_of(hits, c["expected"], kind)
             grade = {"recall_at_5": float(bool(r and r <= 5)), "recall_at_10": float(bool(r and r <= 10)),
                      "rr": round(1 / r, 4) if r else 0.0}
             row = {"prompt_id": c["id"], "prompt": c["query"], "tags": c["tags"], "status": "ok",
-                   "stop_reason": "end_turn", "grade": grade, "latency_s": lat, "model": "kb-find-bm25",
+                   "stop_reason": "end_turn", "grade": grade, "latency_s": lat, "model": Path(a.search).stem if a.search else "kb-find-bm25",
                    "usage": {"input_tokens": 0, "output_tokens": 0},
-                   "meta": {"rank": r, "expected": c["expected"], "hits": [h["id"][:8] for h in hits]}}
+                   "meta": {"rank": r, "expected": c["expected"], "kind": kind,
+                            "hits": [h["id"][:8] if kind == "session" else h["path"] for h in hits]}}
             out.write(json.dumps(row) + "\n")
             out.flush()
-            listing = "\n".join(f"{i}. {h['id'][:8]} {'↳' + h['parent'][:8] + ' ' if h.get('parent') else ''}"
-                                f"{h.get('project') or ''} | {h.get('title') or ''} | {h.get('snippet') or ''}"
-                                for i, h in enumerate(hits, 1))
+            listing = "\n".join(f"{i}. {h['id'][:8] if kind == 'session' else h['path']} "
+                                f"{'↳' + h['parent'][:8] + ' ' if h.get('parent') else ''}"
+                                f"{h.get('project') or ''} | {h.get('title') or h.get('name') or ''} | "
+                                f"{h.get('snippet') or ''}" for i, h in enumerate(hits, 1))
             trace = [{"role": "user", "content": c["query"]},
                      {"role": "assistant", "content": f"expected {c['expected']}, rank {r}\n\n{listing or '(no hits)'}"}]
             (var / "traces" / f"{c['id']}_rep0.json").write_text(json.dumps(trace, indent=1, ensure_ascii=False))

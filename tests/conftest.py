@@ -46,6 +46,7 @@ def _isolate_env(monkeypatch, tmp_path):
     monkeypatch.setenv("KB_CONFIG", str(tmp_path / "no-config.json"))
     monkeypatch.delenv("KB_ROOT", raising=False)
     monkeypatch.delenv("KB_CHILD", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)        # the embedding runtime cache follows HOME
     monkeypatch.setattr(gitops, "GITLEAKS_FALLBACKS", ())      # never the gitleaks of the machine that runs the tests
     for key in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
         monkeypatch.setenv(key, "kb-test")

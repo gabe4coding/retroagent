@@ -48,6 +48,9 @@ class Config:
     branch: str = "main"                        # the sync touches git only on this branch
     raw_settle_hours: int = 24                  # raw copy only once the session is idle this long (0: every sync)
     auto_update: bool = False                   # `kb sync --auto` pulls the code clone once a day (fast-forward only)
+    embed: bool = False                         # semantic search: kb runs a local embedding model (`kb embed`)
+    embed_url: str = ""                         # optional: an embedding server kb uses instead of its own
+    embed_sync_seconds: int = 60                # longest a sync spends embedding new items
 
     @property
     def kb_dir(self) -> Path:
@@ -161,4 +164,7 @@ def load(path: str | None = None) -> Config:
     cfg.branch = _text(raw, "branch") or cfg.branch
     cfg.raw_settle_hours = _int(raw, "raw_settle_hours", cfg.raw_settle_hours)
     cfg.auto_update = _bool(raw, "auto_update", False, bad=False)
+    cfg.embed = _bool(raw, "embed", False, bad=False)
+    cfg.embed_url = _text(raw, "embed_url").rstrip("/")
+    cfg.embed_sync_seconds = _int(raw, "embed_sync_seconds", cfg.embed_sync_seconds)
     return cfg

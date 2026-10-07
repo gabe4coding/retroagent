@@ -181,3 +181,16 @@ def test_set_key_refuses_to_overwrite_a_file_it_cannot_read(tmp_path, monkeypatc
         config.set_key("auto_sync", True)
     assert "\n" not in str(e.value) and str(p) in str(e.value)
     assert p.read_text() == content
+
+
+def test_embed_keys(tmp_path, monkeypatch):
+    p = tmp_path / "c.json"
+    monkeypatch.setenv("KB_CONFIG", str(p))
+    cfg = config.load()
+    assert (cfg.embed, cfg.embed_url, cfg.embed_sync_seconds) == (False, "", 60)
+    p.write_text(json.dumps({"embed": True, "embed_url": "http://127.0.0.1:9/", "embed_sync_seconds": 5}))
+    cfg = config.load()
+    assert (cfg.embed, cfg.embed_url, cfg.embed_sync_seconds) == (True, "http://127.0.0.1:9", 5)
+    p.write_text(json.dumps({"embed": "yes", "embed_url": 3, "embed_sync_seconds": -1}))
+    cfg = config.load()
+    assert (cfg.embed, cfg.embed_url, cfg.embed_sync_seconds) == (False, "", 60)    # bad values: off, defaults
