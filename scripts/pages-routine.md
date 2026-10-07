@@ -1,7 +1,8 @@
 # Pages routine
 
-Instructions for the cloud routine "sessions-kb pages". `.github/workflows/pages-trigger.yml` fires it when there is
-something to write, at most once every few hours (routine runs are counted per day). It keeps `pages/` up to date
+Instructions for the retroagent pages routine. It runs in the cloud on two checkouts side by side: a data repo (your
+working directory: the synced sessions, memories and pages) and the retroagent code (where this file is). The data
+repo's `.github/workflows/pages-trigger.yml` fires it when there is something to write, at most once every few hours (routine runs are counted per day). It keeps `pages/` up to date
 from the synced sessions and memories: one page per project (`pages/projects/<name>.md`) and one retrospective per
 closed week (`pages/retro/<YYYY-Www>.md`). People and agents read them with `kb page` and find them with `kb find`.
 
@@ -13,10 +14,10 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
 
 ## Hard rules
 
-- Run every `kb` command from the repo root as `KB_ROOT="$PWD" plugin/bin/kb …` (the shell does not keep variables
-  between commands).
-- Write only files under `pages/projects/` and `pages/retro/`. Never edit anything else, never delete a page, never
-  touch `pages/config.json` or `pages/.state.json`.
+- In every step, `kb` stands for `KB_ROOT=<data> <code>/bin/kb` with the two absolute paths from step 0 written out
+  (the shell does not keep variables between commands).
+- Write only files under `pages/projects/` and `pages/retro/` of the data repo. Never edit anything else (the code
+  checkout included), never delete a page, never touch `pages/config.json` or `pages/.state.json`.
 - Never run `git commit`, `git push`, `git reset`, `git checkout` or `git rebase` yourself. `kb pages finish` checks,
   commits and pushes.
 - Read sessions and memories only through `kb` (`kb pages digest`, `kb summary`, `kb show`, `kb memory`, `kb sql`).
@@ -33,23 +34,27 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
   like it holds one.
 - Only facts from the sessions and memories. No guesses. Every bullet ends with its source: the short id of a
   session, like `(a1b2c3d4)`, so a reader can run `kb summary a1b2c3d4`, or a memory's ref, like
-  `(memory sessions-kb/prefer-small-prs)`, so a reader can run `kb memory sessions-kb/prefer-small-prs`.
+  `(memory myproject/prefer-small-prs)`, so a reader can run `kb memory myproject/prefer-small-prs`.
 - When a memory and a session disagree, the newer one wins (a memory's date is its `modified` date, else the date of
   the session it came from). Say so when a newer session makes a memory outdated.
 
 ## Steps
 
-1. **Start.** `KB_ROOT="$PWD" plugin/bin/kb pages start`. It prints the branch this run writes to. `bootstrap: true`
+0. **Find the two checkouts.** `<data>` is the checkout of the data repo your task names: normally your working
+   directory, in a folder with the repo's name (`git rev-parse --show-toplevel`). `<code>` is the retroagent checkout
+   next to it, the folder that holds `bin/kb` and this file (`ls -d "$(dirname <data>)"/*/bin/kb`). Check both with
+   `KB_ROOT=<data> <code>/bin/kb --help`. If either is missing, stop and report it; do not clone anything.
+1. **Start.** `kb pages start`. It prints the branch this run writes to. `bootstrap: true`
    means the first build: it works on the bootstrap branch and reaches `main` only through a pull request.
-2. **Plan.** `KB_ROOT="$PWD" plugin/bin/kb pages plan`, once per run (save its output to a file if you need it
+2. **Plan.** `kb pages plan`, once per run (save its output to a file if you need it
    again; `finish` uses the saved plan). It prints JSON: `projects` and `retros` to write in this run (each with
    `page`, `action` create or update, and the `sessions` short ids; a project `update` can also have `memories`, the
    paths of memory files added or changed, and `memories_removed`, the refs of memory files deleted), plus what stays
    `pending` for later runs. If both lists are empty, go to step 5.
 3. **Project pages.** For each item in `projects`:
-   - `create`: `KB_ROOT="$PWD" plugin/bin/kb pages digest --project <name>`. It starts with every memory of the
+   - `create`: `kb pages digest --project <name>`. It starts with every memory of the
      project, then the sessions.
-     `update`: read the current page file, then `KB_ROOT="$PWD" plugin/bin/kb pages digest --only <short,short,…>
+     `update`: read the current page file, then `kb pages digest --only <short,short,…>
      --memories <path,path,…>` with the item's `sessions` and `memories` (leave out a flag whose list is missing or
      empty).
    - `memories_removed`: the owner or an agent deleted these memories, so their facts no longer hold. Remove or
@@ -62,18 +67,18 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
      short ids to `sources`. Do not duplicate what is already there.
    - If the digest says it was cut, run the `kb pages digest --only …` command it prints for the rest.
 4. **Retros.** For each item in `retros` (a closed week, Monday to Sunday, Europe/Rome time):
-   - `KB_ROOT="$PWD" plugin/bin/kb pages digest --since <since> --until <until>`
-   - Numbers: `KB_ROOT="$PWD" plugin/bin/kb sql "SELECT project, COUNT(*) AS sessions, SUM(user_turns) AS prompts
+   - `kb pages digest --since <since> --until <until>`
+   - Numbers: `kb sql "SELECT project, COUNT(*) AS sessions, SUM(user_turns) AS prompts
      FROM sessions WHERE parent='' AND started >= '<since>' AND started < '<until>' GROUP BY project ORDER BY sessions
      DESC"` and the same with `GROUP BY agent, outcome`.
    - The digest starts with the memories made that week. `feedback` memories are corrections the owner gave: use
      them as evidence in "Friction" and "Suggested changes".
-   - Find friction with the method of `plugin/skills/kb-retro/SKILL.md` (steps 3 and 4), with
+   - Find friction with the method of `<code>/skills/kb-retro/SKILL.md` (steps 3 and 4), with
      `started >= '<since>' AND started < '<until>'` instead of the last 7 days, and at most 8 sessions looked at
      closer.
    - Write the retro in the format below. `update` means sessions of that week arrived late: rewrite the page with
      all of them.
-5. **Finish.** `KB_ROOT="$PWD" plugin/bin/kb pages finish`. Add `--skip <name,…>` for planned items you decided not
+5. **Finish.** `kb pages finish`. Add `--skip <name,…>` for planned items you decided not
    to write (for example a project with nothing worth a page), and say why in your final message; without `--skip`,
    an unwritten new page is planned again next run.
    - If it prints `refusing to commit`, fix the listed pages and run it again. Never work around it.

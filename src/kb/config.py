@@ -1,4 +1,8 @@
-"""Configuration: ~/.config/sessions-kb/config.json (every key optional). KB_CONFIG / KB_ROOT override."""
+"""Configuration: ~/.config/retroagent/config.json (every key optional). KB_CONFIG / KB_ROOT override.
+
+An install from before the rename keeps working: when the new file does not exist, ~/.config/sessions-kb/config.json
+is read (and changed by `kb enable` / `kb disable`) instead.
+"""
 from __future__ import annotations
 
 import json
@@ -10,8 +14,10 @@ from pathlib import Path
 
 from kb.util import atomic_write, expand, slug
 
-CONFIG_PATH = "~/.config/sessions-kb/config.json"
-DEFAULT_ROOT = "~/Repositories/sessions-kb"
+CONFIG_PATH = "~/.config/retroagent/config.json"
+LEGACY_CONFIG_PATH = "~/.config/sessions-kb/config.json"
+DEFAULT_ROOT = "~/.retroagent-data"
+CODE_ROOT = Path(__file__).resolve().parents[2]       # the retroagent checkout this code runs from
 DEFAULT_EXCLUDES = ["/private/var/folders/*", "/var/folders/*", "/tmp/*", "/private/tmp/*"]
 
 
@@ -41,6 +47,7 @@ class Config:
     require_gitleaks: bool = False              # true: no scanner means no commit
     branch: str = "main"                        # the sync touches git only on this branch
     raw_settle_hours: int = 24                  # raw copy only once the session is idle this long (0: every sync)
+    auto_update: bool = False                   # `kb sync --auto` pulls the code clone once a day (fast-forward only)
 
     @property
     def kb_dir(self) -> Path:
@@ -57,7 +64,7 @@ def _read(p: Path) -> dict:
     except OSError:
         return {}
     except ValueError as e:
-        sys.stderr.write(f"sessions-kb: bad config {p}: {e}; using defaults\n")
+        sys.stderr.write(f"retroagent: bad config {p}: {e}; using defaults\n")
         return {"auto_sync": False}
     return raw if isinstance(raw, dict) else {}
 
@@ -105,7 +112,11 @@ def _absolute(p: Path) -> Path:
 
 
 def config_path(path: str | None = None) -> Path:
-    return expand(path or os.environ.get("KB_CONFIG") or CONFIG_PATH)
+    """The given path, else $KB_CONFIG, else the config file: the new one, or the old one when only that exists."""
+    if path or os.environ.get("KB_CONFIG"):
+        return expand(path or os.environ["KB_CONFIG"])
+    new, old = expand(CONFIG_PATH), expand(LEGACY_CONFIG_PATH)
+    return old if not new.exists() and old.exists() else new
 
 
 def set_key(key: str, value, path: str | None = None) -> Path:
@@ -149,4 +160,5 @@ def load(path: str | None = None) -> Config:
     cfg.gitleaks_path = _text(raw, "gitleaks_path")
     cfg.branch = _text(raw, "branch") or cfg.branch
     cfg.raw_settle_hours = _int(raw, "raw_settle_hours", cfg.raw_settle_hours)
+    cfg.auto_update = _bool(raw, "auto_update", False, bad=False)
     return cfg

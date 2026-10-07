@@ -1,11 +1,12 @@
-# Fires the "sessions-kb pages" cloud routine (scripts/pages-routine.md) when it has something to write, at most once
-# every min_hours_between_fires (pages/config.json): routine runs are counted per day, so a push or a check fires it only
+# Fires the retroagent pages routine (scripts/pages-routine.md in {{CODE_REPO}}) when it has something to write, at
+# most once every min_hours_between_fires (pages/config.json): routine runs are counted per day, so a push or a check
+# fires it only
 #   1. if no earlier run of this workflow fired it within that gap (bursts of pushes make one run, later), and
 #   2. if `kb pages due` finds project pages or retros to write (no LLM; about a second on a sparse checkout).
 # The check also runs every 2 hours, so work held back by the gap, or sessions that waited for a summary, are not left
 # until the next push. No loop: the routine's commits change only pages/ (ignored below) and carry [skip ci].
 # Setup: repository secrets PAGES_ROUTINE_FIRE_URL and PAGES_ROUTINE_FIRE_TOKEN, from the routine's API trigger at
-# claude.ai/code/routines. Until both exist, nothing is fired.
+# claude.ai/code/routines. Until both exist, nothing is fired. Written by `kb setup routine`; run it again to update.
 name: pages-trigger
 
 on:
@@ -61,18 +62,22 @@ jobs:
           fetch-depth: 0            # the watermark diff needs history: commits and trees only (blob:none)
           filter: blob:none
           sparse-checkout: |
-            src
-            plugin
             sessions
             memories
             pages
+
+      - uses: actions/checkout@v4
+        if: ${{ !inputs.force && steps.gap.outputs.open == 'true' }}
+        with:
+          repository: {{CODE_REPO}}
+          path: .retroagent
 
       - name: Anything to write?
         id: due
         if: ${{ !inputs.force && steps.gap.outputs.open == 'true' }}
         run: |
           code=0
-          KB_ROOT="$PWD" plugin/bin/kb pages due || code=$?
+          KB_ROOT="$PWD" KB_CONFIG="$RUNNER_TEMP/none.json" .retroagent/bin/kb pages due || code=$?
           [ "$code" -le 1 ] || exit 1
           echo "due=$([ "$code" = 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 

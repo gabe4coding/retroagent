@@ -1,11 +1,11 @@
 {
-  "name": "sessions-kb",
+  "name": "retroagent",
   "owner": { "name": "gabe4coding" },
   "plugins": [
     {
-      "name": "sessions-kb",
-      "source": "./plugin",
-      "description": "Search and analyze your Claude Code and Codex sessions, synced to a private KB repo."
+      "name": "retroagent",
+      "source": "./",
+      "description": "Sync your Claude Code and Codex sessions to a private repo you choose; search them, get project pages and weekly retros."
     }
   ]
 }

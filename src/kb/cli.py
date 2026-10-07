@@ -11,7 +11,10 @@
   kb repair            when every sync fails to pull: reset the data clone to the remote; the next sync makes this
                        host's work again
   kb pages start | plan | digest | finish | due   steps of the cloud routine that writes pages/ (scripts/pages-routine.md)
-  kb enable | disable  switch automatic syncs (the SessionStart hook) on or off
+  kb enable | disable  switch automatic syncs (the SessionStart hook) on or off; `kb enable updates` pulls the code
+                       once a day
+  kb setup init | routine | check   set up the data repo and the cloud routine (the setup skill drives these)
+  kb update            pull the retroagent code and refresh the plugins
 
 Ids: the 8-character short id shown in lists (or any unique prefix of it or of the full id, 4 characters at least).
 Add --help to any command for its flags.
@@ -394,6 +397,11 @@ def cmd_sync(args, cfg) -> int:
     from kb.sync import now_iso, run_sync
     if getattr(args, "auto", False) and not cfg.auto_sync:     # the hook asks; the owner has not said yes yet. Plain `kb sync` always runs.
         return 0
+    if getattr(args, "auto", False) and cfg.auto_update:
+        from kb.setup import auto_update
+        line = auto_update(cfg)
+        if line:
+            print(f"{now_iso()} {cfg.host}: {line}")
     rep = run_sync(cfg, now=args.now, dry_run=args.dry_run, sample=args.sample,
                    summary_cap=0 if args.no_summaries else "default")
     if rep.locked_out:                      # the hook starts syncs freely: a second one is not an error
@@ -446,18 +454,19 @@ def cmd_repair(args, cfg) -> int:
     return 0
 
 
-def _set_auto_sync(on: bool) -> int:
-    path = config_mod.set_key("auto_sync", on)
-    print(f"automatic syncs {'enabled' if on else 'disabled'} ({path})")
+def _switch(what: str, on: bool) -> int:
+    key, label = {"sync": ("auto_sync", "automatic syncs"), "updates": ("auto_update", "automatic code updates")}[what]
+    path = config_mod.set_key(key, on)
+    print(f"{label} {'enabled' if on else 'disabled'} ({path})")
     return 0
 
 
 def cmd_enable(args, cfg) -> int:
-    return _set_auto_sync(True)
+    return _switch(getattr(args, "what", "sync"), True)
 
 
 def cmd_disable(args, cfg) -> int:
-    return _set_auto_sync(False)
+    return _switch(getattr(args, "what", "sync"), False)
 
 
 def cmd_status(args, cfg) -> int:
@@ -469,6 +478,8 @@ def cmd_status(args, cfg) -> int:
     idx.close()
     print(f"root: {cfg.root} · host: {cfg.host}")
     print("auto sync: on" if cfg.auto_sync else "auto sync: off (the hook does nothing; run: kb enable)")
+    print("auto update: on (the code clone is pulled once a day)" if cfg.auto_update
+          else "auto update: off (run: kb update; or kb enable updates)")
     print(f"last sync: {st.last_ok or 'never'}" + (f" · {st.last_result}" if st.last_result else ""))
     if st.last_error:
         print(f"last error: {st.last_error}")
@@ -505,6 +516,31 @@ def _pages_status(cfg) -> str:
         if p.returncode == 0:
             line += f" · {p.stdout.strip()} session commits since"
     return line
+
+
+def cmd_setup(args, cfg) -> int:
+    from kb import setup
+    try:
+        if args.step == "init":
+            print(setup.dumps(setup.init(cfg.root, cfg.branch)))
+        elif args.step == "routine":
+            print(setup.dumps(setup.routine(cfg.root, cfg.branch, code=args.code_repo or "", model=args.model,
+                                            environment=args.environment or "", push=not args.no_push)))
+        else:
+            print(setup.dumps(setup.check(cfg, config_mod.config_path())))
+    except (setup.SetupError, gitops.GitError) as e:
+        print(f"kb: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def cmd_update(args, cfg) -> int:
+    from kb import setup
+    try:
+        return setup.update()
+    except (setup.SetupError, gitops.GitError) as e:
+        print(f"kb: {e}", file=sys.stderr)
+        return 2
 
 
 def cmd_reindex(args, cfg) -> int:
@@ -615,10 +651,25 @@ def build_parser() -> argparse.ArgumentParser:
                         "committed; its owner may then need kb repair)")
     b.set_defaults(func=cmd_backfill)
 
-    sub.add_parser("enable", help="turn automatic syncs on (auto_sync in the config)").set_defaults(func=cmd_enable)
-    sub.add_parser("disable", help="turn automatic syncs off").set_defaults(func=cmd_disable)
+    for name, func, verb in (("enable", cmd_enable, "on"), ("disable", cmd_disable, "off")):
+        sw = sub.add_parser(name, help=f"turn automatic syncs (or with 'updates': daily code updates) {verb}")
+        sw.add_argument("what", nargs="?", choices=["sync", "updates"], default="sync",
+                        help="sync: auto_sync, the SessionStart hook (default) · updates: auto_update, a daily "
+                             "fast-forward of the code clone")
+        sw.set_defaults(func=func)
     sub.add_parser("status", help="last sync, pending sessions, summary backlog").set_defaults(func=cmd_status)
     sub.add_parser("reindex", help="rebuild the local index from markdown").set_defaults(func=cmd_reindex)
+    su = sub.add_parser("setup", help="set up the data repo and the cloud routine")
+    su.add_argument("step", choices=["init", "routine", "check"],
+                    help="init: base files of the data repo · routine: files and spec of the pages routine · "
+                         "check: what is set up (JSON)")
+    su.add_argument("--code-repo", help="owner/name of the retroagent code the routine and workflow use "
+                                        "(default: this code's origin)")
+    su.add_argument("--model", default="claude-sonnet-5-5", help="model of the routine")
+    su.add_argument("--environment", help="environment id for the routine spec")
+    su.add_argument("--no-push", action="store_true", help="routine: print the spec only, push no files")
+    su.set_defaults(func=cmd_setup)
+    sub.add_parser("update", help="pull the retroagent code and run install.sh again").set_defaults(func=cmd_update)
     sub.add_parser("repair", help="reset the data clone to the remote when every sync fails to pull (refuses when "
                                   "that could lose anything but this host's own work)").set_defaults(func=cmd_repair)
     return p

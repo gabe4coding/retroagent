@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Git growth of a KB data clone: what each sync commit added, and how often each raw file was written.
 
-Launch:  scripts/raw-growth                       reads ~/.sessions-kb (read-only)
+Launch:  scripts/raw-growth                       reads the data clone (read-only)
          scripts/raw-growth --repo DIR --last 20  another clone, only the newest 20 sync commits
 
 Per sync commit: raw files written (new or changed), the bytes of those blobs whole, the markdown bytes, and the
@@ -51,9 +51,23 @@ def mb(n: int) -> str:
     return f"{n / 1e6:.1f} MB"
 
 
+def _data_clone() -> str:
+    """The data clone: $KB_ROOT, else "root" of the retroagent config, else ~/.retroagent-data."""
+    import json
+    if os.environ.get("KB_ROOT"):
+        return os.environ["KB_ROOT"]
+    for cfg in ("~/.config/retroagent/config.json", "~/.config/sessions-kb/config.json"):
+        try:
+            with open(os.path.expanduser(cfg), encoding="utf-8") as fh:
+                return os.path.expanduser(json.load(fh)["root"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return os.path.expanduser("~/.retroagent-data")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--repo", default=os.path.expanduser("~/.sessions-kb"))
+    ap.add_argument("--repo", default=_data_clone())
     ap.add_argument("--last", type=int, default=0, help="only the newest N sync commits (0: all)")
     a = ap.parse_args(argv)
     log = git(a.repo, "log", "--first-parent", "--reverse", "--format=%H %cs %s").decode().splitlines()

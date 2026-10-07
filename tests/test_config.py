@@ -8,7 +8,7 @@ from kb import config
 def test_defaults_when_file_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("KB_CONFIG", str(tmp_path / "missing.json"))
     cfg = config.load()
-    assert cfg.root.name == "sessions-kb"
+    assert cfg.root.name == ".retroagent-data"
     assert cfg.host
     assert cfg.quiet_minutes == 15 and cfg.debounce_minutes == 10
     assert cfg.summary_model == "haiku" and cfg.summary_cap_per_run == 30
@@ -38,7 +38,7 @@ def _load(tmp_path, monkeypatch, content, name="c.json"):
 @pytest.mark.parametrize("content", ["[1, 2]", '"text"', "42", "null", "true"])
 def test_non_object_json_gives_defaults_silently(tmp_path, monkeypatch, capsys, content):
     cfg, _ = _load(tmp_path, monkeypatch, content)
-    assert cfg.quiet_minutes == 15 and cfg.root.name == "sessions-kb"
+    assert cfg.quiet_minutes == 15 and cfg.root.name == ".retroagent-data"
     assert capsys.readouterr().err == ""
 
 
@@ -54,7 +54,7 @@ def test_syntax_error_gives_defaults_and_one_warning(tmp_path, monkeypatch, caps
     assert cfg.quiet_minutes == 15
     err = capsys.readouterr().err
     assert err.count("\n") == 1
-    assert err.startswith(f"sessions-kb: bad config {p}: ") and err.endswith("; using defaults\n")
+    assert err.startswith(f"retroagent: bad config {p}: ") and err.endswith("; using defaults\n")
 
 
 @pytest.mark.parametrize("bad", ["abc", None, -5, True, False, [], {}, 1e999])

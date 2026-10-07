@@ -6,16 +6,16 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-PLUGIN = REPO / "plugin"
+PLUGIN = REPO                        # the whole repo is the plugin
 
 
 def test_manifests_agree():
     claude = json.loads((PLUGIN / ".claude-plugin/plugin.json").read_text())
     codex = json.loads((PLUGIN / ".codex-plugin/plugin.json").read_text())
     market = json.loads((REPO / ".claude-plugin/marketplace.json").read_text())
-    assert claude["name"] == codex["name"] == "sessions-kb"
+    assert claude["name"] == codex["name"] == market["name"] == "retroagent"
     assert claude["version"] == codex["version"]
-    assert market["plugins"][0]["name"] == "sessions-kb" and market["plugins"][0]["source"] == "./plugin"
+    assert market["plugins"][0]["name"] == "retroagent" and market["plugins"][0]["source"] == "./"
     hooks = json.loads((PLUGIN / "hooks/hooks.json").read_text())
     assert set(hooks) == {"hooks"}                      # Codex rejects unknown top-level keys
     entry = hooks["hooks"]["SessionStart"][0]
@@ -31,7 +31,7 @@ def _hook_env(tmp_path):
     (bin_dir / "kb").write_text(f"#!/bin/sh\necho \"$@\" > '{marker}'\n")
     (bin_dir / "kb").chmod(0o755)
     root = tmp_path / "root"
-    (root / "src/kb").mkdir(parents=True)
+    (root / ".git").mkdir(parents=True)                  # a data clone
     env = {k: v for k, v in os.environ.items() if k != "KB_CHILD"}
     env.update({"KB_ROOT": str(root), "KB_CONFIG": str(tmp_path / "none.json")})
     return bin_dir / "kb-hook", marker, root, env
@@ -77,3 +77,30 @@ def test_hook_passes_auto_to_kb_even_when_the_config_turns_auto_sync_off(tmp_pat
     cfg.write_text(json.dumps({"auto_sync": False}))
     subprocess.run([str(hook)], env={**env, "KB_CONFIG": str(cfg)}, input="{}", capture_output=True, text=True, timeout=5)
     assert _wait(marker) and marker.read_text().strip() == "sync --auto"
+
+
+def test_hook_does_nothing_without_a_data_clone(tmp_path):
+    hook, marker, root, env = _hook_env(tmp_path)
+    (root / ".git").rmdir()
+    p = subprocess.run([str(hook)], env=env, input="{}", capture_output=True, text=True, timeout=5)
+    assert p.returncode == 0 and not _wait(marker, 0.5) and not (root / ".kb").exists()
+
+
+def test_hook_falls_back_to_the_config_from_before_the_rename(tmp_path):
+    hook, marker, root, env = _hook_env(tmp_path)
+    home = tmp_path / "home"
+    legacy = home / ".config/sessions-kb/config.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"root": str(root)}))
+    env = {k: v for k, v in env.items() if k not in ("KB_ROOT", "KB_CONFIG")}
+    subprocess.run([str(hook)], env={**env, "HOME": str(home)}, input="{}", capture_output=True, text=True, timeout=5)
+    assert _wait(marker) and (root / ".kb/sync.log").exists()
+
+
+def test_kb_wrapper_finds_the_code_through_a_symlink(tmp_path):
+    link = tmp_path / "bin/kb"
+    link.parent.mkdir()
+    link.symlink_to(PLUGIN / "bin/kb")
+    env = {**os.environ, "KB_ROOT": str(tmp_path), "KB_CONFIG": str(tmp_path / "none.json")}
+    p = subprocess.run([str(link), "--help"], env=env, capture_output=True, text=True, timeout=20, cwd="/")
+    assert p.returncode == 0 and "kb setup" in p.stdout

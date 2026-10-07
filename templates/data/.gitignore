@@ -1,0 +1,5 @@
+.kb/
+.retroagent/
+__pycache__/
+*.pyc
+*.tmp

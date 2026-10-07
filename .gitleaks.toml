@@ -1,7 +1,7 @@
-# gitleaks configuration of sessions-kb.
-# gitleaks reads it from the repo root when it scans the staged files (`gitleaks git --staged`), and kb passes it with
-# `--config` when it scans the decompressed raw files (`gitleaks dir`). It needs gitleaks 8.25 or newer (`disabledRules`, `[[allowlists]]`).
-title = "sessions-kb"
+# gitleaks configuration of retroagent: the rules for data repos (a data repo's own .gitleaks.toml wins).
+# kb passes it with `--config` to both scans: the staged files (`gitleaks git --staged`) and the decompressed raw files
+# (`gitleaks dir`). It needs gitleaks 8.25 or newer (`disabledRules`, `[[allowlists]]`).
+title = "retroagent"
 
 [extend]
 # Keep every default rule, except these two. They were checked on real kb data (sessions, catalog and raw files):

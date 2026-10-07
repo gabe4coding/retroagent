@@ -1,6 +1,0 @@
-{
-  "name": "sessions-kb",
-  "version": "0.3.0",
-  "description": "Search and analyze your Claude Code and Codex sessions and memories, synced to a private KB repo.",
-  "author": { "name": "gabe4coding" }
-}

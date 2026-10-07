@@ -1,8 +1,9 @@
 [project]
-name = "sessions-kb"
+name = "retroagent"
 version = "0.1.0"
-description = "Personal knowledge base of Claude Code and Codex sessions"
+description = "Sync Claude Code and Codex sessions to a private repo; search them; project pages and weekly retros"
 requires-python = ">=3.9"
+license = { text = "MIT" }
 dependencies = []
 
 [tool.pytest.ini_options]

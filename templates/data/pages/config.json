@@ -1,0 +1,15 @@
+{
+  "_note": "Your settings for the cloud routine that writes pages/ (scripts/pages-routine.md in retroagent). The routine never edits this file. Defaults: src/kb/routine.py DEFAULTS in retroagent.",
+  "min_sessions": 3,
+  "skip_projects": ["scratch", "unknown"],
+  "batch_projects": 5,
+  "batch_retros": 2,
+  "summary_wait_hours": 24,
+  "timezone": "{{TIMEZONE}}",
+  "retro_weeks_back": 4,
+  "retro_late_days": 14,
+  "max_page_chars": 40000,
+  "min_hours_between_fires": 3,
+  "branch": "main",
+  "bootstrap_branch": "claude/pages-bootstrap"
+}

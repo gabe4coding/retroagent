@@ -16,6 +16,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from kb.config import CODE_ROOT
+
 DEFAULT_TIMEOUT = 60
 PULL_TIMEOUT = 120
 PUSH_TIMEOUT = 30 * 60        # the first data push can be hundreds of MB
@@ -356,6 +358,20 @@ def _map_raw(found: str, tmp: str, rels: dict) -> str:
     return rels[best] if best else found
 
 
+def gitleaks_config(root):
+    """The gitleaks rules for the data repo: its own .gitleaks.toml when it has one, else the one shipped with the
+    code. None when neither exists (gitleaks then uses its defaults)."""
+    for cand in (Path(root) / ".gitleaks.toml", CODE_ROOT / ".gitleaks.toml"):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _config_flags(root) -> list:
+    cfg = gitleaks_config(root)
+    return ["--config", str(cfg)] if cfg else []
+
+
 def _scan_raw(root, exe, raw_paths, tmpdir: Path):
     """Decompress staged raw files into a temp tree and scan it. Returns (files with findings, errors)."""
     tree, rels, errors = tmpdir / "tree", {}, []
@@ -371,9 +387,8 @@ def _scan_raw(root, exe, raw_paths, tmpdir: Path):
         rels[rel[:-3]] = rel
     if not rels:
         return [], errors
-    cfg = Path(root) / ".gitleaks.toml"
-    extra = ["--config", str(cfg)] if cfg.exists() else []
-    flags = ["--redact", "--no-banner", "--report-format", "json", "--report-path", str(tmpdir / "raw-report.json"), *extra]
+    flags = ["--redact", "--no-banner", "--report-format", "json", "--report-path", str(tmpdir / "raw-report.json"),
+             *_config_flags(root)]
     found, err = _gitleaks(exe, ["dir", *flags, str(tree)], ["detect", "--no-git", *flags, "--source", str(tree)],
                            'unknown command "dir"', tmpdir / "raw-report.json")
     if err:
@@ -409,7 +424,8 @@ def secrets_check(root, exe=None) -> SecretsResult:
         with tempfile.TemporaryDirectory(prefix="kb-gitleaks-") as td:
             tmpdir = Path(td)
             report = tmpdir / "staged-report.json"
-            flags = ["--redact", "--no-banner", "--report-format", "json", "--report-path", str(report)]
+            flags = ["--redact", "--no-banner", "--report-format", "json", "--report-path", str(report),
+                     *_config_flags(root)]
             files, err = _gitleaks(exe, ["git", "--staged", *flags, str(root)],
                                    ["protect", "--staged", *flags, "--source", str(root)],
                                    'unknown command "git"', report)

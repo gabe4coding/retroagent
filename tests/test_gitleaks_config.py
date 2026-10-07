@@ -85,7 +85,13 @@ def test_the_config_file_exists_and_names_what_it_disables():
     assert '"generic-api-key"' in text and '"sourcegraph-access-token"' in text and "atlassianAccountId" in text
 
 
-def test_staged_files_default_rules_report_every_sample(tmp_path):
+@pytest.fixture
+def no_shipped_config(tmp_path, monkeypatch):
+    """The control tests: no config in the data repo and none shipped with the code, so gitleaks uses its defaults."""
+    monkeypatch.setattr(gitops, "CODE_ROOT", tmp_path / "no-code")
+
+
+def test_staged_files_default_rules_report_every_sample(tmp_path, no_shipped_config):
     repo = _repo(tmp_path, "plain", with_config=False)
     _stage_text(repo, {**NOISE, **SECRETS})
     result = gitops.secrets_check(repo, exe=GITLEAKS)
@@ -110,7 +116,7 @@ def _stage_all_raw(repo):
         _stage_raw(repo, _raw(name), ['{"type":"user"}', text, '{"type":"assistant"}'])
 
 
-def test_raw_files_default_rules_report_every_sample(tmp_path):
+def test_raw_files_default_rules_report_every_sample(tmp_path, no_shipped_config):
     repo = _repo(tmp_path, "plain-raw", with_config=False)
     _stage_all_raw(repo)
     result = gitops.secrets_check(repo, exe=GITLEAKS)
@@ -124,3 +130,22 @@ def test_raw_files_honour_the_repo_config(tmp_path):
     result = gitops.secrets_check(repo, exe=GITLEAKS)
     assert result.ran and result.error == ""
     assert result.files == sorted(_raw(name) for name in SECRETS)
+
+
+def test_a_data_repo_without_a_config_uses_the_one_shipped_with_the_code(tmp_path):
+    repo = _repo(tmp_path, "data-without-config", with_config=False)
+    assert gitops.gitleaks_config(repo) == CONFIG
+    _stage_text(repo, {**NOISE, **SECRETS})
+    _stage_all_raw(repo)
+    result = gitops.secrets_check(repo, exe=GITLEAKS)
+    assert result.ran and result.error == ""
+    assert result.files == sorted(["aws.txt", "gh.txt"] + [_raw(name) for name in SECRETS])
+
+
+def test_a_data_repo_config_wins_over_the_shipped_one(tmp_path):
+    repo = _repo(tmp_path, "own-config", with_config=False)
+    (repo / ".gitleaks.toml").write_text('title = "mine"\n[extend]\nuseDefault = true\n')
+    assert gitops.gitleaks_config(repo) == repo / ".gitleaks.toml"
+    _stage_text(repo, {**NOISE, **SECRETS})
+    result = gitops.secrets_check(repo, exe=GITLEAKS)
+    assert result.files == sorted({**NOISE, **SECRETS})

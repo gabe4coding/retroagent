@@ -2,17 +2,21 @@
 # SessionStart hook (Claude Code and Codex): start `kb sync --auto` in the background and return at once.
 # `--auto` makes kb do nothing unless auto_sync is true in the config (see `kb enable`).
 # Prints nothing, so it adds no tokens to the session. Skips when KB_CHILD=1 (our own headless
-# summary calls) and when the last sync finished less than debounce_minutes ago.
+# summary calls), when no data repo is set up yet, and when the last sync finished less than debounce_minutes ago.
 [ "${KB_CHILD:-}" = "1" ] && exit 0
 HERE=$(cd "$(dirname "$0")" && pwd)
-CFG="${KB_CONFIG:-$HOME/.config/sessions-kb/config.json}"
+CFG="${KB_CONFIG:-}"
+if [ -z "$CFG" ]; then
+  CFG="$HOME/.config/retroagent/config.json"
+  [ -f "$CFG" ] || [ ! -f "$HOME/.config/sessions-kb/config.json" ] || CFG="$HOME/.config/sessions-kb/config.json"
+fi
 ROOT="${KB_ROOT:-}"
 if [ -z "$ROOT" ] && [ -f "$CFG" ]; then
   ROOT=$(sed -n 's/.*"root"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -n 1)
 fi
-[ -n "$ROOT" ] || ROOT="$HOME/Repositories/sessions-kb"
+[ -n "$ROOT" ] || ROOT="$HOME/.retroagent-data"
 case "$ROOT" in "~"*) ROOT="$HOME${ROOT#\~}" ;; esac
-[ -d "$ROOT/src/kb" ] || exit 0
+[ -e "$ROOT/.git" ] || exit 0
 DEBOUNCE=""
 [ -f "$CFG" ] && DEBOUNCE=$(sed -n 's/.*"debounce_minutes"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$CFG" | head -n 1)
 DEBOUNCE="${DEBOUNCE:-10}"
@@ -20,5 +24,5 @@ mkdir -p "$ROOT/.kb"
 if [ -f "$ROOT/.kb/last-ok" ] && [ -n "$(find "$ROOT/.kb/last-ok" -mmin "-$DEBOUNCE" 2>/dev/null)" ]; then
   exit 0
 fi
-KB_ROOT="$ROOT" nohup "$HERE/kb" sync --auto </dev/null >>"$ROOT/.kb/sync.log" 2>&1 &
+KB_ROOT="$ROOT" KB_CONFIG="$CFG" nohup "$HERE/kb" sync --auto </dev/null >>"$ROOT/.kb/sync.log" 2>&1 &
 exit 0

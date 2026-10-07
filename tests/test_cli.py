@@ -488,3 +488,13 @@ def test_status_uses_the_configured_gitleaks_path_and_says_when_it_is_required(k
     _, out = run(capsys, "status")
     line = next(l for l in out.splitlines() if l.startswith("gitleaks:"))
     assert "not installed" in line and "required" in line
+
+
+def test_enable_updates_switches_auto_update_only(tmp_path, monkeypatch, capsys):
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text('{"auto_sync": false}')
+    monkeypatch.setenv("KB_CONFIG", str(cfg))
+    code, out = run(capsys, "enable", "updates")
+    assert code == 0 and "automatic code updates enabled" in out
+    assert json.loads(cfg.read_text()) == {"auto_sync": False, "auto_update": True}
+    assert run(capsys, "disable", "updates")[0] == 0 and json.loads(cfg.read_text())["auto_update"] is False
