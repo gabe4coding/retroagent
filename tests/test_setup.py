@@ -166,6 +166,9 @@ def test_check_reports_what_is_set_up(tmp_path, monkeypatch):
     assert out["data_clone"] and out["data_root"] == str(clone) and out["config_exists"] is False
     assert out["routine_files"] == {setup.ROUTINE_CONFIG: False, setup.WORKFLOW: True}
     assert out["code"] == str(setup.CODE_ROOT) and out["has_sessions"] is False
+    assert out["auto_sync"] is True and out["auto_update"] is False                  # the config defaults
+    cfg.auto_update = True
+    assert setup.check(cfg, tmp_path / "config.json")["auto_update"] is True
 
 
 # ---- auto_update

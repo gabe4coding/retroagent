@@ -43,7 +43,7 @@ Rules:
    uses the user's Claude quota). Start it in the background:
    `nohup kb backfill --summaries >> <data root>/.kb/backfill.log 2>&1 &`.
 7. **Automatic syncs.** Ask. `kb enable` makes each new session start a background sync (`kb disable` stops it).
-8. **Automatic updates.** Ask. `kb enable updates` pulls the code clone once a day (fast-forward only, only when it
+8. **Automatic updates.** Ask (skip when `auto_update` is true). `kb enable updates` pulls the code clone once a day (fast-forward only, only when it
    sits clean on its default branch) and refreshes the plugins on a new version. It runs new code from the retroagent
    repo without review; without it, the user runs `kb update` to update.
 9. **Codex.** When `codex` is installed: tell the user to open Codex once and trust the retroagent hook with `/hooks`.
