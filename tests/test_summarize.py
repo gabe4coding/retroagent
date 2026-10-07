@@ -54,6 +54,7 @@ def _fake_claude(tmp_path, monkeypatch, body):
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
 
+@pytest.mark.slow
 def test_summarize_runs_claude_with_guard(tmp_path, monkeypatch):
     log = tmp_path / "env.txt"
     _fake_claude(tmp_path, monkeypatch,
@@ -63,6 +64,7 @@ def test_summarize_runs_claude_with_guard(tmp_path, monkeypatch):
     assert log.read_text().strip() == "KB_CHILD=1"
 
 
+@pytest.mark.slow
 def test_summarize_nonzero_exit_is_unavailable(tmp_path, monkeypatch):
     _fake_claude(tmp_path, monkeypatch, "cat > /dev/null\nexit 1\n")
     with pytest.raises(summ.SummaryUnavailable):
@@ -109,6 +111,7 @@ def test_summarize_passes_utf8_decoding_to_the_runner():
     assert kw["encoding"] == "utf-8" and kw["errors"] == "replace" and kw["env"]["KB_CHILD"] == "1"
 
 
+@pytest.mark.slow
 def test_summarize_survives_invalid_utf8_from_claude(tmp_path, monkeypatch):
     out = envelope(json.dumps({"summary": "bad BYTE here", "tags": ["x"], "outcome": "done", "decisions": []}))
     head, tail = out.split("BYTE")

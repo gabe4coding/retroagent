@@ -25,6 +25,7 @@ GITLEAKS_TIMEOUT = 300
 KILL_GRACE = 5                # seconds between SIGTERM and SIGKILL for a process that ran into its timeout
 STALE_LOCK_S = 10 * 60        # an index.lock older than this is not a git run in progress
 GITLEAKS_FALLBACKS = ("/opt/homebrew/bin/gitleaks", "/usr/local/bin/gitleaks")     # tried after PATH (a hook's PATH is short)
+NETWORK_COMMANDS = {"clone", "fetch", "ls-remote", "pull", "push"}     # the git commands that may start ssh
 
 
 class GitError(Exception):
@@ -55,12 +56,15 @@ def _ssh_command(root) -> str:
     return (cmd or "ssh") + " -o BatchMode=yes"
 
 
-def _env(root=None) -> dict:
+def _env(root=None, network: bool = True) -> dict:
+    """The environment of a git run. Only a network command needs the ssh command, and reading core.sshCommand
+    costs one more git process, so local commands skip it."""
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "never"
     env["GIT_EDITOR"] = "true"
-    env["GIT_SSH_COMMAND"] = _ssh_command(root)
+    if network:
+        env["GIT_SSH_COMMAND"] = _ssh_command(root)
     return env
 
 
@@ -104,7 +108,8 @@ def _run(cmd, timeout, label, root=None, env=None) -> subprocess.CompletedProces
 
 
 def git(root, *args, check: bool = True, timeout: float = DEFAULT_TIMEOUT) -> subprocess.CompletedProcess:
-    p = _run(["git", "-C", str(root), *args], timeout, f"git {' '.join(args)}", root=root)
+    network = bool(NETWORK_COMMANDS.intersection(args))
+    p = _run(["git", "-C", str(root), *args], timeout, f"git {' '.join(args)}", env=_env(root, network))
     if check and p.returncode != 0:
         raise GitError(f"git {' '.join(args)}: {(p.stderr or p.stdout).strip()}")
     return p

@@ -100,6 +100,7 @@ def test_release_without_acquire_and_double_release_are_safe(tmp_path):
     assert Lock(tmp_path / "lock").acquire()
 
 
+@pytest.mark.slow
 def test_lock_held_by_another_process_blocks_until_it_dies(tmp_path):
     path = tmp_path / "lock"
     src = str(Path(kb.lock.__file__).resolve().parents[1])

@@ -26,7 +26,7 @@ def _find_gitleaks():
 
 
 GITLEAKS = _find_gitleaks()
-pytestmark = pytest.mark.skipif(GITLEAKS is None, reason="gitleaks is not installed")
+pytestmark = [pytest.mark.skipif(GITLEAKS is None, reason="gitleaks is not installed"), pytest.mark.slow]
 
 
 def _hex(n, seed):
