@@ -184,26 +184,29 @@ def _cfg(root, **kw):
     return cfg
 
 
-def test_sync_step_embeds_and_never_fails_the_sync(kbx, server):
-    from kb.sync import Report, embed_new
+def test_sync_steps_embed_and_never_fail_the_sync(kbx, server):
+    from kb.sync import Report, embed_own, embed_rest
     root, idx, _ = kbx
+    cfg = _cfg(root, embed_url=server.url)
     rep = Report()
-    embed_new(_cfg(root, embed_url=server.url), idx, rep)
+    ep, deadline = embed_own(cfg, idx, rep)
+    embed_rest(cfg, idx, rep, ep, deadline)
     assert rep.embedded == 5 and rep.notes == [] and "5 embedded" in rep.line()
+    assert not (root / "vectors").exists()                                # embed_url vectors are never shared
     server.fail = True
     rep = Report()
-    embed_new(_cfg(root, embed_url=server.url), idx, rep)                 # nothing new: no call at all
+    embed_rest(cfg, idx, rep, *embed_own(cfg, idx, rep))                  # nothing new: no call at all
     assert rep.embedded == 0 and rep.notes == []
     put(root, "h/d.md", "d-1", title="New one")
     idx.update(root)
     rep = Report()
-    embed_new(_cfg(root, embed_url=server.url), idx, rep)                 # server failing
-    assert rep.embedded == 0 and rep.errors == [] and rep.notes[0].startswith("embed:") and rep.happened
+    embed_rest(cfg, idx, rep, *embed_own(cfg, idx, rep))                  # server failing: one note, no error
+    assert rep.embedded == 0 and rep.errors == [] and len(rep.notes) == 1 and rep.notes[0].startswith("embed:")
 
 
 def test_sync_step_installs_a_missing_pin_and_notes_failures(kbx, monkeypatch):
     from kb import embed_runtime
-    from kb.sync import Report, embed_new
+    from kb.sync import Report, embed_own, embed_rest
     root, idx, _ = kbx
     calls = []
 
@@ -212,8 +215,34 @@ def test_sync_step_installs_a_missing_pin_and_notes_failures(kbx, monkeypatch):
         raise embed_runtime.EmbedUnavailable("download failed: offline")
     monkeypatch.setattr(embed_runtime, "install", install)
     rep = Report()
-    embed_new(_cfg(root, embed=True), idx, rep)
-    assert calls == [1] and rep.notes == ["embed: download failed: offline"] and rep.errors == []
+    cfg = _cfg(root, embed=True)
+    ep, deadline = embed_own(cfg, idx, rep)
+    embed_rest(cfg, idx, rep, ep, deadline)                               # still imports; no second note
+    assert ep is None and calls == [1] and rep.notes == ["embed: download failed: offline"] and rep.errors == []
+
+
+def test_shared_vectors_reach_another_machine_through_the_sync_steps(kbx, server, monkeypatch, tmp_path):
+    import shutil
+
+    from kb import embed_runtime
+    from kb.sync import Report, embed_own, embed_rest
+    root, idx, _ = kbx
+    managed = Endpoint(server.url, "", embed_runtime.MODEL)
+    monkeypatch.setattr(embed_runtime, "ensure", lambda cfg, wait, progress=None: managed)
+    monkeypatch.setattr(embed_runtime.Server, "touch", lambda self: None)
+    embed_own(_cfg(root, embed=True), idx, Report())                      # machine h: embeds and exports
+    assert sorted(p.name for p in (root / "vectors/h").rglob("*.vec")) == ["a.vec", "b.vec", "budget.vec", "c.vec"]
+    other = tmp_path / "machine-b"                                        # another clone, without .kb/
+    shutil.copytree(root, other, ignore=shutil.ignore_patterns(".kb"))
+    idx_b = Index(other / ".kb" / "index.sqlite")
+    idx_b.update(other)
+    calls = server.calls
+    rep = Report()
+    embed_rest(_cfg(other, embed=True, host="b"), idx_b, rep, None, 0)   # no model at all on machine b
+    store_b = embed.Vectors(other / ".kb" / embed.STORE)
+    assert server.calls == calls and store_b.counts(embed.model_key(embed_runtime.MODEL)) == {"session": 3, "memory": 1}
+    store_b.close()
+    idx_b.close()
 
 
 # ---------------------------------------------------------------- two-step search (bit index)
@@ -322,3 +351,74 @@ def test_run_embed_keeps_the_bit_index_current(kbx, server, monkeypatch):
     embed.run_embed(idx.db, store, ep)
     bits = embed.BitIndex.read(store.path.with_name(embed.BITS), key, store.generation())
     assert bits is not None and "d-1" in bits.groups
+
+
+# ---------------------------------------------------------------- committed vector files
+
+LONG_TURN = "and the unstable motion check broke again on the release branch, look at it"
+
+
+@pytest.fixture
+def two_machines(kbx, server):
+    """Machine A (store of kbx) embedded everything of host h and exported it; returns (root, idx, A, B, endpoint)."""
+    root, idx, store_a = kbx
+    put(root, "h/e.md", "e-1", title="Release prep", summary="Prepared the release notes.", turns=("go", "ok", LONG_TURN))
+    idx.update(root)
+    ep = Endpoint(server.url, "", "m1")
+    embed.run_embed(idx.db, store_a, ep)
+    store_b = embed.Vectors(root / "machine-b" / embed.STORE)
+    yield root, idx, store_a, store_b, ep
+    store_b.close()
+
+
+def test_export_writes_one_file_per_session_and_memory(two_machines):
+    root, idx, store_a, _, _ = two_machines
+    written, removed = embed.export_own(root, idx.db, store_a, "m1", "h")
+    files = sorted(p.relative_to(root).as_posix() for p in (root / "vectors").rglob("*.vec"))
+    assert written == 5 and removed == 0 and len(files) == 5             # 4 sessions + 1 memory
+    assert "vectors/h/sessions/e.vec" in files and "vectors/h/memories/claude/demo/budget.vec" in files
+    from kb import vecfile
+    model, dim, items, _ = vecfile.loads((root / "vectors/h/sessions/e.vec").read_bytes())
+    assert model == embed.model_key("m1") and [i[:2] for i in items] == [("session", "e-1"), ("turn", "e-1#3")]
+    assert embed.export_own(root, idx.db, store_a, "m1", "h") == (0, 0)    # unchanged: nothing rewritten
+
+
+def test_another_machine_imports_without_the_model(two_machines):
+    root, idx, store_a, store_b, ep = two_machines
+    embed.export_own(root, idx.db, store_a, "m1", "h")
+    assert embed.import_files(root, idx.db, store_b, "m1", own_host="other") == 6    # 4 sessions, 1 turn, 1 memory
+    assert embed.import_files(root, idx.db, store_b, "m1", own_host="other") == 0    # seen: files not read again
+    q = embed.embed([embed.query_text("motion check")], ep.url)[0]
+    assert embed.rank(store_b, "m1", "session", q) == embed.rank(store_a, "m1", "session", q)
+    assert embed.import_files(root, idx.db, embed.Vectors(root / "c" / embed.STORE), "m1", own_host="h") == 0
+    assert embed.import_files(root, idx.db, embed.Vectors(root / "d" / embed.STORE), "m2", own_host="x") == 0
+
+
+def test_import_skips_vectors_of_text_that_changed(two_machines):
+    root, idx, store_a, store_b, _ = two_machines
+    embed.export_own(root, idx.db, store_a, "m1", "h")
+    put(root, "h/e.md", "e-1", title="Release prep", summary="A new summary.", turns=("go", "ok", LONG_TURN))
+    idx.update(root)
+    embed.import_files(root, idx.db, store_b, "m1", own_host="other")
+    have = store_b.signatures(embed.model_key("m1"))
+    assert ("session", "e-1") not in have and ("turn", "e-1#3") in have   # the stale summary vector is left out
+    plan = embed.plan(idx.db, store_b, embed.model_key("m1"))
+    assert [(k, key) for k, key, _, _ in plan] == [("session", "e-1"), ("page", "pages/projects/demo.md")]
+    # the changed summary is embedded locally instead; pages are never committed, every machine embeds them
+
+
+def test_export_removes_files_of_items_that_are_gone(two_machines):
+    root, idx, store_a, _, ep = two_machines
+    embed.export_own(root, idx.db, store_a, "m1", "h")
+    (root / "sessions/h/e.md").unlink()
+    idx.update(root)
+    embed.run_embed(idx.db, store_a, ep)                                    # prunes the gone session's vectors
+    assert embed.export_own(root, idx.db, store_a, "m1", "h") == (0, 1)
+    assert not (root / "vectors/h/sessions/e.vec").exists()
+
+
+def test_broken_vector_files_are_skipped(two_machines):
+    root, idx, store_a, store_b, _ = two_machines
+    embed.export_own(root, idx.db, store_a, "m1", "h")
+    (root / "vectors/h/sessions/e.vec").write_bytes(b"garbage")
+    assert embed.import_files(root, idx.db, store_b, "m1", own_host="other") == 4   # all but e-1's two vectors

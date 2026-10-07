@@ -1590,3 +1590,42 @@ def test_sync_embeds_new_sessions_when_semantic_search_is_on(hosts):
         assert run_sync(a, runner=FakeRunner(), now=True).embedded == 0
     finally:
         srv.close()
+
+
+def test_vectors_travel_with_the_sessions_between_machines(hosts, monkeypatch):
+    from embed_fakes import FakeEmbedServer
+
+    from kb import embed, embed_runtime
+    from kb.embed_runtime import Endpoint
+    a, b = hosts
+    srv = FakeEmbedServer()
+    try:
+        monkeypatch.setattr(embed_runtime, "ensure", lambda cfg, wait, progress=None: Endpoint(srv.url, "", embed_runtime.MODEL))
+        monkeypatch.setattr(embed_runtime.Server, "touch", lambda self: None)
+        a.embed = True
+        ra = run_sync(a, runner=FakeRunner())
+        assert not ra.errors and ra.pushed and ra.embedded > 0
+        tracked = _tracked(a.root)
+        assert any(p.startswith("vectors/host-a/sessions/") and p.endswith(".vec") for p in tracked)
+        assert not any(p.startswith("vectors/host-b/") for p in tracked)
+        b.embed = True
+        before = list(srv.inputs)
+        rb = run_sync(b, runner=FakeRunner())
+        assert not rb.errors and rb.pushed
+        asked = len(srv.inputs) - len(before)                          # texts machine b asked the model for
+        idx = Index(b.kb_dir / "index.sqlite")
+        host_of = dict(idx.db.execute("SELECT id, host FROM sessions"))
+        host_of.update(dict(idx.db.execute("SELECT path, host FROM memories")))
+        docs = embed.documents(idx.db)
+        idx.close()
+        owner = lambda kind, key: host_of.get(key.rsplit("#", 1)[0] if kind == "turn" else key)
+        from_a = [d for d in docs if owner(d[0], d[1]) == "host-a"]
+        not_a = [d for d in docs if owner(d[0], d[1]) != "host-a"]  # b's own items and the pages
+        assert from_a and asked == len(not_a)                           # a's items came from git, not the model
+        store = embed.Vectors(b.kb_dir / embed.STORE)
+        have = store.signatures(embed.model_key(embed_runtime.MODEL))
+        store.close()
+        assert any(k == "session" for k, _ in have) and len(have) >= ra.embedded
+        assert any(p.startswith("vectors/host-b/") for p in _tracked(b.root))
+    finally:
+        srv.close()

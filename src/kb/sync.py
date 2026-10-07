@@ -394,7 +394,8 @@ def _staged(root, paths) -> bool:
 
 def own_paths(cfg) -> list:
     """The only folders this machine ever stages, commits or pushes."""
-    return [f"sessions/{cfg.host}", f"raw/{cfg.host}", f"catalog/{cfg.host}", f"memories/{cfg.host}"]
+    return [f"sessions/{cfg.host}", f"raw/{cfg.host}", f"catalog/{cfg.host}", f"memories/{cfg.host}",
+            f"vectors/{cfg.host}"]
 
 
 def _within(path: str, folders) -> bool:
@@ -519,24 +520,53 @@ def publish(cfg, idx, state, report) -> None:
             report.errors.append(f"{REPAIR_HINT}; {e}" if isinstance(e, gitops.PullConflict) else str(e))
 
 
-def embed_new(cfg, idx, report, clock=time.time) -> None:
-    """Semantic search: vectors for what this sync added or changed, within embed_sync_seconds. Runs only once the
-    user turned it on (`kb embed`), so it may install a new pin after `kb update`. Any problem is a note, never a sync
-    error."""
+def embed_own(cfg, idx, report, clock=time.time):
+    """Semantic search, before the commit: vectors for what this sync added or changed, then this host's vector files
+    (vectors/<host>/) so other machines and cloud sessions get them with the sessions. Runs only once the user turned
+    it on (`kb embed`), so it may install a new pin after `kb update`. Any problem is a note, never a sync error.
+    Returns (endpoint or None, deadline) for embed_rest."""
     from kb import embed, embed_runtime
+    deadline = clock() + cfg.embed_sync_seconds
     try:
         ep = embed_runtime.ensure(cfg, wait=True)
+    except Exception as e:  # noqa: BLE001 - semantic search must never cost a sync
+        report.notes.append(f"embed: {one_line(str(e), 200)}")
+        return None, deadline
+    try:
         store = embed.Vectors(cfg.kb_dir / embed.STORE)
         try:
-            rep = embed.run_embed(idx.db, store, ep, deadline=clock() + cfg.embed_sync_seconds, clock=clock)
+            rep = embed.run_embed(idx.db, store, ep, deadline=deadline, clock=clock)
+            if not cfg.embed_url and ep.model == embed_runtime.MODEL:   # only the pinned model's vectors are shared
+                embed.export_own(cfg.root, idx.db, store, ep.model, cfg.host)
         finally:
             store.close()
-        report.embedded = rep.done
+        report.embedded += rep.done
         if rep.error:
             report.notes.append(f"embed: {rep.error}")
         if not cfg.embed_url:
             embed_runtime.Server().touch()
-    except Exception as e:  # noqa: BLE001 - semantic search must never cost a sync
+    except Exception as e:  # noqa: BLE001
+        report.notes.append(f"embed: {one_line(str(e), 200)}")
+    return ep, deadline
+
+
+def embed_rest(cfg, idx, report, endpoint, deadline, clock=time.time) -> None:
+    """Semantic search, after the pull: import the vector files other machines committed (no model needed), then embed
+    what is still missing (pages, items whose files lag) in the time left. Any problem is a note."""
+    from kb import embed, embed_runtime
+    model = endpoint.model if endpoint else embed_runtime.MODEL
+    try:
+        store = embed.Vectors(cfg.kb_dir / embed.STORE)
+        try:
+            embed.import_files(cfg.root, idx.db, store, model, cfg.host)
+            if endpoint is not None and clock() < deadline:
+                rep = embed.run_embed(idx.db, store, endpoint, deadline=deadline, clock=clock)
+                report.embedded += rep.done
+                if rep.error and not report.notes:
+                    report.notes.append(f"embed: {rep.error}")
+        finally:
+            store.close()
+    except Exception as e:  # noqa: BLE001
         report.notes.append(f"embed: {one_line(str(e), 200)}")
 
 
@@ -590,13 +620,16 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
             if months:
                 for path, why in write_catalog(cfg.root, cfg.host, months):
                     report.errors.append(f"catalog: {path}: {why}")
+            semantic = cfg.embed or cfg.embed_url
+            if semantic:                        # before the commit, so this host's vector files go out with it
+                endpoint, deadline = embed_own(cfg, idx, report, clock)
             machine.claim(cfg.root, cfg.host, mine)
             if git_ok:
                 commit_own(cfg, state, report)
                 if remote:
                     publish(cfg, idx, state, report)
-            if cfg.embed or cfg.embed_url:
-                embed_new(cfg, idx, report, clock)
+            if semantic:                        # after the pull: other machines' vector files, then what is left
+                embed_rest(cfg, idx, report, endpoint, deadline, clock)
             report.quarantined = sorted(state.quarantine)
             state.last_ok = now_iso()
             state.last_result = report.line()

@@ -140,6 +140,8 @@ class Vectors:
             # generation: raised by every write, so a bit index can tell it is current without reading the store
             self.db.execute("CREATE TABLE IF NOT EXISTS meta(name TEXT PRIMARY KEY, value INTEGER)")
             self.db.execute("INSERT OR IGNORE INTO meta VALUES ('generation', 0)")
+            # committed vector files already imported, by signature, so an unchanged file is not read again
+            self.db.execute("CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, sig TEXT)")
             self.db.commit()
 
     @classmethod
@@ -184,6 +186,15 @@ class Vectors:
             v = array("f")
             v.frombytes(blob)
             out[key] = v
+        return out
+
+    def rows(self, model: str) -> dict:
+        """(kind, key) -> (sha, vector) of every row made with model."""
+        out = {}
+        for kind, key, sha, blob in self.db.execute("SELECT kind, key, sha, vec FROM vectors WHERE model = ?", (model,)):
+            v = array("f")
+            v.frombytes(blob)
+            out[(kind, key)] = (sha, v)
         return out
 
     def counts(self, model: str) -> dict:
@@ -375,6 +386,90 @@ def run_embed(db, store: Vectors, endpoint, limit: int = None, deadline: float =
     if rep.done or rep.removed or not store.path.with_name(BITS).exists():
         save_bit_index(store, model)
     return rep
+
+
+# ---- committed vector files (vectors/<host>/ in the data repo)
+
+def vec_rel(path: str) -> str:
+    """The vector file of a session or memory file: sessions/<host>/<rest>.md -> vectors/<host>/sessions/<rest>.vec,
+    memories/<host>/<rest>.md -> vectors/<host>/memories/<rest>.vec."""
+    top, host, rest = path.split("/", 2)
+    return f"vectors/{host}/{top}/{rest[:-3] if rest.endswith('.md') else rest}.vec"
+
+
+def export_own(root, db, store: Vectors, model: str, host: str):
+    """Write the vector files of this host's sessions (summary document and turns) and memories, and delete the files
+    of items that are gone. Unchanged files are not rewritten. Returns (written, removed)."""
+    from kb import vecfile
+    root = Path(root)
+    key = model_key(model)
+    rows = store.rows(key)
+    turns = {}
+    for (kind, k), (sha, v) in rows.items():
+        if kind == "turn":
+            sid, _, n = k.rpartition("#")
+            turns.setdefault(sid, []).append((int(n) if n.isdigit() else 0, k, sha, v))
+    wanted = {}
+    for sid, md_path in db.execute("SELECT id, md_path FROM sessions WHERE host = ?", (host,)):
+        items = [("session", sid, rows[("session", sid)])] if ("session", sid) in rows else []
+        items += [("turn", k, (sha, v)) for _, k, sha, v in sorted(turns.get(sid, []))]
+        if items and md_path:
+            wanted[vec_rel(md_path)] = items
+    for (path,) in db.execute("SELECT path FROM memories WHERE host = ?", (host,)):
+        if ("memory", path) in rows:
+            wanted[vec_rel(path)] = [("memory", path, rows[("memory", path)])]
+    written = 0
+    for rel, items in wanted.items():
+        vectors = [v for _, _, (_, v) in items]
+        data = vecfile.dumps(key, len(vectors[0]), [(kind, k, sha) for kind, k, (sha, _) in items], vectors)
+        written += atomic_write(root / rel, data)
+    removed = 0
+    base = root / "vectors" / host
+    for f in base.rglob("*.vec") if base.is_dir() else []:
+        if f.relative_to(root).as_posix() not in wanted:
+            f.unlink()
+            removed += 1
+    return written, removed
+
+
+def import_files(root, db, store: Vectors, model: str, own_host: str) -> int:
+    """Load the vectors other machines committed (vectors/<host>/, every host but own_host) into the store: only
+    those made with model whose text is still the one in the index (same sha). Files seen before with the same
+    signature are skipped. Returns how many vectors were added or replaced."""
+    from kb import vecfile
+    root = Path(root)
+    key = model_key(model)
+    base = root / "vectors"
+    if not base.is_dir():
+        return 0
+    seen = dict(store.db.execute("SELECT path, sig FROM files"))
+    current = {(kind, k): _sha(text) for kind, k, text in documents(db)}
+    have = store.signatures(key)
+    rows, sigs = [], []
+    for host_dir in sorted(p for p in base.iterdir() if p.is_dir() and p.name != own_host):
+        for f in sorted(host_dir.rglob("*.vec")):
+            rel = f.relative_to(root).as_posix()
+            st = f.stat()
+            sig = f"{st.st_mtime_ns}:{st.st_size}"
+            if seen.get(rel) == sig:
+                continue
+            sigs.append((rel, sig))
+            try:
+                file_model, dim, items, vectors = vecfile.loads(f.read_bytes())
+            except (OSError, vecfile.VecFileError):
+                continue
+            if file_model != key:                      # the key names the model and the cut
+                continue
+            for (kind, k, sha), v in zip(items, vectors):
+                if current.get((kind, k)) == sha and have.get((kind, k)) != sha:
+                    rows.append((kind, k, sha, key, v))
+    if rows:
+        store.put(rows)
+        save_bit_index(store, key)
+    if sigs:
+        with store.db:
+            store.db.executemany("INSERT OR REPLACE INTO files VALUES (?, ?)", sigs)
+    return len(rows)
 
 
 # ---- ranking
