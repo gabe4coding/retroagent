@@ -34,7 +34,7 @@
   scanned with gitleaks.
 - **Search** — `kb find "how did I fix the flaky test"` on a local SQLite index, at a tiny token cost. Skills teach
   Claude Code and Codex to look there first. Optional [semantic search](docs/commands.mdx#semantic-search) also
-  matches paraphrases and other languages with a local model.
+  matches paraphrases and other languages with a local model, in cloud sessions too.
 - **Pages and retros** *(optional)* — a cloud routine keeps one page per project and one retrospective per week, every
   bullet linked to its source session.
 

@@ -4,6 +4,8 @@
                      lacks. install.sh runs it; in an empty repo they are its first commit.
   kb setup routine   what the pages routine needs in the data repo (pages/config.json, the trigger workflow), then
                      the routine to create and the two secrets to set
+  kb setup cloud     the network allowlist and setup script of a Claude Code cloud environment, so cloud sessions
+                     and routines get `kb` and semantic search
   kb setup check     what is set up on this machine, as JSON (the setup skill reads it)
   kb update          pull the retroagent code (fast-forward only) and run install.sh again
 
@@ -221,6 +223,54 @@ def routine(root, branch: str = "main", code: str = "", model: str = ROUTINE_MOD
         "test": f"gh workflow run pages-trigger.yml -R {data} -f force=true",
     })
     return result
+
+
+CLOUD_HOME = "/home/user"           # where a cloud session clones its repositories
+# Hosts a cloud environment must allow (Custom network, defaults included) for `kb embed --install`: the model on
+# Hugging Face (it redirects to a regional CDN host) and the llama.cpp runtime on GitHub releases (github.com
+# redirects to one of the two githubusercontent hosts). A cloud test on 2026-10-07 got HTTP 403 for every GitHub
+# download until the GitHub hosts were listed.
+CLOUD_HOSTS = ("huggingface.co", "*.hf.co", "github.com", "release-assets.githubusercontent.com",
+               "objects.githubusercontent.com")
+
+
+def cloud_setup_script(code: str, data: str) -> str:
+    """The setup script of a cloud environment: kb on PATH, the runtime and model installed and checked, semantic
+    search on. It always exits 0 (a failed download must not block sessions; kb find then uses BM25 alone)."""
+    code_dir, data_dir = f"{CLOUD_HOME}/{code.split('/')[-1]}", f"{CLOUD_HOME}/{data.split('/')[-1]}"
+    return (f"#!/bin/bash\n"
+            f"# retroagent: kb and semantic search in cloud sessions with {code} and {data} (kb setup cloud)\n"
+            f"ln -sf {code_dir}/bin/kb /usr/local/bin/kb || true\n"
+            f"{code_dir}/bin/kb embed --install --root {data_dir} || true\n"
+            f"exit 0\n")
+
+
+def cloud(root, code: str = "") -> str:
+    """What to set on a Claude Code cloud environment so its sessions and routines get kb with semantic search."""
+    code = code or code_repo()
+    data = origin_slug(root)
+    if not data:
+        raise SetupError(f"{root} has no GitHub origin: cloud sessions clone the data repo from GitHub")
+    hosts = "\n".join(CLOUD_HOSTS)
+    script = cloud_setup_script(code, data)
+    return f"""Semantic search in Claude Code cloud sessions and routines
+
+1. At claude.ai/code, open the environment selector (the cloud icon above the message box), then add an
+   environment or open the settings of an existing one.
+2. Network access: Custom. Check "Also include default list of common package managers". Allowed domains, one per
+   line:
+----- 8< -----
+{hosts}
+----- 8< -----
+3. Setup script, exactly as below (it runs once, then its files are cached for about 7 days):
+----- 8< -----
+{script}----- 8< -----
+4. Start sessions and routines in that environment with both repositories: {code} and {data}.
+
+The first `kb find` in a session starts a background fill: it imports the vectors your machines committed
+(vectors/ in {data}) and starts the model. Until it is done, `kb find` uses BM25 alone. Your machines must have
+semantic search on (`kb embed`) and have synced, or there are no vectors to import.
+"""
 
 
 def check(cfg, config_file: Path) -> dict:
