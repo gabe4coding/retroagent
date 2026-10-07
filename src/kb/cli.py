@@ -169,8 +169,8 @@ def cmd_find(args, cfg) -> int:
 def _dense_rankings(cfg, args, idx, query: str, want_pages: bool, want_memories: bool):
     """Embedding rankings per kind for `kb find`, or None: then BM25 alone. Never raises, never downloads, and waits
     at most embed_runtime.PROBE for the model. A stopped server is started in the background for the next call."""
-    if args.fts or args.no_embed or not (cfg.embed or cfg.embed_url):
-        return None
+    if args.fts or args.no_embed or args.role or not (cfg.embed or cfg.embed_url):
+        return None                      # --role: the vectors do not keep who wrote a text
     from kb import embed, embed_runtime
     store = embed.Vectors.open_readonly(cfg.kb_dir / embed.STORE)
     if store is None:
@@ -185,8 +185,7 @@ def _dense_rankings(cfg, args, idx, query: str, want_pages: bool, want_memories:
         if not cfg.embed_url:
             embed_runtime.Server().touch()
         f = _filters(args, not args.no_subagents)
-        allowed = None if f == Filters(role=f.role) else idx.keys("session", f)      # no filter: skip the check
-        out = {"session": embed.rank(store, ep.model, "session", q, allowed)}
+        out = {"session": embed.rank(store, ep.model, "session", q, idx.keys("session", f))}  # not the stale ones
         if want_pages:
             out["page"] = embed.rank(store, ep.model, "page", q, idx.keys("page", project=args.project or ""))
         if want_memories:
@@ -856,15 +855,45 @@ def _embed_status(cfg, srv, store_path) -> int:
 
 
 def cmd_reindex(args, cfg) -> int:
+    """Rebuild the index from the markdown, under the sync's lock. A running sync keeps the index open, so then it is
+    only brought up to date. The file is emptied in place, never deleted: a reader or writer that has it open keeps
+    working."""
+    from kb.lock import Lock
     path = cfg.kb_dir / "index.sqlite"
-    if path.exists():
-        path.unlink()
-    idx = Index(path)
-    n = idx.update(cfg.root)
-    pages, mems = idx.pages_changed, idx.memories_changed
-    idx.close()
+    lock = Lock(cfg.kb_dir / "lock")
+    rebuild = lock.acquire()
+    try:
+        if rebuild and path.exists():
+            _empty_index(path)
+        idx = Index(path)
+        try:
+            n = idx.update(cfg.root)
+            pages, mems = idx.pages_changed, idx.memories_changed
+        finally:
+            idx.close()
+    finally:
+        lock.release()
+    if not rebuild:
+        print("kb: a sync is running, so the index was brought up to date, not rebuilt")
     print(f"indexed {n} sessions" + (f", {pages} pages" if pages else "") + (f", {mems} memories" if mems else ""))
     return 0
+
+
+def _empty_index(path) -> None:
+    """Make Index() drop and build the tables again (as for an older schema). A file that is no longer a database is
+    deleted with its WAL files; only the holder of the sync lock does that."""
+    try:
+        con = sqlite3.connect(str(path), timeout=10)
+        try:
+            con.execute("PRAGMA user_version=0")
+        finally:
+            con.close()
+    except sqlite3.DatabaseError:
+        for p in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -883,7 +912,8 @@ def build_parser() -> argparse.ArgumentParser:
     filters(f)
     f.add_argument("--tag")
     f.add_argument("--limit", type=int, default=10)
-    f.add_argument("--role", choices=("user", "assistant"), help="match only turns by this role (user: your own messages)")
+    f.add_argument("--role", choices=("user", "assistant"), help="match only turns by this role (user: your own messages); "
+                   "keywords only, no semantic match")
     f.add_argument("--no-subagents", action="store_true", help="hide subagent transcripts")
     f.add_argument("--no-pages", action="store_true", help="hide pages")
     f.add_argument("--no-memories", action="store_true", help="hide memories")

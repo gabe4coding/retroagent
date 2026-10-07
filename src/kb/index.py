@@ -14,7 +14,7 @@ from kb.distill import parse_markdown, split_front_matter
 from kb.pages import page_rel, parse_page
 from kb.util import short_id
 
-SCHEMA_VERSION = 5          # bump when the tables change: the index is disposable, update() rebuilds it
+SCHEMA_VERSION = 6          # bump when the tables change: the index is disposable, update() rebuilds it
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS sessions(
   id TEXT PRIMARY KEY, agent TEXT, host TEXT, project TEXT, cwd TEXT, branch TEXT,
@@ -32,7 +32,7 @@ SCHEMA = (
     """CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
   session_id UNINDEXED, n UNINDEXED, text, tokenize='porter unicode61')""",
     # files that were read but lost to another file with the same id: remembered so they are not parsed again
-    "CREATE TABLE IF NOT EXISTS dups(md_path TEXT PRIMARY KEY, md_sig TEXT, id TEXT)",
+    "CREATE TABLE IF NOT EXISTS dups(md_path TEXT PRIMARY KEY, md_sig TEXT, id TEXT, turns INTEGER, ended TEXT)",
     "CREATE INDEX IF NOT EXISTS dups_id ON dups(id)",
     """CREATE TABLE IF NOT EXISTS pages(path TEXT PRIMARY KEY, kind TEXT, name TEXT, title TEXT, updated TEXT,
   sessions INTEGER, sig TEXT)""",
@@ -219,6 +219,16 @@ def connect_readonly(path) -> sqlite3.Connection:
         return _probe(uri + "&immutable=1")
 
 
+def _ahead(a: tuple, b: tuple) -> bool:
+    """Of two files with the same session id, (turns, ended, path) each: a wins with more turns, then a later end,
+    then the first sorted path."""
+    if a[0] != b[0]:
+        return a[0] > b[0]
+    if a[1] != b[1]:
+        return a[1] > b[1]
+    return a[2] < b[2]
+
+
 class Index:
     def __init__(self, path, readonly: bool = False):
         """readonly: open an existing index without ever writing (no schema step, update() raises). It sees one
@@ -341,7 +351,8 @@ class Index:
         for sid in sorted(freed):               # a duplicate file takes over from a removed winner
             if self.db.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone():
                 continue
-            for (rel,) in self.db.execute("SELECT md_path FROM dups WHERE id=? ORDER BY md_path", (sid,)).fetchall():
+            best = "ORDER BY turns DESC, ended DESC, md_path"
+            for (rel,) in self.db.execute(f"SELECT md_path FROM dups WHERE id=? {best}", (sid,)).fetchall():
                 if rel in files and self._ingest(rel, files, touched, freed) == "own":
                     break
         return len(touched)
@@ -357,20 +368,23 @@ class Index:
         sid = meta["id"]
         self.db.execute("SAVEPOINT ingest")
         try:
-            owner = self.db.execute("SELECT md_path FROM sessions WHERE id=?", (sid,)).fetchone()
-            owner = owner["md_path"] if owner else None
+            row = self.db.execute("SELECT md_path, turns, ended FROM sessions WHERE id=?", (sid,)).fetchone()
+            owner = row["md_path"] if row else None
+            mine = (meta.get("turns") or 0, meta.get("ended") or "", rel)
             gone = set()
             stale = self.db.execute("SELECT id FROM sessions WHERE md_path=?", (rel,)).fetchone()
             if stale and stale["id"] != sid:
                 self._delete(stale["id"])
                 gone.add(stale["id"])
-            # the first sorted path wins when several files carry the same id
-            if owner not in (None, rel) and owner in files and owner < rel:
-                self.db.execute("INSERT OR REPLACE INTO dups VALUES (?,?,?)", (rel, sig, sid))
+            # several files with the same id (a session copied to another host): the most complete one wins
+            theirs = (row["turns"] or 0, row["ended"] or "", owner) if row else None
+            if owner not in (None, rel) and owner in files and _ahead(theirs, mine):
+                self.db.execute("INSERT OR REPLACE INTO dups VALUES (?,?,?,?,?)", (rel, sig, sid, *mine[:2]))
                 result = "dup"
             else:
                 if owner not in (None, rel) and owner in files:    # this file beats the current owner, which now loses
-                    self.db.execute("INSERT OR REPLACE INTO dups VALUES (?,?,?)", (owner, files[owner][1], sid))
+                    self.db.execute("INSERT OR REPLACE INTO dups VALUES (?,?,?,?,?)",
+                                    (owner, files[owner][1], sid, row["turns"] or 0, row["ended"] or ""))
                 self._delete(sid)
                 self._insert(meta, turns, rel, sig)
                 self.db.execute("DELETE FROM dups WHERE md_path=?", (rel,))
@@ -537,12 +551,16 @@ class Index:
         if dense is None:
             return [self._hit(c) for c in lexical[:limit]]
         by_id = {c["id"]: c for c in lexical[:FUSE_POOL]}
-        return [self._hit(by_id[k]) if k in by_id else self._dense_hit(k)
-                for k in fuse([c["id"] for c in lexical[:FUSE_POOL]], dense, limit)]
+        hits = (self._hit(by_id[k]) if k in by_id else self._dense_hit(k)
+                for k in fuse([c["id"] for c in lexical[:FUSE_POOL]], dense, limit))
+        return [h for h in hits if h is not None]
 
-    def _dense_hit(self, sid: str) -> dict:
-        """A session only the embedding ranking found: its summary's start stands in for a snippet."""
+    def _dense_hit(self, sid: str):
+        """A session only the embedding ranking found: its summary's start stands in for a snippet. None when the
+        session is no longer in the index (its vector is older)."""
         row = self.db.execute(f"SELECT {_LEAN}, summary FROM sessions WHERE id=?", (sid,)).fetchone()
+        if row is None:
+            return None
         d = dict(row)
         return {**d, "snippet": _short(d.pop("summary") or ""), "turn": None}
 

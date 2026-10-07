@@ -1,6 +1,6 @@
 {
   "name": "retroagent",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Sync your Claude Code and Codex sessions and memories to a private repo you choose; search them, get project pages and weekly retros.",
   "author": {
     "name": "gabe4coding"

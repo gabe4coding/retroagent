@@ -269,7 +269,8 @@ def test_a_cached_kb_runs_the_code_clone_from_the_config(tmp_path):
     assert p.returncode == 0 and p.stdout.strip() == "clone ran"
     cfg.write_text(json.dumps({"code": str(tmp_path / "gone")}))                      # a clone that is gone: no
     (cache / "src").mkdir()                                                            # forwarding, the cache runs
-    shutil.copytree(clone / "src/kb", cache / "src/kb")
+    # no __pycache__: the bytecode of 'clone ran' has the same source size and second, so Python would run it
+    shutil.copytree(clone / "src/kb", cache / "src/kb", ignore=shutil.ignore_patterns("__pycache__"))
     (cache / "src/kb/__main__.py").write_text("print('cache ran')\n")
     p = subprocess.run([str(cache / "bin/kb")], env=env, capture_output=True, text=True, timeout=20)
     assert p.stdout.strip() == "cache ran"

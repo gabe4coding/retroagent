@@ -94,7 +94,7 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
      all of them.
 5. **Finish.** `kb pages finish`. Add `--skip <name,…>` for planned items you decided not
    to write (for example a project with nothing worth a page), and say why in your final message; without `--skip`,
-   an unwritten new page is planned again next run.
+   an unwritten page is planned again next run.
    - If it prints `refusing to commit`, fix the listed pages and run it again. Never work around it.
    - `"push": "lost"` means another run pushed first. Stop: the next run catches up.
 6. **Report.** End with a short message: branch, pages written, items still pending, push result. In bootstrap, if
