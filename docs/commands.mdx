@@ -30,12 +30,12 @@ Ids are the 8-character short id shown in lists, or any unique prefix of it or o
 | `kb backfill` | Process every pending session now. `--summaries` writes every missing summary. |
 | `kb status` | Last sync, pending sessions, summary backlog, and the pages routine's last run. |
 | `kb reindex` | Build the local index again. |
-| `kb embed` | Turn on [semantic search](#semantic-search) and embed what is new. `--status`, `--stop`, `--off`, `--remove`, `--rebuild`. |
+| `kb embed` | Turn on [semantic search](#semantic-search) and embed what is new. `--status`, `--stop`, `--off`, `--remove`, `--rebuild`; `--install` only downloads and turns it on (a cloud setup script); `--quiet` imports and embeds what is missing, without output, only when it is on. |
 | `kb enable [updates]` | Turn automatic syncs (or daily code updates) on. |
 | `kb disable [updates]` | Turn them off. |
 | `kb repair` | When every sync fails to pull. See [Troubleshooting](./troubleshooting.mdx). |
 | `kb update` | Pull the retroagent code and refresh the plugins. |
-| `kb setup init \| routine \| check` | Set up the data repo and the cloud routine (the `setup` skill drives these). |
+| `kb setup init \| routine \| cloud \| check` | Set up the data repo, the cloud routine and [cloud environments](#in-cloud-sessions-and-routines) (the `setup` skill drives these). |
 | `kb pages start \| plan \| digest \| finish \| due` | Steps of the cloud routine. See [Pages routine](./pages-routine.mdx). |
 
 ## Semantic search
@@ -76,6 +76,23 @@ You manage nothing after that:
 `kb embed --status` shows what is installed, running and embedded. `kb embed --off` turns the feature off and keeps
 the files; `kb embed --remove` also deletes them. To use an embedding server you run yourself, set `embed_url` (see
 [Configuration](./configuration.mdx)).
+
+### In cloud sessions and routines
+
+Claude Code cloud sessions and routines can use semantic search too. The vectors come from git, so a session does not
+have to embed your whole history: on a cloud CPU that would take about 17 minutes.
+
+- Your machines need semantic search on (`kb embed`). Each sync then commits their vectors.
+- `kb setup cloud` prints what to set on a cloud environment at claude.ai/code:
+  - the network: **Custom**, the default list included, plus Hugging Face (the model) and the GitHub release hosts
+    (the runtime);
+  - a setup script that puts `kb` on the PATH and runs `kb embed --install`. Its files are cached for about 7 days,
+    and the downloads take about 10 seconds.
+- Start sessions and routines in that environment with both repositories: the retroagent code and your data repo.
+- The first `kb find` in a session starts a background `kb embed --quiet`. It imports the committed vectors and
+  starts the model. Until it is done, `kb find` uses BM25 alone, usually for a few seconds. The pages routine runs
+  `kb embed --quiet` itself at the start.
+- A session only reads vectors: it never commits any, because it owns no host.
 
 ## Read-only by design
 

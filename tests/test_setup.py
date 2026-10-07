@@ -273,3 +273,25 @@ def test_a_cached_kb_runs_the_code_clone_from_the_config(tmp_path):
     (cache / "src/kb/__main__.py").write_text("print('cache ran')\n")
     p = subprocess.run([str(cache / "bin/kb")], env=env, capture_output=True, text=True, timeout=20)
     assert p.stdout.strip() == "cache ran"
+
+
+def test_cloud_setup_script_installs_kb_and_semantic_search():
+    script = setup.cloud_setup_script("me/retroagent", "me/my-data")
+    assert script.startswith("#!/bin/bash\n") and script.endswith("exit 0\n")
+    assert "ln -sf /home/user/retroagent/bin/kb /usr/local/bin/kb || true" in script
+    assert "/home/user/retroagent/bin/kb embed --install --root /home/user/my-data || true" in script
+
+
+@pytest.mark.slow
+def test_cloud_prints_hosts_script_and_repos(tmp_path):
+    origin, clone = _remote(tmp_path, {"README.md": "r\n"})
+    with pytest.raises(setup.SetupError, match="GitHub"):
+        setup.cloud(clone)
+    _git("remote", "set-url", "origin", "git@github.com:me/my-data.git", cwd=clone)
+    out = setup.cloud(clone, code="me/retroagent")
+    for host in setup.CLOUD_HOSTS:
+        assert f"\n{host}\n" in out
+    assert setup.cloud_setup_script("me/retroagent", "me/my-data") in out
+    assert "me/retroagent and me/my-data" in out
+    p = subprocess.run(["bash", "-n"], input=setup.cloud_setup_script("me/retroagent", "me/my-data"), text=True)
+    assert p.returncode == 0

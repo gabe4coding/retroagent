@@ -14,7 +14,8 @@
   kb pages start | plan | digest | finish | due   steps of the cloud routine that writes pages/ (scripts/pages-routine.md)
   kb enable | disable  switch automatic syncs (the SessionStart hook) on or off; `kb enable updates` pulls the code
                        once a day
-  kb setup init | routine | check   set up the data repo and the cloud routine (the setup skill drives these)
+  kb setup init | routine | cloud | check   set up the data repo, the cloud routine, cloud environments (the setup
+                       skill drives these)
   kb update            pull the retroagent code and refresh the plugins
 
 Ids: the 8-character short id shown in lists (or any unique prefix of it or of the full id, 4 characters at least).
@@ -169,8 +170,10 @@ def _dense_rankings(cfg, args, idx, query: str, want_pages: bool, want_memories:
     from kb import embed, embed_runtime
     store = embed.Vectors.open_readonly(cfg.kb_dir / embed.STORE)
     if store is None:
-        return _no_dense(args, "no vectors yet; run: kb embed")
+        started = _maybe_fill(cfg, idx, None)
+        return _no_dense(args, "no vectors yet; " + ("filling them in the background" if started else "run: kb embed"))
     try:
+        _maybe_fill(cfg, idx, store)
         ep = embed_runtime.ensure(cfg, wait=False)
         if ep is None:
             return _no_dense(args, "the embedding model is starting")
@@ -189,6 +192,49 @@ def _dense_rankings(cfg, args, idx, query: str, want_pages: bool, want_memories:
         return _no_dense(args, str(e))
     finally:
         store.close()
+
+
+FILL_EVERY = 600                 # seconds between two background fills started by `kb find`
+
+
+def _maybe_fill(cfg, idx, store) -> bool:
+    """Start one background `kb embed --quiet` when the vectors are behind the index: no store yet (a new clone, a
+    cloud session) or fewer vectors than items. At most once per FILL_EVERY seconds, and only when the model can run
+    (an embed_url, or the installed runtime). Cheap when it does nothing. Returns True when it started one."""
+    import time
+
+    from kb import embed, embed_runtime as er
+    try:
+        stamp = er.cache_dir() / "last-fill"
+        if stamp.exists() and time.time() - stamp.stat().st_mtime < FILL_EVERY:
+            return False
+        if not (cfg.embed_url or er.installed()):
+            return False
+        if store is not None:
+            model = embed.model_key("url:" + cfg.embed_url if cfg.embed_url else er.MODEL)
+            have = sum(store.counts(model).values())
+            want = sum(idx.db.execute(sql, args).fetchone()[0] for sql, args in (
+                ("SELECT COUNT(*) FROM sessions", ()), ("SELECT COUNT(*) FROM pages", ()),
+                ("SELECT COUNT(*) FROM memories", ()),
+                ("SELECT COUNT(*) FROM turns WHERE role = 'user' AND length(text) >= ?", (embed.TURN_MIN,))))
+            if have >= want:
+                return False
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+        _spawn_fill()
+        return True
+    except (OSError, sqlite3.Error):
+        return False
+
+
+def _spawn_fill() -> None:
+    """`kb embed --quiet` in its own session, detached from this command."""
+    import subprocess
+    from pathlib import Path
+    src = str(Path(__file__).resolve().parents[1])
+    env = dict(os.environ, PYTHONPATH=src + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    subprocess.Popen([sys.executable, "-m", "kb", "embed", "--quiet"], env=env, start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _no_dense(args, why: str):
@@ -568,6 +614,8 @@ def cmd_setup(args, cfg) -> int:
     try:
         if args.step == "init":
             print(setup.dumps(setup.init(cfg.root, cfg.branch)))
+        elif args.step == "cloud":
+            print(setup.cloud(cfg.root, code=args.code_repo or ""), end="")
         elif args.step == "routine":
             print(setup.dumps(setup.routine(cfg.root, cfg.branch, code=args.code_repo or "", model=args.model,
                                             environment=args.environment or "", push=not args.no_push)))
@@ -608,6 +656,10 @@ def cmd_embed(args, cfg) -> int:
         print("semantic search is off" + (f"; removed {er.cache_dir()} and the vectors" if args.remove else
                                            "; kb embed turns it on again"))
         return 0
+    if args.install:
+        return _embed_install(args)
+    if args.quiet:
+        return _embed_quiet(cfg, store_path)
     try:
         ep = er.ensure(cfg, wait=True, progress=_progress())
     except er.EmbedUnavailable as e:
@@ -631,6 +683,57 @@ def cmd_embed(args, cfg) -> int:
     print(f"embedded {rep.done} items" + (f", imported {imported}" if imported else "")
           + f" ({embed.describe(counts)}; {rep.left} left)" + (f"; stopped: {rep.error}" if rep.error else ""))
     return 1 if rep.error else 0
+
+
+def _embed_install(args) -> int:
+    """Download and check the runtime and model, turn semantic search on, and stop: no server, no embedding. For a
+    cloud environment's setup script, whose files are cached for later sessions (`kb setup cloud` prints it)."""
+    from pathlib import Path
+
+    from kb import embed_runtime as er
+    try:
+        er.install(progress=_progress())
+    except er.EmbedUnavailable as e:
+        print(f"kb: {e}")
+        return 2
+    if args.root:
+        config_mod.set_key("root", str(Path(args.root).expanduser().resolve()))
+    config_mod.set_key("embed", True)
+    print(f"semantic search installed ({er.cache_dir()}) and on; kb find starts the model when it needs it")
+    return 0
+
+
+def _embed_quiet(cfg, store_path) -> int:
+    """Maintenance: when semantic search is on, import other machines' vectors and embed what is missing, within
+    embed_sync_seconds, without output. Nothing when it is off or another fill runs. What `kb find` starts in the
+    background, and what the pages routine runs."""
+    import time
+
+    from kb import embed, embed_runtime as er
+    from kb.lock import Lock
+    if not (cfg.embed or cfg.embed_url):
+        return 0
+    lock = Lock(er.cache_dir() / "fill.lock")
+    if not lock.acquire():
+        return 0
+    try:
+        deadline = time.time() + cfg.embed_sync_seconds
+        ep = er.ensure(cfg, wait=True)
+        idx = _open_index(cfg)
+        store = embed.Vectors(store_path)
+        try:
+            embed.import_files(cfg.root, idx.db, store, ep.model, cfg.host)
+            embed.run_embed(idx.db, store, ep, deadline=deadline)
+        finally:
+            store.close()
+            idx.close()
+        if not cfg.embed_url:
+            er.Server().touch()
+    except (er.EmbedUnavailable, IndexNotBuilt, sqlite3.Error, OSError):
+        pass
+    finally:
+        lock.release()
+    return 0
 
 
 def _drop_store(path) -> None:
@@ -813,13 +916,18 @@ def build_parser() -> argparse.ArgumentParser:
     em.add_argument("--stop", action="store_true", help="stop the embedding server now (it starts again on use)")
     em.add_argument("--off", action="store_true", help="turn semantic search off; keep the files")
     em.add_argument("--remove", action="store_true", help="turn it off and delete the runtime, model and vectors")
+    em.add_argument("--install", action="store_true", help="only download and check the runtime and model, and turn "
+                                                             "it on (a cloud setup script)")
+    em.add_argument("--root", help="with --install: the data clone to use (written to the config)")
+    em.add_argument("--quiet", action="store_true", help="when it is on: import and embed what is missing, within "
+                                                          "embed_sync_seconds, without output")
     em.set_defaults(func=cmd_embed)
     su = sub.add_parser("setup", help="set up the data repo and the cloud routine")
-    su.add_argument("step", choices=["init", "routine", "check"],
+    su.add_argument("step", choices=["init", "routine", "cloud", "check"],
                     help="init: base files of the data repo · routine: files and spec of the pages routine · "
-                         "check: what is set up (JSON)")
-    su.add_argument("--code-repo", help="owner/name of the retroagent code the routine and workflow use "
-                                        "(default: this code's origin)")
+                         "cloud: network and setup script of a cloud environment · check: what is set up (JSON)")
+    su.add_argument("--code-repo", help="owner/name of the retroagent code the routine, workflow and cloud sessions "
+                                        "use (default: this code's origin)")
     su.add_argument("--model", default="claude-sonnet-5-5", help="model of the routine")
     su.add_argument("--environment", help="environment id for the routine spec")
     su.add_argument("--no-push", action="store_true", help="routine: print the spec only, push no files")
