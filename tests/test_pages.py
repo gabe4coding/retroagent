@@ -6,7 +6,7 @@ from test_index import put
 
 from kb.distill import dump_front_matter
 from kb.index import AmbiguousId, Index
-from kb.pages import page_rel, parse_page, section, sections
+from kb.pages import page_rel, parse_page, section, sections, set_fields
 
 BODY = """# demo
 
@@ -49,6 +49,12 @@ def test_parse_page_validates_the_front_matter():
             parse_page(dump_front_matter(bad) + "\n" + BODY)
     with pytest.raises(ValueError, match="front matter"):
         parse_page(BODY)
+
+
+def test_set_fields_keeps_order_and_body():
+    text = dump_front_matter({"kind": "project", "name": "demo", "updated": "x"}) + "\n" + BODY
+    out = set_fields(text, {"updated": "2026-10-07T09:00:00Z", "sessions": 2})
+    assert out == ('---\nkind: "project"\nname: "demo"\nupdated: "2026-10-07T09:00:00Z"\nsessions: 2\n---\n\n' + BODY)
 
 
 def test_sections():

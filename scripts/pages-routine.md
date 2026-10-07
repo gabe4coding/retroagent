@@ -30,9 +30,10 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
 
 1. **Start.** `KB_ROOT="$PWD" plugin/bin/kb pages start`. It prints the branch this run writes to. `bootstrap: true`
    means the first build: it works on the bootstrap branch and reaches `main` only through a pull request.
-2. **Plan.** `KB_ROOT="$PWD" plugin/bin/kb pages plan`. It prints JSON: `projects` and `retros` to write in this run
-   (each with `page`, `action` create or update, and the `sessions` short ids), plus what stays `pending` for later
-   runs. If both lists are empty, go to step 5.
+2. **Plan.** `KB_ROOT="$PWD" plugin/bin/kb pages plan`, once per run (save its output to a file if you need it
+   again; `finish` uses the saved plan). It prints JSON: `projects` and `retros` to write in this run (each with
+   `page`, `action` create or update, and the `sessions` short ids), plus what stays `pending` for later runs. If both
+   lists are empty, go to step 5.
 3. **Project pages.** For each item in `projects`:
    - `create`: `KB_ROOT="$PWD" plugin/bin/kb pages digest --project <name>`.
      `update`: read the current page file, then `KB_ROOT="$PWD" plugin/bin/kb pages digest --only <short,short,…>`
@@ -58,21 +59,23 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
    an unwritten new page is planned again next run.
    - If it prints `refusing to commit`, fix the listed pages and run it again. Never work around it.
    - `"push": "lost"` means another run pushed first. Stop: the next run catches up.
-6. **Report.** End with a short message: branch, pages written, items still pending, push result. In bootstrap, when
-   `pending` is empty, say that the first build is complete and that the owner should review and merge
-   `claude/pages-bootstrap` into `main` (open the pull request if your tools allow it, once).
+6. **Report.** End with a short message: branch, pages written, items still pending, push result. In bootstrap, if
+   your tools allow it, keep one pull request from `claude/pages-bootstrap` to `main`: open it as a draft if none is
+   open; when `pending` is empty, mark it ready for review and say that the first build is complete and the owner
+   should review and merge it.
 
 ## Project page format
 
-Front matter values are JSON (strings in double quotes). Keep the page under 25,000 characters (the hard limit is in
+Front matter values are JSON (strings in double quotes). `finish` sets `updated` and `sessions` (the number of
+`sources`); keep the lines, their values do not matter. Keep the page under 25,000 characters (the hard limit is in
 `pages/config.json`); when it grows, shorten the History section first.
 
 ```markdown
 ---
 kind: "project"
 name: "<name from the plan>"
-updated: "<now, UTC, like 2026-10-07T09:40:00Z>"
-sessions: <number of sessions in sources>
+updated: ""
+sessions: 0
 first: "<date of the oldest source session>"
 last: "<date of the newest source session>"
 sources: ["<short>", "<short>"]
@@ -106,8 +109,8 @@ sources: ["<short>", "<short>"]
 ---
 kind: "retro"
 name: "<week from the plan, like 2026-W41>"
-updated: "<now, UTC>"
-sessions: <number of sessions in sources>
+updated: ""
+sessions: 0
 from: "<from>"
 to: "<to>"
 sources: ["<short>", "<short>"]
