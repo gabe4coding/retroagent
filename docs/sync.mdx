@@ -21,8 +21,13 @@ For each session that has been idle for 15 minutes, `kb sync`:
    (`raw_settle_hours`).
 3. Asks Haiku for a 3-line summary.
 4. Updates `catalog/<host>/…`.
-5. Scans everything with gitleaks.
-6. Commits only this machine's folders, and pushes.
+5. With [semantic search](./commands.mdx#semantic-search) on, embeds what is new into `vectors/<host>/…` (after
+   the push, it imports the vectors other machines committed).
+6. Scans everything with gitleaks.
+7. Commits only this machine's folders, and pushes.
+
+On the one machine with `cloud_import` on, it also imports the [cloud sessions](./commands.mdx#capture-cloud-sessions)
+from the inbox branches as host `cloud`, through the same steps.
 
 Headless one-prompt sessions (`claude -p`, `codex exec`) are skipped.
 
@@ -59,8 +64,8 @@ its own records name first; the others link to that file.
 
 ## One writer per host
 
-Only the machine that owns a host writes `sessions/<host>`, `raw/<host>`, `catalog/<host>` and `memories/<host>`,
-summaries included. Make them on that machine with `kb backfill --summaries`.
+Only the machine that owns a host writes `sessions/<host>`, `raw/<host>`, `catalog/<host>`, `memories/<host>` and
+`vectors/<host>`, summaries included. Make them on that machine with `kb backfill --summaries`.
 
 Do not make them on another machine (a cloud session, a second laptop) and merge them by pull request. The owner's
 sync writes the same files from its local transcripts; after the merge its pull conflicts, and every later sync fails

@@ -15,6 +15,7 @@ description: Use when the user asks about past work in any Claude Code or Codex 
      read one with `kb memory <ref>`, the ref is in brackets), then one line per session: `short date agent project title · «snippet» [turn N]`. `short` is the 8-character session id (the last 8 characters, no dashes). Lines with `↳parent` are subagent transcripts.
    - Use distinctive words: error text, file names, service or tool names. Add filters when you know them.
    - The exact phrase ranks first. `--role user --no-subagents` searches only the user's own messages (what they asked or corrected).
+   - With semantic search on (`kb embed --status`), `kb find` also matches paraphrases and other languages; `-v` says on stderr when it fell back to keywords. Host `cloud` holds Claude Code cloud sessions.
    - No match: try synonyms or fewer words. `kb recent --project NAME` lists the latest sessions.
 2. **Summarize:** `kb summary <short>` on the 1–3 best hits: summary, decisions, outcome, files, PRs, subagents.
 3. **Read only what you need:** `kb show <short> --turn N --around 1` or `kb show <short> --grep "regex"`. `--grep` takes a regular expression (case-insensitive, up to 5 matching turns): write `\(` for a literal parenthesis. Output stops at `--max-chars` (default 4000).
