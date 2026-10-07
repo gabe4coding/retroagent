@@ -40,5 +40,7 @@ Those read commands open the local index read-only: they work in a sandbox where
 
 Without gitleaks and with `require_gitleaks` off, files that gitleaks already held back stay held back, and the rest is committed with the built-in redaction only.
 
+The repo's `.gitleaks.toml` (`disabledRules`, `[[allowlists]]`) needs gitleaks 8.25 or newer (`brew upgrade gitleaks`).
+
 ## Develop
 `scripts/test` runs the suite on `/usr/bin/python3` with pytest from `uv`.

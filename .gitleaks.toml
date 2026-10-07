@@ -1,0 +1,18 @@
+# gitleaks configuration of sessions-kb.
+# gitleaks reads it from the repo root when it scans the staged files (`gitleaks git --staged`), and kb passes it with
+# `--config` when it scans the decompressed raw files (`gitleaks dir`). It needs gitleaks 8.25 or newer (`disabledRules`, `[[allowlists]]`).
+title = "sessions-kb"
+
+[extend]
+# Keep every default rule, except these two. They were checked on real kb data (sessions, catalog and raw files):
+#  - generic-api-key fired mainly on code, logs, hashes and pagination tokens. kb's own redactor (src/kb/redact.py) already
+#    covers generic secret assignments (password=..., token: ..., --api-key ..., ?key=... and so on) before anything is committed.
+#  - sourcegraph-access-token fired on 40-digit hex git SHAs: it matches any 40 hex digits near the word "sourcegraph".
+useDefault = true
+disabledRules = ["generic-api-key", "sourcegraph-access-token"]
+
+# The id of an Atlassian user is not a secret, but the atlassian-api-token rule reads it as one.
+[[allowlists]]
+description = "Atlassian account ids are not secrets"
+regexTarget = "line"
+regexes = ['''atlassianAccountId''']

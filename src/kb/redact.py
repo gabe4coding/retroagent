@@ -7,6 +7,8 @@ written with three properties in mind:
 - Linear time: every scan is bounded (scheme length, key body length, digit look-ahead, the 12 words between a command and
   its password flag, a name suffix of 20 characters), so 1 MB lines are cheap.
 - Idempotent: placeholders start with "[", which no value pattern accepts.
+- Scanner-proof: what a text only mentions (a private-key marker in code or a test fixture) is rewritten, not removed,
+  so that a secret scanner does not read it as a key. See "private-key-marker" below.
 Each rule also lists hint substrings. A text that holds none of them cannot match, so its regex is skipped
 (a transcript has hundreds of thousands of short strings). A test checks that this never changes the result.
 """
@@ -44,12 +46,14 @@ _PASSWORDS = r"password|passwd|pgpassword|mysql_pwd"
 _RULES: list = []      # (name, compiled regex), in order
 _HINTS: list = []      # per rule: lowercase substrings, at least one of which a matching text must contain
 _PASSES: list = []     # per rule: how many times it may run again while it still finds something
+_REPLS: list = []      # per rule: a function match -> text, or None for "<keep>[REDACTED:<rule>]"
 
 
-def _add(name: str, pattern: str, hints: tuple, flags: int = 0, passes: int = 1) -> None:
+def _add(name: str, pattern: str, hints: tuple, flags: int = 0, passes: int = 1, repl=None) -> None:
     _RULES.append((name, re.compile(pattern, flags)))
     _HINTS.append(hints)
     _PASSES.append(passes)
+    _REPLS.append(repl)
 
 
 # --- private keys (a full block, then a block that was cut off)
@@ -58,6 +62,11 @@ _add("private-key", _PK_BEGIN + _PK_BODY + "{0,20000}" + _PK_END, ("private key"
 # indentation after it) does not break the run, a space does: prose after a bare BEGIN marker stays.
 _BRK = r"(?:\r?\n|\\[nr])[ \t]*"
 _add("private-key", _PK_BEGIN + rf"(?={_WS}*(?:{_B64}(?:{_BRK})*){{40}})(?:{_B64}|{_WS}){{1,20000}}", ("private key",))
+# A marker that is left (no key body, a cut-off key, regex source code, a test fixture built by string concatenation) is not
+# a key, but a secret scanner reads it as one. PRIVATE KEY becomes PRIVATE-KEY in the BEGIN and the END marker. This runs
+# after the rules above, so a real key is redacted whole first. At most 100 characters of words sit between the two.
+_add("private-key-marker", r"(?P<head>-----(?:BEGIN|END) [A-Z0-9_ ]{0,100}?PRIVATE) (?P<tail>KEY(?: BLOCK)?-----)", ("private key",),
+     re.I, repl=lambda m: f"{m.group('head')}-{m.group('tail')}")
 # --- vendor token formats
 _add("github-token", r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})",
      ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"))
@@ -82,7 +91,9 @@ _add("google-api-key", r"\bAIza[0-9A-Za-z_-]{35}", ("aiza",))
 _add("google-client-secret", r"\bGOCSPX-[A-Za-z0-9_-]{20,}", ("gocspx-",))
 # an Azure storage connection string: AccountName=...;AccountKey=<88 base64 characters>;EndpointSuffix=...
 _add("azure-account-key", r"(?P<keep>AccountKey=)[A-Za-z0-9+/=]{40,}", ("accountkey=",), re.I)
-_add("jwt", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", ("eyj",))
+# The payload is any base64url text (a claim set usually starts with eyJ, but not always). The token starts a run of base64url
+# characters (not just a word: `eyJ-eyJ-eyJ-...` would restart the scan at every "-" and take quadratic time).
+_add("jwt", r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", ("eyj",))
 # --- credentials in headers, commands and URLs
 # a bearer value needs a digit, so "Bearer authentication-scheme-middleware" stays
 _add("bearer", r"(?P<keep>\bBearer\s+)(?=[A-Za-z0-9._~+/-]*\d)[A-Za-z0-9._~+/-]{16,}=*", ("bearer",), re.I)
@@ -94,6 +105,15 @@ _add("url-credentials", r"""(?P<keep>\b[a-z][a-z0-9+.-]{0,31}://[^\s:/@"']*:)[^\
 _add("aws-secret",
      rf"(?P<keep>aws_secret_access_key(?:{_Q})?[ \t]*[=:][ \t]*(?:{_Q})?)[A-Za-z0-9/+=]{{40}}",
      ("aws_secret_access_key",), re.I)
+# A secret in a URL query string (or a form body): the parameter name stays, the value goes. The name must be the whole name
+# (`?pageToken=`, `?query=`, `?monkey=` are not keys). The value is 8 or more characters up to `&`, `#`, `;`, white space, a
+# quote or a closing bracket, and never holds a backslash, so a serialized JSON line stays valid. `&amp;` is the HTML `&`.
+# A placeholder (${KEY}, $KEY, {key}, <key>, [REDACTED...], ****) is no value.
+_QUERY_NAMES = (r"key|api[_-]?key|token|access[_-]token|auth|auth[_-]token|jwt|sig|signature|secret|password|client[_-]secret"
+                r"|x-amz-signature|x-amz-credential|x-amz-security-token")
+_add("url-query-secret",
+     rf"""(?P<keep>(?:[?&]|&amp;)(?:{_QUERY_NAMES})=)(?![$<*{{\[])[^\s&#;"'\\<>)\]}}]{{8,}}""",
+     ("key=", "token=", "auth=", "jwt=", "sig=", "signature=", "secret=", "password=", "credential="), re.I)
 # --- generic assignments, most specific first. All of them are reported as "secret-assignment".
 # A quoted password/secret value of 4-200 chars, up to its closing quote (it may hold spaces and no digit).
 # The value is a run of whole tokens (a character, or a backslash + its character), so no escape is cut in half.
@@ -125,6 +145,23 @@ _add("secret-assignment",
      rf"{_CODE_REF}"
      rf"(?=[^{_VALUE_END}]{{0,256}}\d)[^{_VALUE_END}]{{8,}}",
      ("pass", "secret", "token", "key"), re.I)
+# The word credentials (credential) names a secret as well: "use this credentials: <token>". It follows the rules of the suffix
+# rule above (a suffix of 0 to 20 characters, no path, URL or dotted identifier, 8 or more characters with a digit), and a value
+# that starts with "." is a relative path too.
+_add("secret-assignment",
+     rf"(?P<keep>{_NAME_START}credentials?(?!{_PLURAL})[A-Za-z0-9_]{{0,20}}{_ASSIGN}){_PLACEHOLDER}(?![/~.]|\w{{1,16}}://)"
+     rf"{_CODE_REF}"
+     rf"(?=[^{_VALUE_END}]{{0,256}}\d)[^{_VALUE_END}]{{8,}}",
+     ("credential",), re.I)
+# A bare `key` is too common a word for the rules above (`key: value`, `primary_key: id`). Its value is a secret only when it
+# looks like one: a single run of 24 or more letters, digits, "_" and "-" with an upper-case letter, a lower-case letter and a
+# digit (the look-aheads read the first 256 characters), and the run ends at white space, a quote, a delimiter or a full stop
+# that ends a sentence (`key: abc...xyz.json` is a file name, `key: a/b` a path).
+_add("secret-assignment",
+     rf"(?P<keep>{_NAME_START}key{_ASSIGN})"
+     r"(?=[A-Za-z0-9_-]{0,256}?(?-i:[A-Z]))(?=[A-Za-z0-9_-]{0,256}?(?-i:[a-z]))(?=[A-Za-z0-9_-]{0,256}?[0-9])"
+     r"""[A-Za-z0-9_-]{24,}(?=[\s"'\\,;&#)}\]<>]|\.(?![A-Za-z0-9_-])|$)""",
+     ("key",), re.I)
 # --- password flags: a command-line option that names a secret. The flag stays, only the value goes. They run after the
 # generic assignments: `--password=...` that a rule above already catches keeps its name (secret-assignment); these add
 # the forms no name rule reaches (`--password X`, `--pass=X`, a short value, `mysql -pX`, `sshpass -p X`, ...).
@@ -155,6 +192,21 @@ _PROSE = (r"(?:flags?|options?|arguments?|args?|param(?:eter)?s?|values?|to|is|a
 _FLAG_HINTS = ("--pass", "--token", "--secret", "--api", "--access", "--auth", "--refresh", "--client")
 _add("password-flag", rf"(?P<keep>(?<![\w-])--(?:{_FLAGS})={_FLAG_QUOTE}){_FLAG_VALUE}", _FLAG_HINTS)
 _add("password-flag", rf"(?P<keep>(?<![\w-])--(?:{_FLAGS})[ \t]+(?!-)(?!{_PROSE})(?!id=){_FLAG_QUOTE}){_FLAG_VALUE}", _FLAG_HINTS)
+# A flag whose name holds a credential word anywhere (--credentials-login, --api-token-value, --my-service-password-prod):
+# the value is 8 or more characters with a digit (so `--login-timeout 30` and `--password-policy strict` stay), not a placeholder,
+# a path or another option, and not an `id=...` pair (`--secret id=npm,src=.npmrc`). A name that ends in -file, -path, -dir,
+# -url, -stdin, -env or -name says where a secret is, not what it is. The look-ahead finds the word in the first 80 characters
+# of the name, so a long name is read once and not once per word it holds.
+_NAME_HOLDS = r"(?=[A-Za-z0-9_-]{0,80}?(?:password|passwd|secret|token|credentials?|login|api[-_]?key))"
+_NAME_SAYS_WHERE = r"(?<![-_]file)(?<![-_]path)(?<![-_]dir)(?<![-_]url)(?<![-_]stdin)(?<![-_]env)(?<![-_]name)"
+_FLAG2 = rf"(?<![\w-])--{_NAME_HOLDS}[A-Za-z0-9_-]+{_NAME_SAYS_WHERE}"
+_TOK = r"""(?:(?!(?P=q))[^\\\r\n"]|\\(?(bs)(?!(?P=q)))[^\r\n])"""
+_BARE = r"""[^\s"'\\;&|<>)}`]"""
+_FLAG2_VALUE = (rf"""(?(oq)(?![$<*{{\[/~.,:\]}}\s-])(?={_TOK}{{0,200}}?\d){_TOK}{{8,200}}(?=(?(bs)\\)(?P=q))"""
+                rf"""|(?![$<*{{\[/~.\-"'\\])(?={_BARE}{{0,200}}?\d){_BARE}{{8,2000}})""")
+_FLAG2_HINTS = ("password", "passwd", "secret", "token", "credential", "login", "api-key", "api_key", "apikey")
+_add("password-flag", rf"(?P<keep>{_FLAG2}={_FLAG_QUOTE}){_FLAG2_VALUE}", _FLAG2_HINTS, re.I)
+_add("password-flag", rf"(?P<keep>{_FLAG2}[ \t]+(?!-)(?!id=){_FLAG_QUOTE}){_FLAG2_VALUE}", _FLAG2_HINTS, re.I)
 # The short options below only mean a password after their own command (`mkdir -p`, `ssh -p 2222`, `grep -a` do not).
 # For mysql, redis-cli and az the command word is part of the match, so a second flag of the same command is only reached
 # by running the rule again (passes=3): the first match has used up the command word. A run that finds nothing ends the
@@ -175,11 +227,13 @@ _add("password-flag", rf"(?P<keep>(?<![\w.-])az{_gap('az')}[ \t]+-p[ \t]+(?!-){_
 def _run(text: str, use_hints: bool):
     counts: Counter = Counter()
     low = text.lower() if use_hints else ""
-    for (name, rx), hints, passes in zip(_RULES, _HINTS, _PASSES):
+    for (name, rx), hints, passes, repl in zip(_RULES, _HINTS, _PASSES, _REPLS):
         if use_hints and not any(h in low for h in hints):
             continue
 
-        def _sub(m, name=name):
+        def _sub(m, name=name, repl=repl):
+            if repl:
+                return repl(m)
             keep = m.groupdict().get("keep") or ""
             return f"{keep}[REDACTED:{name}]"
         total = 0
