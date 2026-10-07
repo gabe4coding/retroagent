@@ -36,3 +36,9 @@ enforce; the others rely on discipline.
   `[test: tests/test_skills.py]`
 - `skills/setup/SKILL.md` names only `kb` and `install.sh` commands that exist: an agent runs them as written.
   `[test: tests/test_skills.py checks a fixed list]`
+
+## Docs
+- `README.md` stays a short landing page: pitch, quick start, a few commands, links. User docs live in `docs/*.mdx`;
+  when behavior changes, change the matching page.
+- `docs/*.mdx` are plain Markdown, no JSX, so GitHub renders them. Keep `<…>` and `{…}` inside backticks or code
+  blocks: MDX reads them as JSX and fails to compile.

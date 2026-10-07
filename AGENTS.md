@@ -5,8 +5,9 @@ them with the `kb` CLI, and runs the cloud routine that writes project pages and
 data; each user's data lives in their own data repo.
 
 ## Read first, by task
-- Code, tests, skills or docs → `CODING_STANDARDS.md`. The whole repo is the Claude Code / Codex plugin (marketplace
-  source `./`); `bin/kb` runs `python3 -m kb` from `src/kb/`.
+- Code, tests, skills or docs → `CODING_STANDARDS.md`. User docs: `README.md` (pitch, quick start) and
+  `docs/*.mdx`. The whole repo is the Claude Code / Codex plugin (marketplace source `./`); `bin/kb` runs
+  `python3 -m kb` from `src/kb/`.
 - Install or setup → `skills/setup/SKILL.md` and `install.sh`.
 - The cloud routine → `scripts/pages-routine.md`.
 - The data repo: layout and rules, what `kb setup init` / `kb setup routine` push (with `{{CODE_REPO}}` filled in)

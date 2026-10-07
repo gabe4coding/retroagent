@@ -1,0 +1,94 @@
+---
+title: Installation
+description: Set up retroagent on a machine, give it a unique host name, and keep it up to date.
+---
+
+# Installation
+
+## Requirements
+
+- git
+- Python 3.9+ with SQLite FTS5 (macOS's `/usr/bin/python3` works)
+- [gitleaks](https://github.com/gitleaks/gitleaks) 8.25 or newer — strongly recommended (`brew install gitleaks`)
+- The GitHub CLI `gh`, to create the data repo and the routine's secrets
+
+## Let your agent do it
+
+Paste this prompt into Claude Code or Codex. The agent clones the code and follows the same steps as the `setup`
+skill, asking you one question at a time.
+
+```text
+Set up retroagent on this machine for me: https://github.com/gabe4coding/retroagent
+1. If ~/.retroagent does not exist, clone the repo there.
+2. Read ~/.retroagent/skills/setup/SKILL.md and follow it step by step. Use ~/.retroagent/bin/kb while `kb` is
+   not on my PATH yet.
+3. Ask me one question at a time, and show me each command before it creates a repo, pushes or changes anything
+   outside this machine. My data repo must be private.
+4. install.sh also installs the Claude Code and Codex plugins: tell me if it prints a WARNING, and at the end
+   remind me to start a new session (and, in Codex, to trust the retroagent hook with /hooks).
+5. Never ask me for a token or a secret: I type those in my own terminal.
+```
+
+## With the Claude Code plugin
+
+```
+/plugin marketplace add gabe4coding/retroagent
+/plugin install retroagent@retroagent
+/retroagent:setup
+```
+
+The `setup` skill asks a few questions and runs the manual steps below for you:
+
+- a new or an existing data repo
+- this machine's name (its `host`)
+- first sync now or later
+- automatic syncs and updates
+- the [pages routine](./pages-routine.mdx) now or later
+
+Run it again at any time to finish or change the setup.
+
+## By hand, or for Codex only
+
+```bash
+git clone https://github.com/gabe4coding/retroagent ~/.retroagent
+gh repo create <you>/retroagent-data --private          # or use an existing private repo
+~/.retroagent/install.sh --repo git@github.com:<you>/retroagent-data.git --host <unique-name>
+kb backfill                   # process every session; the first push
+kb backfill --summaries       # 3-line summaries with Haiku (slow; uses your Claude quota)
+kb enable                     # sync automatically when a session starts
+```
+
+In Codex, open it once and trust the retroagent hook with `/hooks`.
+
+### What `install.sh` does
+
+1. Clones the data repo into `~/.retroagent-data` (`--root DIR` changes that).
+2. Pushes the base files the data repo lacks (`README.md`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`) in one commit.
+3. Writes `~/.config/retroagent/config.json` with `auto_sync: false` (see [Configuration](./configuration.mdx)).
+4. Installs the Claude Code and Codex plugins from the code clone.
+5. Links `kb` into `~/.local/bin`.
+6. Builds the search index.
+
+It starts no sync. Run it again at any time; it keeps your other config keys.
+
+## One host name per machine
+
+Each machine needs its own `host` (default: the short hostname). Two machines with the same `host` would write the
+same folders.
+
+The first sync commits `sessions/<host>/.machine-id`, a copy of the random id in `.kb/machine-id`. A sync or install
+on a machine with another id stops with `host '<host>' belongs to another machine`.
+
+- Never delete `.kb/machine-id`.
+- A machine that wrote `sessions/<host>` before these markers existed claims it once with `install.sh --force-host`.
+
+## Update
+
+- `kb update` pulls the code clone (fast-forward only) and runs `install.sh` again (plugins, link, config).
+- `kb enable updates` does the pull once a day from the background sync instead, and refreshes the plugins when their
+  version changes.
+
+Both run the latest `main` of the code repo: read what changed if you care.
+
+Every entry point runs one copy of the code: `~/.local/bin/kb` links to the clone, and a plugin's cached copy (Claude
+Code, Codex) forwards to the clone recorded as `code` in the config.
