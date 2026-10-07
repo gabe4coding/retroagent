@@ -11,14 +11,14 @@ Run `kb --help` for the full list, and add `--help` to any command for its flags
 
 | Command | What it does |
 | --- | --- |
-| `kb find <words…>` | Ranked pages, memories and sessions, one line each, with a snippet and the best turn. Pages come first. With [semantic search](#semantic-search) on, it also matches paraphrases and other languages; `--no-embed` turns that off for one query, `-v` says on stderr when it was not used. |
+| `kb find <words…>` | Ranked pages, memories and sessions, one line each, with a snippet and the best turn. Pages come first. Sessions with the exact phrase rank first, then those with every word, then any word; a `"quoted"` part must match as a phrase. `--role user` (or `assistant`) matches only turns by that role and hides pages and memories. With [semantic search](#semantic-search) on, it also matches paraphrases and other languages; `--no-embed` turns that off for one query, `-v` says on stderr when it was not used. |
 | `kb page [name]` | A project page or weekly retro written by the [pages routine](./pages-routine.mdx). `--section NAME` for one part. |
 | `kb memory [name]` | A memory file Claude Code or Codex keeps between sessions. No name: list them. |
 | `kb recent` | Latest sessions. |
 | `kb summary <id>` | Summary, decisions, outcome, files, PRs and subagents of one session. |
 | `kb show <id>` | Only the part of a session you need (`--turn N --around K`, `--grep PATTERN`). |
 | `kb stats [report]` | Ready-made analytics: overview, projects, agents, outcomes, tags, daily, subagents. |
-| `kb sql "<SELECT …>"` | Read-only SQL on the index (tables: `sessions`, `turns`, `pages`, `memories`). |
+| `kb sql "<SELECT …>" [--width N]` | Read-only SQL on the index (tables: `sessions`, `turns`, `pages`, `memories`). Cells longer than `N` chars (default 80) are cut and end with `…`; `--width 0` never cuts. |
 
 Ids are the 8-character short id shown in lists, or any unique prefix of it or of the full id (4 characters at least).
 

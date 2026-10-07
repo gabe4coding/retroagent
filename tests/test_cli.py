@@ -108,6 +108,22 @@ def test_find_fts_reports_a_bad_query(kb_env, capsys):
                                        "turn"}
 
 
+def test_sql_cuts_long_cells_visibly_unless_width_0(kb_env, capsys):
+    q = "SELECT substr(hex(zeroblob(100)), 1, 150) AS s"
+    _, out = run(capsys, "sql", q)
+    lines = out.splitlines()
+    assert lines[1] == "0" * 79 + "…" and "--width 0" in lines[2]
+    _, out = run(capsys, "sql", q, "--width", "0")
+    assert out.splitlines() == ["s", "0" * 150]
+    _, out = run(capsys, "sql", "SELECT COUNT(*) AS n FROM sessions")
+    assert "cut at" not in out
+
+
+def test_find_role_rejects_other_values(kb_env, capsys):
+    with pytest.raises(SystemExit):
+        main(["find", "retry", "--role", "system"])
+
+
 def test_sql_reports_multiple_statements_and_bad_ids(kb_env, capsys):
     code, out = run(capsys, "sql", "SELECT 1; SELECT 2")
     assert code == 2 and "one SQL statement" in out
