@@ -1,0 +1,24 @@
+---
+title: Development
+description: Repo layout, tests and release rules for contributors.
+---
+
+# Development
+
+The whole repo is the plugin (`.claude-plugin/`, `.codex-plugin/`, `bin/`, `hooks/`, `skills/`). The Python package
+is `src/kb` (stdlib only, Python 3.9). `templates/data/` holds the files `kb setup` writes into data repos.
+
+## Tests
+
+- `scripts/test` runs the fast tests in parallel on `/usr/bin/python3` with pytest from `uv` (a few seconds).
+- `scripts/test --all` adds the tests marked `slow`, which start real git and other processes. Run it before every
+  commit: there is no CI.
+
+## Releasing plugin changes
+
+When skills or hooks change, bump `version` in both `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`:
+Claude Code and Codex cache plugins per version.
+
+## More
+
+[`AGENTS.md`](../AGENTS.md) has the full contributor rules (also read by coding agents working on this repo).

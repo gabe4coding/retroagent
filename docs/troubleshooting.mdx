@@ -1,0 +1,41 @@
+---
+title: Troubleshooting
+description: What to do when a sync fails, a host is claimed by another machine, or the index is missing.
+---
+
+# Troubleshooting
+
+## Every sync fails to pull
+
+If every sync fails with `pull: the remote changed this host's files too; run: kb repair`, run on that machine:
+
+```bash
+kb repair
+kb sync --now --no-summaries
+```
+
+`kb repair` fetches, resets the data clone to its upstream and clears the fingerprints (`files` in
+`.kb/sync-state.json`). The next sync renders every session again on top of the remote files, keeps the summaries it
+finds there, commits only real changes and pushes.
+
+Only this host's own work is dropped, and the sync makes it again from the local transcripts. Dropped commits stay in
+the clone as `refs/kb/repair/<time>`.
+
+`kb repair` refuses, and changes nothing, when:
+
+- a sync runs;
+- the clone is not on the configured branch, has no upstream, or cannot fetch;
+- a local-only commit or an uncommitted change touches a file outside this host's folders.
+
+This usually happens after someone wrote this host's files from another machine. See
+[One writer per host](./sync.mdx#one-writer-per-host).
+
+## `host '<host>' belongs to another machine`
+
+Another machine already uses this `host` name. Give this machine its own name with
+`install.sh --host <unique-name>`. See [One host name per machine](./installation.mdx#one-host-name-per-machine).
+
+## `index not built yet; run: kb reindex`
+
+The read commands could not build the index because `.kb/` is not writable (for example, in a sandbox). Run
+`kb reindex` once from a normal shell.

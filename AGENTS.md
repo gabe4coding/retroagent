@@ -8,6 +8,8 @@ data; each user's data lives in their own data repo (its layout and rules: `temp
 - `src/kb/` — the Python package (3.9, stdlib only). `kb` runs it: `bin/kb` → `python3 -m kb`.
 - `.claude-plugin/`, `.codex-plugin/`, `bin/`, `hooks/`, `skills/` — the whole repo is the Claude Code / Codex plugin
   (marketplace source `./`). `skills/setup` drives `install.sh` and `kb setup`.
+- `README.md` — short pitch and quick start only; user docs live in `docs/*.mdx` (plain markdown: keep `<…>` and
+  `{…}` inside backticks, or MDX fails to compile). Change the matching page when behavior changes.
 - `install.sh` — sets up a machine from a clone of this repo; `--repo` names the data repo.
 - `templates/data/` — files `kb setup init` / `kb setup routine` push to a data repo (base files, `pages/config.json`,
   the trigger workflow with `{{CODE_REPO}}`).
