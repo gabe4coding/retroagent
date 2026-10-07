@@ -5,6 +5,10 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.slow          # starts git and other processes; runs with scripts/test --all
+
 REPO = Path(__file__).resolve().parents[1]
 PLUGIN = REPO                        # the whole repo is the plugin
 

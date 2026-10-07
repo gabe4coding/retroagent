@@ -68,6 +68,7 @@ def test_github_slug(url, slug):
 
 # ---- publish / init
 
+@pytest.mark.slow
 def test_init_adds_only_the_missing_base_files_and_never_touches_the_clone(tmp_path):
     origin, clone = _remote(tmp_path, {"README.md": "mine\n", "sessions/h/x.md": "s\n"})
     (clone / "sessions/h/x.md").write_text("changed by a running sync\n")
@@ -80,6 +81,7 @@ def test_init_adds_only_the_missing_base_files_and_never_touches_the_clone(tmp_p
     assert setup.init(clone)["written"] == []                                   # nothing left to add
 
 
+@pytest.mark.slow
 def test_init_on_an_empty_repo_makes_the_first_commit_and_checks_it_out(tmp_path):
     origin, clone = _remote(tmp_path)
     out = setup.init(clone)
@@ -88,6 +90,7 @@ def test_init_on_an_empty_repo_makes_the_first_commit_and_checks_it_out(tmp_path
     assert (clone / "AGENTS.md").read_text() == (REPO / "templates/data/AGENTS.md").read_text()
 
 
+@pytest.mark.slow
 def test_publish_retries_when_a_sync_pushed_meanwhile(tmp_path, monkeypatch):
     origin, clone = _remote(tmp_path, {"README.md": "r\n"})
     real = setup._build
@@ -104,6 +107,7 @@ def test_publish_retries_when_a_sync_pushed_meanwhile(tmp_path, monkeypatch):
     assert out["written"] and {"sessions/other/y.md", "AGENTS.md"} <= _tree(origin)
 
 
+@pytest.mark.slow
 def test_publish_without_origin_is_refused(tmp_path):
     repo = tmp_path / "r"
     _git("init", "-q", str(repo))
@@ -113,6 +117,7 @@ def test_publish_without_origin_is_refused(tmp_path):
 
 # ---- routine
 
+@pytest.mark.slow
 def test_routine_pushes_its_files_keeps_the_owner_settings_and_replaces_the_workflow(tmp_path, monkeypatch):
     origin, clone = _remote(tmp_path, {"pages/config.json": '{"min_sessions": 9}\n',
                                        setup.WORKFLOW: "old workflow\n"})
@@ -134,6 +139,7 @@ def test_routine_pushes_its_files_keeps_the_owner_settings_and_replaces_the_work
                               "gh secret set PAGES_ROUTINE_FIRE_TOKEN -R me/data"]
 
 
+@pytest.mark.slow
 def test_routine_writes_the_settings_with_the_local_time_zone_when_missing(tmp_path, monkeypatch):
     origin, clone = _remote(tmp_path, {"README.md": "r\n"})
     monkeypatch.setattr(setup, "origin_slug", lambda repo: "me/data")
@@ -143,6 +149,7 @@ def test_routine_writes_the_settings_with_the_local_time_zone_when_missing(tmp_p
     assert settings["timezone"] == "Asia/Tokyo" and settings["min_hours_between_fires"] == 3
 
 
+@pytest.mark.slow
 def test_routine_needs_a_github_data_repo(tmp_path):
     origin, clone = _remote(tmp_path, {"README.md": "r\n"})
     with pytest.raises(setup.SetupError, match="GitHub"):
@@ -158,6 +165,7 @@ def test_routine_files_template_settings_are_valid_json():
 
 # ---- check
 
+@pytest.mark.slow
 def test_check_reports_what_is_set_up(tmp_path, monkeypatch):
     origin, clone = _remote(tmp_path, {"README.md": "r\n", setup.WORKFLOW: "w\n"})
     _git("fetch", "-q", cwd=clone)
@@ -206,6 +214,7 @@ def _cfg(tmp_path):
     return config.Config(root=tmp_path / "data", host="h")
 
 
+@pytest.mark.slow
 def test_auto_update_pulls_once_a_day_and_refreshes_plugins_on_a_new_version(tmp_path, code_clone):
     clone, publish_code, refreshed = code_clone
     cfg = _cfg(tmp_path)
@@ -220,6 +229,7 @@ def test_auto_update_pulls_once_a_day_and_refreshes_plugins_on_a_new_version(tmp
     assert "plugin 1.0.0 -> 1.1.0" in line and refreshed == [1] and (clone / "g.txt").exists()
 
 
+@pytest.mark.slow
 def test_auto_update_leaves_a_clone_on_another_branch_or_with_changes_alone(tmp_path, code_clone):
     clone, publish_code, _ = code_clone
     cfg = _cfg(tmp_path)
@@ -240,6 +250,7 @@ def test_auto_update_does_nothing_without_a_git_clone(tmp_path, monkeypatch):
 
 # ---- bin/kb in a plugin cache runs the recorded code clone
 
+@pytest.mark.slow
 def test_a_cached_kb_runs_the_code_clone_from_the_config(tmp_path):
     home = tmp_path / "home"
     cache = home / ".claude/plugins/cache/retroagent/retroagent/0.4.0"

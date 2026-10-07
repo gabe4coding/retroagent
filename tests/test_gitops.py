@@ -14,6 +14,8 @@ from fixtures import git as fgit
 
 from kb import gitops
 
+pytestmark = pytest.mark.slow          # starts git and other processes; runs with scripts/test --all
+
 
 def _add(repo, host, text, name="x.md"):
     d = repo / "sessions" / host

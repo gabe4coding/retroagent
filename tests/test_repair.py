@@ -22,6 +22,8 @@ from kb.paths import month_of
 from kb.state import State
 from kb.sync import Report, run_sync
 
+pytestmark = pytest.mark.slow          # starts git and other processes; runs with scripts/test --all
+
 VM_SUMMARY = {"summary": "Summary written on the vm.", "tags": ["vm"], "outcome": "done", "decisions": []}
 
 
