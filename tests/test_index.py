@@ -215,6 +215,18 @@ def test_the_most_complete_copy_of_a_session_wins(empty):
     assert idx.get("dup-1")["host"] == "laptop"
 
 
+def test_a_winner_that_loses_turns_gives_way_to_a_remembered_duplicate(empty):
+    root, idx = empty
+    put(root, "a/s.md", "dup-1", turns=("ask", "answer", "ask on", "done"), host="a", ended="2026-10-06T14:00:00Z")
+    put(root, "b/s.md", "dup-1", turns=("ask", "answer", "ask on", "fixed"), host="b", ended="2026-10-06T13:00:00Z")
+    idx.update(root)
+    assert idx.get("dup-1")["host"] == "a"
+    put(root, "a/s.md", "dup-1", turns=("ask", "answer"), host="a", ended="2026-10-06T12:00:00Z")  # an older copy
+    idx.update(root)
+    assert idx.get("dup-1")["host"] == "b"
+    assert idx.update(root) == 0 and idx.get("dup-1")["host"] == "b"
+
+
 def test_bad_files_are_skipped_and_reported_not_fatal(empty):
     root, idx = empty
     put(root, "h/good.md", "good-1", turns=("fine session about retries",))
