@@ -275,11 +275,12 @@ def test_a_cached_kb_runs_the_code_clone_from_the_config(tmp_path):
     assert p.stdout.strip() == "cache ran"
 
 
-def test_cloud_setup_script_installs_kb_and_semantic_search():
+def test_cloud_setup_script_installs_kb_semantic_search_and_the_hook():
     script = setup.cloud_setup_script("me/retroagent", "me/my-data")
     assert script.startswith("#!/bin/bash\n") and script.endswith("exit 0\n")
     assert "ln -sf /home/user/retroagent/bin/kb /usr/local/bin/kb || true" in script
     assert "/home/user/retroagent/bin/kb embed --install --root /home/user/my-data || true" in script
+    assert "/home/user/retroagent/bin/kb cloud install || true" in script          # the hook that captures sessions
 
 
 @pytest.mark.slow

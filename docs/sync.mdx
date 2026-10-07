@@ -72,3 +72,5 @@ the same way.
   and pushes nothing. Use it only when the owner cannot run the summaries itself, send the result as a pull request,
   and expect to run [`kb repair`](./troubleshooting.mdx#every-sync-fails-to-pull) on the owner after the merge.
 - A script that calls `summarize()`, `update_front_matter()` or `write_catalog()` itself skips every check. Don't.
+- [Cloud sessions](./commands.mdx#capture-cloud-sessions) own no host. They push their transcripts to an inbox on
+  their branch; the one machine with `cloud_import` on writes them as host `cloud`, which it then owns.

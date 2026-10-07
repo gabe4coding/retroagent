@@ -19,7 +19,7 @@ def test_every_skill_folder_is_listed_above():
 def test_the_setup_skill_uses_only_commands_that_exist():
     text = (SKILLS / "setup" / "SKILL.md").read_text(encoding="utf-8")
     for cmd in ("kb setup check", "kb setup routine", "kb enable updates", "kb backfill --summaries", "install.sh --repo",
-                "kb embed --status", "kb embed --off", "kb setup cloud"):
+                "kb embed --status", "kb embed --off", "kb setup cloud", "kb cloud import --on"):
         assert cmd in text, cmd
 
 

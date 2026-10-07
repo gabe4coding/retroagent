@@ -35,6 +35,7 @@ Ids are the 8-character short id shown in lists, or any unique prefix of it or o
 | `kb disable [updates]` | Turn them off. |
 | `kb repair` | When every sync fails to pull. See [Troubleshooting](./troubleshooting.mdx). |
 | `kb update` | Pull the retroagent code and refresh the plugins. |
+| `kb cloud import [--on \| --off]` | Show or switch the import of [cloud sessions](#capture-cloud-sessions) on this machine (one machine only). `kb cloud push \| hook \| install` run in the cloud. |
 | `kb setup init \| routine \| cloud \| check` | Set up the data repo, the cloud routine and [cloud environments](#in-cloud-sessions-and-routines) (the `setup` skill drives these). |
 | `kb pages start \| plan \| digest \| finish \| due` | Steps of the cloud routine. See [Pages routine](./pages-routine.mdx). |
 
@@ -93,6 +94,27 @@ have to embed your whole history: on a cloud CPU that would take about 17 minute
   starts the model. Until it is done, `kb find` uses BM25 alone, usually for a few seconds. The pages routine runs
   `kb embed --quiet` itself at the start.
 - A session only reads vectors: it never commits any, because it owns no host.
+
+### Capture cloud sessions
+
+A cloud container is deleted after its session, with its transcript. The setup script from `kb setup cloud` also
+runs `kb cloud install`: it adds a `Stop` and a `SessionEnd` hook to `~/.claude/settings.json` in the container.
+
+- After each answer, the hook starts `kb cloud push` in the background. It slims and redacts the transcript and its
+  subagents, like a raw copy, and commits them as `inbox/claude/<encoded cwd>/<id>.jsonl.gz` on the branch of the data
+  clone: the session's own `claude/…` branch. It never pushes to `main`, and it does not touch the working tree.
+- On one machine, run `kb cloud import --on`. Each sync of that machine then fetches every branch, copies the inbox
+  files into `.kb/cloud/`, and processes them as the sessions of host `cloud`: markdown, raw copy, summary, catalog
+  and vectors, as for its own sessions. `kb find`, `kb page` and the pages routine see them like any other session.
+- That machine owns `sessions/cloud` (the host marker, see [Sync](./sync.mdx#one-writer-per-host)). A second machine
+  with the import on writes nothing for it and says so in its sync line.
+- After a clean push, the sync deletes each branch whose only change from `main` is `inbox/`. A branch with other
+  commits stays; do not merge it as it is, or `inbox/` reaches `main`. If the session goes on, its next push starts
+  the branch again from `main`.
+- One-prompt headless runs, such as the pages routine, are not pushed (the sync skips them too), and nothing is pushed
+  on `main` or on the routine's bootstrap branch. Errors go to `.kb/cloud.log` in the cloud data clone.
+- A session's project comes from its working directory. A cloud session that starts with more than one repository
+  works in `/home/user`, so its project is `user`.
 
 ## Read-only by design
 
