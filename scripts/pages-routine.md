@@ -77,6 +77,8 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
    - Find friction with the method of `<code>/skills/kb-retro/SKILL.md` (steps 3 and 4), with
      `started >= '<since>' AND started < '<until>'` instead of the last 7 days, and at most 8 sessions looked at
      closer.
+   - Write "Suggested changes" with the categories of that skill (step 5). The repos the sessions worked in are not
+     checked out here, so you cannot do its step 6: name the file or check to look at, and do not claim it is missing.
    - Write the retro in the format below. `update` means sessions of that week arrived late: rewrite the page with
      all of them.
 5. **Finish.** `kb pages finish`. Add `--skip <name,…>` for planned items you decided not
@@ -159,6 +161,6 @@ sources: ["<short>", "<short>"]
 - <2 to 5 bullets, root cause, not symptom> (<short>)
 
 ## Suggested changes
-- <1 to 3 concrete changes to try: a CLAUDE.md or AGENTS.md rule, a skill, a hook, a tool — each linked to evidence>
-  (<short>)
+- <1 to 3 changes to the agent's environment, most severe first: category, the change (which file, check, command or
+  tool), linked to evidence> (<short>)
 ```
