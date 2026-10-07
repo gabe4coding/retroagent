@@ -110,7 +110,7 @@ def _remote_tip(root, branch: str) -> str:
 def _build(root, base: str, files: dict, message: str, tmp: Path):
     """(commit sha, paths written) of one commit on `base` ("" for a first commit), or (None, []) when every file
     is already there (or present and not to be replaced)."""
-    env = dict(gitops._env(root), GIT_INDEX_FILE=str(tmp / "index"))
+    env = dict(gitops._env(root, network=False), GIT_INDEX_FILE=str(tmp / "index"))
     if base:
         _plumb(root, env, "read-tree", base)
     else:

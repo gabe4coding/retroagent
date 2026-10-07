@@ -9,3 +9,4 @@ dependencies = []
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
+tmp_path_retention_policy = "failed"     # git-heavy tests leave large temp folders; deleting old ones slowed the next run

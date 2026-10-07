@@ -13,14 +13,18 @@ data; each user's data lives in their own data repo (its layout and rules: `temp
   the trigger workflow with `{{CODE_REPO}}`).
 - `scripts/pages-routine.md` — what the cloud routine does; `scripts/codex_marketplace.py` — Codex marketplace
   entry; `scripts/raw-growth` — read-only report of how much each sync commit grows a data clone.
-- `tests/` — `scripts/test` runs them on `/usr/bin/python3` with pytest from `uv`. Shared builders live in
+- `tests/` — `scripts/test` runs the fast ones in parallel on `/usr/bin/python3` with pytest from `uv`;
+  `scripts/test --all` runs them all. Shared builders live in
   `tests/fixtures.py`: fake Claude/Codex transcripts (`write_claude_session`, `write_codex_unit`, `make_*_tree`),
   `age()` to make files look idle, git remotes and clones (`init_remote`, `clone`), and `make_config`. A session's
   short id is the last 8 hex digits of its id, so fixture ids must differ there.
 
 ## Rules
-- Run `scripts/test` before every commit. Tests never touch the real home, config or data clone (`tests/conftest.py`).
-  There is no CI: `scripts/test` is the only check. It already passes `-q`; adding another `-q` hides the summary line.
+- Run `scripts/test --all` before every commit; plain `scripts/test` (under 5 s) while you work. Tests never touch
+  the real home, config or data clone (`tests/conftest.py`). There is no CI: `scripts/test --all` is the only check.
+  It already passes `-q`; adding another `-q` hides the summary line.
+- A test that starts a process (git, gitleaks, sh, python) must be marked `@pytest.mark.slow` (or its module
+  `pytestmark = pytest.mark.slow`); `tests/conftest.py` fails it otherwise. Keep the fast run under 5 s.
 - Never put real session data, real project or company names, or real ids in tests or docs: this repo is public.
 - When `skills/` or `hooks/` change, bump `version` in both `.claude-plugin/plugin.json` and
   `.codex-plugin/plugin.json` (tests check they agree): Claude Code and Codex cache plugins per version.
