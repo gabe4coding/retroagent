@@ -157,6 +157,32 @@ def test_error_text_of_each_event_shape():
     assert error_text({}) == ""
 
 
+DATED = PAGE.replace("- the parser module raises when the config file is missing → not an error bullet",
+                     "- the release is out (3c3c3c3c · 2026-10-01)").replace(
+    "`pip install -e .[dev]` (1a2b3c4d)", "`pip install -e .[dev]` (1a2b3c4d · 2026-09-20)")
+
+
+def test_a_dated_bullet_keeps_its_date_and_a_clean_text():
+    yaml = bullets(DATED)[0]
+    assert yaml.date == "2026-09-20" and yaml.source == "kb summary 1a2b3c4d"
+    assert yaml.text.endswith("`pip install -e .[dev]`") and bullets(PAGE)[0].date == ""
+    dot = bullets(DATED.replace("(1a2b3c4d · 2026-09-20)", "(1a2b3c4d · 2026-09-20)."))[0]   # a period after
+    assert (dot.date, dot.source, dot.text) == (yaml.date, yaml.source, yaml.text)
+
+
+def test_a_stale_bullet_is_never_a_hint_and_the_hint_shows_the_date(kb):
+    page = kb.root / "pages" / "projects" / "demo-app.md"
+    page.write_text(DATED)
+    line = run(kb, _event(NO_YAML))
+    assert line.endswith("(kb summary 1a2b3c4d · 2026-09-20)")
+    log = json.loads((kb.kb_dir / "hints" / "log.jsonl").read_text().splitlines()[-1])
+    assert log["seen"] == "2026-09-20"
+    page.write_text(DATED.replace("(1a2b3c4d · 2026-09-20)", "(1a2b3c4d · 2026-06-01)"))   # 122 days older
+    assert run(kb, _event(NO_YAML, session="sess-2")) == ""
+    (kb.root / "pages" / "config.json").write_text(json.dumps({"stale_days": 200}))
+    assert "pip install" in run(kb, _event(NO_YAML, session="sess-3"))
+
+
 def test_format_keeps_the_budget():
     b = Bullet("x → " + "y" * 400, "", "x", "kb summary 1a2b3c4d", "k")
     line = format_hint(b)

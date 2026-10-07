@@ -134,7 +134,9 @@ def test_finish_then_incremental(tmp_path):
     assert state["sha"] == p["head"] and state["mode"] == "bootstrap" and state["last_run"] == "2026-10-07T09:00:00Z"
     meta, body = parse_page((root / "pages" / "projects" / "alpha.md").read_text())
     assert (meta["updated"], meta["sessions"]) == ("2026-10-07T09:00:00Z", 3)      # set by finish, not the writer
-    assert body.endswith("(a0000001)\n")
+    assert body.endswith("(a0000001 · 2026-09-22)\n")                     # dated by finish from the index
+    assert "- the motion test is stable (a0000001 · 2026-09-22)" in body and res["undated"] == []
+    assert (root / "pages" / "retro" / "2026-W40.md").read_text().endswith("- work (a0000002)\n")   # retros: no dates
     assert state["pending"] == {"projects": {}, "weeks": ["2026-W39"]}
 
     session(root, "a0000004", "alpha", "2026-10-07T08:00:00Z")
@@ -145,6 +147,45 @@ def test_finish_then_incremental(tmp_path):
     assert [(i["name"], i["action"], i["sessions"]) for i in p["projects"]] == [
         ("beta", "create", ["b0000001", "b0000002", "b0000003"]), ("alpha", "update", ["a0000004"])]
     assert [(r["week"], r["action"]) for r in p["retros"]] == [("2026-W39", "create")]
+
+
+def test_finish_dates_only_the_pages_it_writes_and_lists_the_undated(tmp_path):
+    root = repo(tmp_path / "kb")
+    demo(root)
+    plan(root)
+    write_page(root, "project", "beta", sources=["b0000001"])
+    commit(root, "an old page, written before dates")
+    plan(root)
+    memory(root, "alpha", "bare-fact.md")                                   # no modified time, no session
+    commit(root, "sync(h): a memory")
+    plan(root)
+    write_alpha(root)
+    path = root / "pages" / "projects" / "alpha.md"
+    path.write_text(path.read_text() + "\n## Open threads\n- ask about it (ffffffff)\n- no source at all\n"
+                    "- a memory fact (memory alpha/bare-fact)\n")
+    res = routine.finish(root, settings(), now=NOW, push=False)
+    assert res["undated"] == ["pages/projects/alpha.md: ask about it (ffffffff)",
+                              "pages/projects/alpha.md: no source at all",
+                              "pages/projects/alpha.md: a memory fact (memory alpha/bare-fact)"]   # no date known
+    assert "· 20" not in (root / "pages" / "projects" / "beta.md").read_text()      # not written in this run
+
+
+def test_finish_moves_stale_bullets_of_a_written_page_to_history(tmp_path):
+    root = repo(tmp_path / "kb")
+    demo(root)
+    session(root, "a0000004", "alpha", "2026-05-01T10:00:00Z")
+    commit(root)
+    plan(root)
+    write_page(root, "project", "alpha", sources=["a0000003", "a0000004"], body=(
+        "# alpha\n\n## Current state\n- new (a0000003)\n\n## Key decisions\n- 2026-05-01 · old but kept (a0000004)\n"
+        "\n## Errors seen → fixes\n- `boom` → old fix (a0000004)\n"))
+    res = routine.finish(root, settings(), now=NOW, push=False)
+    assert res["moved"] == ["pages/projects/alpha.md: unconfirmed since 2026-05-01 (Errors seen): `boom` → old fix "
+                            "(a0000004 · 2026-05-01)"]
+    body = parse_page((root / "pages" / "projects" / "alpha.md").read_text())[1]
+    assert "- 2026-05-01 · old but kept (a0000004 · 2026-05-01)" in body
+    assert body.endswith("## History\n- unconfirmed since 2026-05-01 (Errors seen): `boom` → old fix "
+                         "(a0000004 · 2026-05-01)\n")
 
 
 def test_finish_without_news_makes_no_commit(tmp_path):
@@ -265,7 +306,10 @@ def test_settings(tmp_path):
     (root / routine.CONFIG_REL).write_text(json.dumps({"_note": "x", "min_sessions": 5, "skip_projects": ["a"]}))
     s = routine.load_settings(root)
     assert s["min_sessions"] == 5 and s["skip_projects"] == ["a"] and s["batch_projects"] == 5
-    for bad in ({"min_sessions": "3"}, {"min_sessions": True}, {"skip_projects": [1]}, {"branch": ""}, []):
+    (root / routine.CONFIG_REL).write_text(json.dumps({"stale_days": 120}))
+    assert (routine.load_settings(root)["stale_days"], routine.load_settings(root)["stale_days_current"]) == (120, 30)
+    for bad in ({"min_sessions": "3"}, {"min_sessions": True}, {"skip_projects": [1]}, {"branch": ""}, [],
+                {"stale_days": 0}, {"stale_days_current": -1}):
         (root / routine.CONFIG_REL).write_text(json.dumps(bad))
         with pytest.raises(PagesError):
             routine.load_settings(root)

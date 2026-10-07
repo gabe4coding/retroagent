@@ -53,9 +53,10 @@ def parse_page(text: str):
     return meta, body
 
 
-def set_fields(text: str, fields: dict) -> str:
-    """The page text with these front matter fields set, the other lines and the body unchanged."""
-    meta, body = split_front_matter(text)
+def set_fields(text: str, fields: dict, body=None) -> str:
+    """The page text with these front matter fields set, the other lines unchanged, and the body unchanged or body."""
+    meta, old = split_front_matter(text)
+    body = old if body is None else body
     meta.update(fields)
     head = ["---"] + [f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in meta.items()] + ["---", ""]
     return "\n".join(head) + "\n" + body
