@@ -67,11 +67,13 @@ class Report:
     locked_out: bool = False
     quarantined: list = field(default_factory=list)     # paths gitleaks holds back, after this run
     newly_quarantined: int = 0                          # of those, found by this run
+    embedded: int = 0                                   # items given a vector for semantic search
+    notes: list = field(default_factory=list)           # problems that do not fail the sync (semantic search)
 
     @property
     def happened(self) -> bool:
         return bool(self.sessions or self.summarized or self.memories or self.errors or self.committed
-                    or self.pushed or self.newly_quarantined)
+                    or self.pushed or self.newly_quarantined or self.embedded or self.notes)
 
     def line(self) -> str:
         """One line, whatever the error texts contain."""
@@ -82,8 +84,12 @@ class Report:
             parts.append(f"{sum(self.redactions.values())} redactions")
         if self.quarantined:
             parts.append(f"{len(self.quarantined)} quarantined")
+        if self.embedded:
+            parts.append(f"{self.embedded} embedded")
         if self.errors:
             parts.append(f"{len(self.errors)} errors (first: {one_line(self.errors[0], 200)})")
+        if self.notes:
+            parts.append(one_line(self.notes[0], 120))
         parts.append("pushed" if self.pushed else ("committed" if self.committed else "nothing committed"))
         return ", ".join(parts)
 
@@ -513,6 +519,27 @@ def publish(cfg, idx, state, report) -> None:
             report.errors.append(f"{REPAIR_HINT}; {e}" if isinstance(e, gitops.PullConflict) else str(e))
 
 
+def embed_new(cfg, idx, report, clock=time.time) -> None:
+    """Semantic search: vectors for what this sync added or changed, within embed_sync_seconds. Runs only once the
+    user turned it on (`kb embed`), so it may install a new pin after `kb update`. Any problem is a note, never a sync
+    error."""
+    from kb import embed, embed_runtime
+    try:
+        ep = embed_runtime.ensure(cfg, wait=True)
+        store = embed.Vectors(cfg.kb_dir / embed.STORE)
+        try:
+            rep = embed.run_embed(idx.db, store, ep, deadline=clock() + cfg.embed_sync_seconds, clock=clock)
+        finally:
+            store.close()
+        report.embedded = rep.done
+        if rep.error:
+            report.notes.append(f"embed: {rep.error}")
+        if not cfg.embed_url:
+            embed_runtime.Server().touch()
+    except Exception as e:  # noqa: BLE001 - semantic search must never cost a sync
+        report.notes.append(f"embed: {one_line(str(e), 200)}")
+
+
 # ---------------------------------------------------------------- the run
 
 def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default", sample: int = 0,
@@ -568,6 +595,8 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
                 commit_own(cfg, state, report)
                 if remote:
                     publish(cfg, idx, state, report)
+            if cfg.embed or cfg.embed_url:
+                embed_new(cfg, idx, report, clock)
             report.quarantined = sorted(state.quarantine)
             state.last_ok = now_iso()
             state.last_result = report.line()
