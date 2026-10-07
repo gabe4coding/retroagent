@@ -245,10 +245,13 @@ elif [ "$AUTO" = true ]; then
 else
   say "sync: not started (auto_sync is off)"
 fi
-if [ "$AUTO" != true ]; then
+if [ ! -d "$HOSTDIR" ]; then
   say ""
   say "Next steps (host '$HOST'; nothing is committed or pushed until you run them):"
   say "  1. kb backfill                 process every session now and make the first data push"
   say "  2. kb backfill --summaries     write the summaries (slow; uses your Claude quota)"
-  say "  3. kb enable                   let the SessionStart hook sync automatically"
+  [ "$AUTO" = true ] || say "  3. kb enable                   let the SessionStart hook sync automatically"
+elif [ "$AUTO" != true ]; then
+  say ""
+  say "Next step: kb enable            let the SessionStart hook sync automatically (host '$HOST' already has sessions)"
 fi
