@@ -22,7 +22,7 @@ import datetime as dt
 import json
 from pathlib import Path
 
-from kb import gitops
+from kb import freshness, gitops
 from kb.index import Index, parse_memory
 from kb.pages import WEEK_RE, page_rel, parse_page, set_fields
 from kb.redact import redact
@@ -585,9 +585,11 @@ def check_page(root, rel: str, settings) -> list:
     return out
 
 
-def finish(root, settings, now=None, push: bool = True, skip=()) -> dict:
-    """Check the written pages, set their updated time and session count, record the new state, commit, push.
-    Raises PagesError when something is wrong.
+def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None) -> dict:
+    """Check the written pages, date the bullets of the project pages (kb.freshness), set their updated time and
+    session count, record the new state, commit, push. Raises PagesError when something is wrong.
+
+    index_path: the index `kb pages plan` updated (default <root>/.kb/index.sqlite). Without it no bullet gets a date.
 
     A planned page that was to be created but was not written goes back to pending (unless named in skip)."""
     root = Path(root)
@@ -623,11 +625,22 @@ def finish(root, settings, now=None, push: bool = True, skip=()) -> dict:
         raise PagesError("refusing to commit:\n  " + "\n  ".join(problems))
 
     written = {rel for _, rel in changes}
-    for rel in sorted(written):          # the facts finish knows better than the writer: when, and how many sessions
-        path = root / rel
-        text = path.read_bytes().decode("utf-8", errors="replace")
-        sources = parse_page(text)[0]["sources"]
-        atomic_write(path, set_fields(text, {"updated": _iso(now), "sessions": len(set(sources))}).encode("utf-8"))
+    undated = []
+    index_path = Path(index_path) if index_path else root / ".kb" / "index.sqlite"
+    idx = Index(index_path) if index_path.is_file() else None
+    try:
+        for rel in sorted(written):      # the facts finish knows better than the writer: when, how many sessions
+            path = root / rel
+            text = path.read_bytes().decode("utf-8", errors="replace")
+            meta, body = parse_page(text)
+            if meta["kind"] == "project":
+                body, missing = freshness.stamp(body, freshness.index_lookup(idx) if idx else lambda ref: "")
+                undated += [f"{rel}: {line[:120]}" for line in missing]
+            fields = {"updated": _iso(now), "sessions": len(set(meta["sources"]))}
+            atomic_write(path, set_fields(text, fields, body).encode("utf-8"))
+    finally:
+        if idx:
+            idx.close()
     pending = {"projects": dict(plan["pending"]["projects"]), "weeks": list(plan["pending"]["weeks"])}
     returned = []
     for item in plan["projects"]:
@@ -643,7 +656,7 @@ def finish(root, settings, now=None, push: bool = True, skip=()) -> dict:
     old = load_state(root) or {}
     result = {"branch": branch, "projects": sorted(r for r in written if r.startswith("pages/projects/")),
               "retros": sorted(r for r in written if r.startswith("pages/retro/")), "returned": returned,
-              "committed": False, "push": ""}
+              "undated": undated, "committed": False, "push": ""}
     planned = plan["projects"] or plan["retros"]
     if not (written or planned or pending != old.get("pending") or plan["waiting"] != old.get("waiting")
             or not old):

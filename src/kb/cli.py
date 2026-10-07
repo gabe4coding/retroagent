@@ -385,7 +385,8 @@ def cmd_pages(args, cfg) -> int:
             return 0
         if args.step == "finish":
             skip = [s for s in (args.skip or "").split(",") if s]
-            print(json.dumps(routine.finish(cfg.root, settings, push=not args.no_push, skip=skip)))
+            print(json.dumps(routine.finish(cfg.root, settings, push=not args.no_push, skip=skip,
+                                            index_path=cfg.kb_dir / "index.sqlite")))
             return 0
         idx = _open_index(cfg)
         try:

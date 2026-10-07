@@ -134,7 +134,9 @@ def test_finish_then_incremental(tmp_path):
     assert state["sha"] == p["head"] and state["mode"] == "bootstrap" and state["last_run"] == "2026-10-07T09:00:00Z"
     meta, body = parse_page((root / "pages" / "projects" / "alpha.md").read_text())
     assert (meta["updated"], meta["sessions"]) == ("2026-10-07T09:00:00Z", 3)      # set by finish, not the writer
-    assert body.endswith("(a0000001)\n")
+    assert body.endswith("(a0000001 · 2026-09-22)\n")                     # dated by finish from the index
+    assert "- the motion test is stable (a0000001 · 2026-09-22)" in body and res["undated"] == []
+    assert (root / "pages" / "retro" / "2026-W40.md").read_text().endswith("- work (a0000002)\n")   # retros: no dates
     assert state["pending"] == {"projects": {}, "weeks": ["2026-W39"]}
 
     session(root, "a0000004", "alpha", "2026-10-07T08:00:00Z")
@@ -145,6 +147,22 @@ def test_finish_then_incremental(tmp_path):
     assert [(i["name"], i["action"], i["sessions"]) for i in p["projects"]] == [
         ("beta", "create", ["b0000001", "b0000002", "b0000003"]), ("alpha", "update", ["a0000004"])]
     assert [(r["week"], r["action"]) for r in p["retros"]] == [("2026-W39", "create")]
+
+
+def test_finish_dates_only_the_pages_it_writes_and_lists_the_undated(tmp_path):
+    root = repo(tmp_path / "kb")
+    demo(root)
+    plan(root)
+    write_page(root, "project", "beta", sources=["b0000001"])
+    commit(root, "an old page, written before dates")
+    plan(root)
+    write_alpha(root)
+    path = root / "pages" / "projects" / "alpha.md"
+    path.write_text(path.read_text() + "\n## Open threads\n- ask about it (ffffffff)\n- no source at all\n")
+    res = routine.finish(root, settings(), now=NOW, push=False)
+    assert res["undated"] == ["pages/projects/alpha.md: ask about it (ffffffff)",
+                              "pages/projects/alpha.md: no source at all"]
+    assert "· 20" not in (root / "pages" / "projects" / "beta.md").read_text()      # not written in this run
 
 
 def test_finish_without_news_makes_no_commit(tmp_path):
