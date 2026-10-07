@@ -6,6 +6,7 @@
   kb recent            latest sessions
   kb summary <id>      summary, decisions, outcome, files, PRs, subagents of one session
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
+  kb hint --event error  a past fix for a failed tool call (the PostToolUseFailure hook runs it; "hints": true)
   kb stats [report]    ready-made analytics (errors: tool errors that came back); kb sql "<SELECT …>" for custom ones
   kb sync | backfill | status | reindex   maintenance
   kb embed             turn on semantic search: kb installs and runs a local embedding model (--status, --off)
@@ -474,6 +475,24 @@ def cmd_stats(args, cfg) -> int:
     return 0
 
 
+def cmd_hint(args, cfg) -> int:
+    """One past fix for a failed tool call (the hook event JSON on stdin), or nothing. Never fails: a hook calls it."""
+    from kb import hint
+    try:
+        event = json.loads(sys.stdin.read() or "{}")
+        line = hint.run(cfg, event)
+    except Exception:  # noqa: BLE001 - a hint is never worth breaking the agent's turn
+        return 0
+    if not line:
+        return 0
+    if args.hook:
+        name = event.get("hook_event_name") if isinstance(event.get("hook_event_name"), str) else ""
+        line = json.dumps({"hookSpecificOutput": {"hookEventName": name or "PostToolUseFailure",
+                                                  "additionalContext": line}}, ensure_ascii=False)
+    print(line)
+    return 0
+
+
 def cmd_sql(args, cfg) -> int:
     _open_index(cfg).close()
     try:
@@ -924,6 +943,12 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--project", help="errors: only this project")
     st.add_argument("--width", type=int, default=80, help="cut cells longer than this many chars (0: never cut)")
     st.set_defaults(func=cmd_stats)
+
+    hi = sub.add_parser("hint", help="a past fix for a failed tool call, from the project page (hook event JSON on "
+                                     "stdin; prints one line or nothing; needs \"hints\": true in the config)")
+    hi.add_argument("--event", choices=["error"], required=True, help="the kind of event: error (a tool call failed)")
+    hi.add_argument("--hook", action="store_true", help="print the hook output JSON (additionalContext) instead")
+    hi.set_defaults(func=cmd_hint)
 
     q = sub.add_parser("sql", help="read-only SQL on the index (tables: sessions, turns, pages, memories)")
     q.add_argument("query")

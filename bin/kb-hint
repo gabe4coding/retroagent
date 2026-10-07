@@ -1,0 +1,14 @@
+#!/bin/sh
+# PostToolUseFailure hook (Claude Code): when a tool call fails, add at most one past fix from the project page to the
+# agent's context (`kb hint --event error --hook`; see src/kb/hint.py). Off unless "hints": true in the config: then it
+# exits before starting Python. Always exits 0 and prints nothing on any problem, so it never breaks a turn.
+[ "${KB_CHILD:-}" = "1" ] && exit 0
+HERE=$(cd "$(dirname "$0")" && pwd)
+CFG="${KB_CONFIG:-}"
+if [ -z "$CFG" ]; then
+  CFG="$HOME/.config/retroagent/config.json"
+  [ -f "$CFG" ] || [ ! -f "$HOME/.config/sessions-kb/config.json" ] || CFG="$HOME/.config/sessions-kb/config.json"
+fi
+[ -f "$CFG" ] && grep -q '"hints"[[:space:]]*:[[:space:]]*true' "$CFG" 2>/dev/null || exit 0
+KB_CONFIG="$CFG" "$HERE/kb" hint --event error --hook 2>/dev/null || true
+exit 0

@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Replay `kb hint` on the tool errors of a data clone: how many hints each rule would show, and which.
+
+Launch:  scripts/hint-replay                        the data clone of the config (read-only), keyword rule only
+         scripts/hint-replay --semantic             also the semantic rule, with the embedding server that runs now
+         scripts/hint-replay --semantic --start     start kb's embedding server first (kb embed must be installed)
+         scripts/hint-replay --show 20 --min 0.76   print 20 hints of each rule, semantic limit 0.76
+
+Every "→ ERROR:" line of the index goes through the hint steps (gate, deny-list, rule) against the "Errors seen →
+fixes" bullets of its project's page, as it is now, with one hint per bullet per session (a subagent counts for its
+parent). "self" counts hints whose bullet cites the session of the error: the page was written from that session, so
+the hint looks better here than it can be live. The error text is the index's (3 lines, 300 chars), as the hook sends.
+Reads the index and the pages only; vectors stay in memory. Writes nothing in the data clone. Python 3.9, stdlib only.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from collections import Counter
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "src"))
+
+from kb import config as config_mod                      # noqa: E402
+from kb import embed, embed_runtime, hint                # noqa: E402
+from kb.index import connect_readonly                    # noqa: E402
+from kb.stats import _ERROR_LINE                         # noqa: E402
+from kb.util import short_id                             # noqa: E402
+
+
+_NO_MESSAGE = re.compile(r"^- \S+.* → ERROR$")             # a tool error with no message: grep found nothing
+
+
+class MemoryState:
+    """hint.State without files: the bullet vectors of each project stay in memory."""
+
+    def __init__(self):
+        self.store = {}
+
+    def vectors(self, project, model):
+        return dict(self.store.get((project, model), {}))
+
+    def save_vectors(self, project, model, vectors):
+        self.store[(project, model)] = dict(vectors)
+
+
+def errors(con):
+    """(root session id, short, project, error) of every tool error, oldest first."""
+    sql = ("SELECT s.id, s.parent, s.short, s.project, t.text FROM turns t JOIN sessions s ON s.id = t.session_id "
+           "WHERE t.text LIKE ? ORDER BY s.started, t.n")
+    for sid, parent, short, project, text in con.execute(sql, ("%→ ERROR%",)):
+        for line in text.splitlines():
+            m = _ERROR_LINE.match(line)
+            if m or _NO_MESSAGE.match(line):
+                yield parent or sid, short_id(parent) if parent else short, project, m.group(2) if m else ""
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--semantic", action="store_true", help="also the semantic rule (needs an embedding server)")
+    ap.add_argument("--start", action="store_true", help="start kb's embedding server first")
+    ap.add_argument("--min", type=float, help="semantic limit (default: hint_semantic_min of the config)")
+    ap.add_argument("--keyword-min", type=int, help="keyword minimum (default: hint_keyword_min of the config)")
+    ap.add_argument("--show", type=int, default=0, help="print this many hints of each rule")
+    args = ap.parse_args(argv)
+    cfg = config_mod.load()
+    if args.min is not None:
+        cfg.hint_semantic_min = args.min
+    if args.keyword_min is not None:
+        cfg.hint_keyword_min = args.keyword_min
+
+    ep = None
+    if args.semantic:
+        if args.start and not cfg.embed_url:
+            try:
+                embed_runtime.Server().start(wait=True)
+            except embed_runtime.EmbedUnavailable as e:
+                print(f"cannot start the embedding server: {e}")
+                return 2
+        ep = hint.endpoint(cfg)
+        if ep is None:
+            print("no embedding server runs; use --start, or leave out --semantic")
+            return 2
+
+    con = connect_readonly(cfg.kb_dir / "index.sqlite")
+    pages, count, shown, seen = {}, Counter(), {"keyword": [], "semantic": []}, {"keyword": set(), "semantic": set()}
+    state = MemoryState()
+    bands = Counter()
+    for root, short, project, err in errors(con):
+        count["errors"] += 1
+        if not err:
+            count["no message"] += 1
+            continue
+        if not hint.passes_gate(err):
+            count["gated out"] += 1
+            continue
+        if hint.denied(err):
+            count["denied"] += 1
+            continue
+        if project not in pages:
+            try:
+                pages[project] = hint.bullets((cfg.root / "pages" / "projects" / f"{project}.md").read_text())
+            except OSError:
+                pages[project] = []
+        items = [b for b in pages[project] if not hint.denied(b.full)]
+        if not items:
+            count["no page bullets"] += 1
+            continue
+        count["checked"] += 1
+        rules = {"keyword": None}
+        if ep is not None:
+            rules["semantic"] = ep
+        for method, rule_ep in rules.items():
+            todo = items
+            if method == "semantic":
+                vecs = hint.bullet_vectors(todo, project, ep, state)
+                q = embed.embed([embed.query_text(err)], ep.url, ep.key, timeout=30)[0]
+                best = max(((b, hint.cosine(q, vecs[b.key])) for b in todo), key=lambda x: x[1], default=None)
+                if best:
+                    bands[round(best[1] - 0.005, 2)] += 1
+                hit = best if best and best[1] >= cfg.hint_semantic_min else None
+            else:
+                hit = hint.keyword_match(err, todo, cfg.hint_keyword_min)
+            if hit is None:
+                continue
+            b, score = hit
+            if (root, b.key) in seen[method]:             # shown before in this session: hint.run prints nothing
+                continue
+            seen[method].add((root, b.key))
+            count[f"{method} hints"] += 1
+            own = b.source.endswith(short)
+            count[f"{method} self"] += own
+            shown[method].append((short, project, round(score, 3), own, err, b.full))
+
+    con.close()
+    print(f"tool errors: {count['errors']}")
+    for k in ("no message", "gated out", "denied", "no page bullets", "checked"):
+        print(f"  {k}: {count[k]}")
+    print(f"pages with bullets: {sum(1 for v in pages.values() if v)}, bullets: {sum(len(v) for v in pages.values())}")
+    print(f"keyword (min {cfg.hint_keyword_min} words): {count['keyword hints']} hints "
+          f"({count['keyword self']} cite the same session)")
+    if ep is not None:
+        print(f"semantic (min {cfg.hint_semantic_min}): {count['semantic hints']} hints "
+              f"({count['semantic self']} cite the same session)")
+        print("  best cosine per checked error, cumulative from the top:")
+        total = 0
+        for band in sorted(bands, reverse=True):
+            total += bands[band]
+            if band >= 0.70:
+                print(f"    >= {band:.2f}: {total}")
+        kw = {(r[0], r[5]) for r in shown["keyword"]}
+        sem = {(r[0], r[5]) for r in shown["semantic"]}
+        print(f"  same session and bullet in both rules: {len(kw & sem)}")
+    for method in shown:
+        for short, project, score, own, err, bullet in shown[method][: args.show]:
+            print(f"\n[{method} {score}{' self' if own else ''}] {short} {project}\n  error:  {err[:160]}\n"
+                  f"  bullet: {bullet[:200]}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
