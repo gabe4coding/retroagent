@@ -618,6 +618,7 @@ def cmd_embed(args, cfg) -> int:
     idx = _open_index(cfg)
     store = embed.Vectors(store_path)
     try:
+        imported = embed.import_files(cfg.root, idx.db, store, ep.model, cfg.host)   # other machines' vectors first
         rep = embed.run_embed(idx.db, store, ep, limit=args.limit)
         counts = store.counts(embed.model_key(ep.model))
     finally:
@@ -627,7 +628,8 @@ def cmd_embed(args, cfg) -> int:
         srv.touch()
     if not cfg.embed:
         config_mod.set_key("embed", True)
-    print(f"embedded {rep.done} items ({embed.describe(counts)}; {rep.left} left)" + (f"; stopped: {rep.error}" if rep.error else ""))
+    print(f"embedded {rep.done} items" + (f", imported {imported}" if imported else "")
+          + f" ({embed.describe(counts)}; {rep.left} left)" + (f"; stopped: {rep.error}" if rep.error else ""))
     return 1 if rep.error else 0
 
 
