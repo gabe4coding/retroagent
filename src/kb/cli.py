@@ -301,11 +301,12 @@ def cmd_pages(args, cfg) -> int:
                 return 0 if d["due"] else 1
             else:
                 only = [s for s in (args.only or "").split(",") if s]
-                if not (only or args.project or args.since or args.until):
-                    print("digest needs --project, --only, or --since/--until")
+                mems = [s for s in (args.memories or "").split(",") if s]
+                if not (only or mems or args.project or args.since or args.until):
+                    print("digest needs --project, --only, --memories, or --since/--until")
                     return 2
                 print(routine.digest(idx, only, args.project or "", args.since or "", args.until or "",
-                                     args.max_chars))
+                                     args.max_chars, memories=mems))
         finally:
             idx.close()
     except (routine.PagesError, gitops.GitError) as e:
@@ -559,6 +560,7 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("step", choices=["start", "plan", "digest", "finish", "due"])
     ps.add_argument("--project", help="digest: every session of this project")
     ps.add_argument("--only", help="digest: these short ids, comma-separated")
+    ps.add_argument("--memories", help="digest: these memory paths (from the plan), comma-separated")
     ps.add_argument("--since", help="digest: sessions started at or after this ISO time")
     ps.add_argument("--until", help="digest: sessions started before this ISO time")
     ps.add_argument("--max-chars", type=int, default=150000, help="digest: cut the output here")

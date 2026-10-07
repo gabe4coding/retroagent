@@ -64,6 +64,7 @@ jobs:
             src
             plugin
             sessions
+            memories
             pages
 
       - name: Anything to write?
