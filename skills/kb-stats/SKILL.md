@@ -5,7 +5,7 @@ description: Use when the user asks for numbers about their own Claude Code or C
 
 # kb-stats
 
-Ready-made reports (fast, small output):
+Ready-made reports:
 - `kb stats overview` — sessions, turns, prompts (typed by the user; messages from other agents do not count) and date range per agent
 - `kb stats projects` — top projects
 - `kb stats agents` — sessions per agent and model
@@ -15,8 +15,6 @@ Ready-made reports (fast, small output):
 - `kb stats subagents` — subagent transcripts per agent
 
 Custom questions: `kb sql "<SELECT …>"` (read-only).
-- `sessions(id, agent, host, project, cwd, branch, started, ended, model, turns, user_turns, title, summary, tags, outcome, decisions, summary_turns, files, prs, parent, first_prompt, md_path, short)`. `short` is the 8-character id that `kb` prints and accepts. `parent = ''` means a top-level session. `tags`, `decisions`, `files`, `prs` are JSON arrays (`json_each(tags)`).
-- `turns(session_id, n, role, time, text)`. Tool calls are lines in `text` that start with `- ToolName`.
-- Dates are UTC ISO strings: `started >= date('now','-30 days')`.
+Before you write a custom query, read `references/schema.md` in this skill's folder: the tables and columns.
 
 Report the numbers exactly as returned and say which filters you used.
