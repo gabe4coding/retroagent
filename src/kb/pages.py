@@ -7,6 +7,7 @@ The body starts with a "# " title and is split into "## " sections. The path is 
 """
 from __future__ import annotations
 
+import json
 import re
 
 from kb.distill import split_front_matter
@@ -50,6 +51,14 @@ def parse_page(text: str):
     meta = {"kind": kind, "name": name, "title": m.group(1) if m else name, "updated": updated,
             "sessions": sessions, "sources": sources}
     return meta, body
+
+
+def set_fields(text: str, fields: dict) -> str:
+    """The page text with these front matter fields set, the other lines and the body unchanged."""
+    meta, body = split_front_matter(text)
+    meta.update(fields)
+    head = ["---"] + [f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in meta.items()] + ["---", ""]
+    return "\n".join(head) + "\n" + body
 
 
 def sections(body: str) -> list:

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from kb import gitops
 from kb.index import Index
-from kb.pages import WEEK_RE, page_rel, parse_page
+from kb.pages import WEEK_RE, page_rel, parse_page, set_fields
 from kb.redact import redact
 from kb.util import atomic_write
 
@@ -422,8 +422,6 @@ def check_page(root, rel: str, settings) -> list:
     want = page_rel(meta["kind"], meta["name"])
     if want != rel:
         out.append(f"{rel}: a {meta['kind']} page named {meta['name']} belongs in {want}")
-    if not _parse(meta["updated"]):
-        out.append(f"{rel}: updated must be an ISO time")
     if len(text) > settings["max_page_chars"]:
         out.append(f"{rel}: {len(text)} characters, the limit is {settings['max_page_chars']}; compact it")
     found = redact(text)[1]
@@ -433,7 +431,8 @@ def check_page(root, rel: str, settings) -> list:
 
 
 def finish(root, settings, now=None, push: bool = True, skip=()) -> dict:
-    """Check the written pages, record the new state, commit, push. Raises PagesError when something is wrong.
+    """Check the written pages, set their updated time and session count, record the new state, commit, push.
+    Raises PagesError when something is wrong.
 
     A planned page that was to be created but was not written goes back to pending (unless named in skip)."""
     root = Path(root)
@@ -469,6 +468,11 @@ def finish(root, settings, now=None, push: bool = True, skip=()) -> dict:
         raise PagesError("refusing to commit:\n  " + "\n  ".join(problems))
 
     written = {rel for _, rel in changes}
+    for rel in sorted(written):          # the facts finish knows better than the writer: when, and how many sessions
+        path = root / rel
+        text = path.read_bytes().decode("utf-8", errors="replace")
+        sources = parse_page(text)[0]["sources"]
+        atomic_write(path, set_fields(text, {"updated": _iso(now), "sessions": len(set(sources))}).encode("utf-8"))
     pending = {"projects": dict(plan["pending"]["projects"]), "weeks": list(plan["pending"]["weeks"])}
     returned = []
     for item in plan["projects"]:

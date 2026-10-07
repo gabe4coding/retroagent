@@ -9,6 +9,7 @@ from test_pages import write_page
 
 from kb import routine
 from kb.index import Index
+from kb.pages import parse_page
 from kb.routine import PagesError
 
 NOW = dt.datetime(2026, 10, 7, 9, 0, tzinfo=dt.timezone.utc)      # a Wednesday in 2026-W41
@@ -102,7 +103,7 @@ def test_sessions_without_a_summary_wait_for_one(tmp_path):
 
 
 def write_alpha(root, sources=("a0000001", "a0000002", "a0000003")):
-    write_page(root, "project", "alpha", sources=list(sources), sessions=len(sources))
+    write_page(root, "project", "alpha", sources=list(sources), sessions=99, updated="whenever")
 
 
 def write_retro(root, week, sources):
@@ -124,6 +125,9 @@ def test_finish_then_incremental(tmp_path):
         "pages/.state.json", "pages/projects/alpha.md", "pages/retro/2026-W40.md"]
     state = json.loads((root / routine.STATE_REL).read_text())
     assert state["sha"] == p["head"] and state["mode"] == "bootstrap" and state["last_run"] == "2026-10-07T09:00:00Z"
+    meta, body = parse_page((root / "pages" / "projects" / "alpha.md").read_text())
+    assert (meta["updated"], meta["sessions"]) == ("2026-10-07T09:00:00Z", 3)      # set by finish, not the writer
+    assert body.endswith("(a0000001)\n")
     assert state["pending"] == {"projects": {}, "weeks": ["2026-W39"]}
 
     session(root, "a0000004", "alpha", "2026-10-07T08:00:00Z")
@@ -165,7 +169,6 @@ def test_skip_drops_an_unwritten_page(tmp_path):
      "looks like it holds a secret"),
     (lambda root: write_page(root, "project", "beta", rel="pages/projects/alpha.md"),
      "a project page named beta belongs in pages/projects/beta.md"),
-    (lambda root: write_page(root, "project", "alpha", updated="soon"), "updated must be an ISO time"),
     (lambda root: write_page(root, "project", "alpha", body="# alpha\n" + "x" * 50000), "the limit is 40000"),
 ])
 def test_finish_refuses(tmp_path, change, problem):
