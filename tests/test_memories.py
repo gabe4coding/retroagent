@@ -1,4 +1,6 @@
+import datetime as dt
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -95,6 +97,47 @@ def test_memory_is_copied_with_json_front_matter(cfg):
                     "origin_session": "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0", "modified": "2026-10-07T08:10:59.984Z"}
     assert body.startswith("Keep each pull request") and body.endswith("easier to review.\n") and "metadata:" not in body
     assert sync(cfg)[0] == 0                                    # unchanged: nothing written
+
+
+def utime(path, iso):
+    t = dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    os.utime(path, (t, t))
+
+
+def modified(cfg, name="prefer-small-prs.md"):
+    return split_front_matter(kb_file(cfg, name).read_text())[0]["modified"]
+
+
+def test_a_memory_without_its_own_modified_is_dated_by_the_file_mtime(cfg):
+    src = write_memory(cfg.claude_dir, "plain.md", "a fact\n")
+    utime(src, "2026-03-04T05:06:07Z")
+    utime(write_memory(cfg.claude_dir), "2026-03-04T05:06:07Z")
+    assert sync(cfg)[0] == 2
+    assert modified(cfg, "plain.md") == "2026-03-04T05:06:07Z"
+    assert modified(cfg) == "2026-10-07T08:10:59.984Z"           # its own front matter wins
+
+
+def test_a_touched_memory_keeps_its_date_and_an_edited_one_takes_the_new_mtime(cfg):
+    src = write_memory(cfg.claude_dir, "plain.md", "a fact\n")
+    utime(src, "2026-03-04T05:06:07Z")
+    sync(cfg)
+    utime(src, "2026-05-01T00:00:00Z")                          # touched, same text: nothing to commit
+    assert sync(cfg)[0] == 0 and modified(cfg, "plain.md") == "2026-03-04T05:06:07Z"
+    src.write_text("a changed fact\n")
+    utime(src, "2026-06-01T00:00:00Z")
+    assert sync(cfg)[0] == 1 and modified(cfg, "plain.md") == "2026-06-01T00:00:00Z"
+    assert sync(cfg)[0] == 0
+
+
+def test_an_old_copy_without_modified_is_dated_once(cfg):
+    src = write_memory(cfg.claude_dir, "plain.md", "a fact\n")
+    sync(cfg)
+    target = kb_file(cfg, "plain.md")
+    target.write_text(target.read_text().replace(f'modified: "{modified(cfg, "plain.md")}"', 'modified: ""'))
+    utime(src, "2026-03-04T05:06:07Z")
+    assert sync(cfg, dry_run=True)[0] == 1
+    assert sync(cfg)[0] == 1 and modified(cfg, "plain.md") == "2026-03-04T05:06:07Z"
+    assert sync(cfg)[0] == 0
 
 
 def test_index_file_without_front_matter_and_secrets_are_redacted(cfg):
