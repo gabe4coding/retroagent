@@ -11,7 +11,7 @@ Run `kb --help` for the full list, and add `--help` to any command for its flags
 
 | Command | What it does |
 | --- | --- |
-| `kb find <words…>` | Ranked pages, memories and sessions, one line each, with a snippet and the best turn. Pages come first. |
+| `kb find <words…>` | Ranked pages, memories and sessions, one line each, with a snippet and the best turn. Pages come first. With [semantic search](#semantic-search) on, it also matches paraphrases and other languages; `--no-embed` turns that off for one query, `-v` says on stderr when it was not used. |
 | `kb page [name]` | A project page or weekly retro written by the [pages routine](./pages-routine.mdx). `--section NAME` for one part. |
 | `kb memory [name]` | A memory file Claude Code or Codex keeps between sessions. No name: list them. |
 | `kb recent` | Latest sessions. |
@@ -30,12 +30,44 @@ Ids are the 8-character short id shown in lists, or any unique prefix of it or o
 | `kb backfill` | Process every pending session now. `--summaries` writes every missing summary. |
 | `kb status` | Last sync, pending sessions, summary backlog, and the pages routine's last run. |
 | `kb reindex` | Build the local index again. |
+| `kb embed` | Turn on [semantic search](#semantic-search) and embed what is new. `--status`, `--stop`, `--off`, `--remove`, `--rebuild`. |
 | `kb enable [updates]` | Turn automatic syncs (or daily code updates) on. |
 | `kb disable [updates]` | Turn them off. |
 | `kb repair` | When every sync fails to pull. See [Troubleshooting](./troubleshooting.mdx). |
 | `kb update` | Pull the retroagent code and refresh the plugins. |
 | `kb setup init \| routine \| check` | Set up the data repo and the cloud routine (the `setup` skill drives these). |
 | `kb pages start \| plan \| digest \| finish \| due` | Steps of the cloud routine. See [Pages routine](./pages-routine.mdx). |
+
+## Semantic search
+
+Optional. `kb find` matches words with BM25. With semantic search on, it also ranks pages, memories and sessions by
+meaning with a local embedding model ([EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2)) and merges
+both rankings. Then "make the CI cheaper" finds a session about "cutting token spend", and an Italian query finds an
+English session.
+
+`kb embed` sets it up, once:
+
+- It downloads a pinned [llama.cpp](https://github.com/ggml-org/llama.cpp) build for your platform and the model
+  (about 330 MB together) into `~/.cache/retroagent/embed/`, and checks both against a pinned sha256. macOS
+  (Apple Silicon and Intel) and Linux (x86-64 and arm64) are supported.
+- It starts a `llama-server` on `127.0.0.1` (a free port, an API key only `kb` reads, no network access), embeds
+  every session, page and memory, and turns the feature on.
+
+You manage nothing after that:
+
+- Each sync embeds what it added or changed, for at most `embed_sync_seconds`. If anything goes wrong it adds a note
+  to its log line and still succeeds.
+- `kb find` waits at most 150 ms for the model. If the server is not running yet, the query uses BM25 alone and the
+  server starts in the background for the next one. `kb find` is never slower than without the feature, and never
+  fails because of it.
+- The server unloads the model after 5 minutes idle (it uses about 500 MB of RAM while loaded), and any `kb` command
+  stops the process after an hour without use.
+- Vectors live in `<data clone>/.kb/embeddings.sqlite`. They never sync; each machine embeds its own copy.
+- `kb update` brings new pinned versions; the next sync downloads them.
+
+`kb embed --status` shows what is installed, running and embedded. `kb embed --off` turns the feature off and keeps
+the files; `kb embed --remove` also deletes them. To use an embedding server you run yourself, set `embed_url` (see
+[Configuration](./configuration.mdx)).
 
 ## Read-only by design
 

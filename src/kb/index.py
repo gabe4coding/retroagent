@@ -52,6 +52,8 @@ _COLUMNS = 24
 MIN_PREFIX = 4               # shortest id prefix get() accepts (an exact full id may be shorter)
 SQL_TIMEOUT = 10.0           # seconds a run_sql query may take
 SNIPPET_CHARS = 200          # longest snippet find() returns
+FUSE_POOL = 50               # hits each ranking gives to the fusion when a dense ranking is passed
+RRF_K = 60                   # reciprocal rank fusion constant
 _INT64 = 2 ** 63
 _LEAN = "id, agent, host, project, started, title, parent"
 _SESSION_SNIPPET = "snippet(sessions_fts, -1, '«', '»', '…', 10)"
@@ -168,6 +170,15 @@ def fts_queries(text: str) -> list:
     if not quoted:
         return []
     return [" ".join(quoted), " OR ".join(quoted)] if len(quoted) > 1 else quoted
+
+
+def fuse(lexical: list, dense: list, limit: int, k: int = RRF_K) -> list:
+    """Reciprocal rank fusion of two ranked key lists: best first, ties by key."""
+    score = {}
+    for ranking in (lexical, dense):
+        for rank, key in enumerate(ranking, 1):
+            score[key] = score.get(key, 0.0) + 1.0 / (k + rank)
+    return sorted(score, key=lambda key: (-score[key], key))[:limit]
 
 
 def _probe(uri: str) -> sqlite3.Connection:
@@ -481,9 +492,10 @@ class Index:
             clauses.append("s.parent = ''")
         return "".join(" AND " + c for c in clauses), params
 
-    def find(self, query: str, f: Filters = None, limit: int = 10, raw: bool = False) -> list:
+    def find(self, query: str, f: Filters = None, limit: int = 10, raw: bool = False, dense: list = None) -> list:
         """Ranked sessions, best first: the every-word (AND) ranking when it fills the list, else the any-word (OR)
         ranking. OR holds every AND match too, so a few weak AND matches cannot push stronger OR matches out.
+        dense: session ids ranked by embedding similarity (already filtered); fused with the BM25 ranking.
 
         Rows: id, agent, host, project, started, title, parent, snippet, turn (turn is None for a session-level hit).
         raw=True passes the query to FTS5 unchanged; a bad query raises ValueError."""
@@ -492,10 +504,34 @@ class Index:
             return []
         cands = []
         for q in [query] if raw else fts_queries(query):
-            cands = self._candidates(q, f, max(200, limit * 20), raw)
+            cands = self._candidates(q, f, max(200, limit * 20, FUSE_POOL), raw)
             if len(cands) >= limit:
                 break
-        return [self._hit(c) for c in cands[:limit]]
+        if dense is None:
+            return [self._hit(c) for c in cands[:limit]]
+        by_id = {c["id"]: c for c in cands[:FUSE_POOL]}
+        return [self._hit(by_id[k]) if k in by_id else self._dense_hit(k)
+                for k in fuse([c["id"] for c in cands[:FUSE_POOL]], dense, limit)]
+
+    def _dense_hit(self, sid: str) -> dict:
+        """A session only the embedding ranking found: its summary's start stands in for a snippet."""
+        row = self.db.execute(f"SELECT {_LEAN}, summary FROM sessions WHERE id=?", (sid,)).fetchone()
+        d = dict(row)
+        return {**d, "snippet": _short(d.pop("summary") or ""), "turn": None}
+
+    def keys(self, kind: str, f: Filters = None, project: str = "") -> set:
+        """Keys a search may return under these filters: session ids, page paths or memory paths."""
+        f = f or Filters()
+        if kind == "session":
+            where, params = self._where(f)
+            sql = f"SELECT s.id FROM sessions s WHERE 1=1{where}"
+        elif kind == "page":
+            where, params = self._page_where(project)
+            sql = f"SELECT p.path FROM pages p WHERE 1=1{where}"
+        else:
+            where, params = self._memory_where(f)
+            sql = f"SELECT m.path FROM memories m WHERE 1=1{where}"
+        return {r[0] for r in self.db.execute(sql, params)}
 
     def _fts(self, sql: str, params: list, raw: bool) -> list:
         try:
@@ -546,13 +582,19 @@ class Index:
         row = self.db.execute(f"SELECT {_LEAN} FROM sessions WHERE id=?", (c["id"],)).fetchone()
         return {**dict(row), "snippet": _short(snip[0] if snip else ""), "turn": c["turn"]}
 
-    def find_pages(self, query: str, project: str = "", limit: int = 3, raw: bool = False) -> list:
+    @staticmethod
+    def _page_where(project: str):
+        return (" AND p.kind = 'project' AND p.name = ? COLLATE NOCASE", [project]) if project else ("", [])
+
+    def find_pages(self, query: str, project: str = "", limit: int = 3, raw: bool = False, dense: list = None) -> list:
         """Ranked pages, best first, the same way as find(). With project, only that project's page.
+        dense: page paths ranked by embedding similarity (already filtered); fused with the BM25 ranking.
 
         Rows: path, kind, name, title, updated, sessions, snippet."""
         if limit <= 0 or not (query or "").strip():
             return []
-        where, params = (" AND p.kind = 'project' AND p.name = ? COLLATE NOCASE", [project]) if project else ("", [])
+        where, params = self._page_where(project)
+        want, limit = limit, (FUSE_POOL if dense is not None else limit)
         ranked = {}
         for q in [query] if raw else fts_queries(query):
             for r in self._fts(
@@ -563,7 +605,16 @@ class Index:
                                               "snippet": _short(r["snippet"])})
             if len(ranked) >= limit:
                 break
-        return list(ranked.values())[:limit]
+        if dense is None:
+            return list(ranked.values())[:limit]
+        rows = []
+        for path in fuse(list(ranked)[:limit], dense, want):
+            if path in ranked:
+                rows.append(ranked[path])
+            else:
+                r = self.db.execute(f"SELECT {_PAGE_ROW} FROM pages p WHERE p.path = ?", (path,)).fetchone()
+                rows.append({**dict(r), "snippet": _short(r["title"] or "")})
+        return rows
 
     def pages(self) -> list:
         return [dict(r) for r in self.db.execute(f"SELECT {_PAGE_ROW} FROM pages p ORDER BY p.kind, p.name")]
@@ -594,13 +645,16 @@ class Index:
                 params.append(getattr(f, col))
         return "".join(" AND " + c for c in clauses), params
 
-    def find_memories(self, query: str, f: Filters = None, limit: int = 3, raw: bool = False) -> list:
+    def find_memories(self, query: str, f: Filters = None, limit: int = 3, raw: bool = False,
+                      dense: list = None) -> list:
         """Ranked memories, best first, the same way as find(). Project, agent and host filters apply.
+        dense: memory paths ranked by embedding similarity (already filtered); fused with the BM25 ranking.
 
         Rows: path, ref, agent, host, project, name, description, type, origin_session, modified, snippet."""
         if limit <= 0 or not (query or "").strip():
             return []
         where, params = self._memory_where(f or Filters())
+        want, limit = limit, (FUSE_POOL if dense is not None else limit)
         ranked = {}
         for q in [query] if raw else fts_queries(query):
             for r in self._fts(
@@ -611,7 +665,16 @@ class Index:
                                               "snippet": _short(r["snippet"])})
             if len(ranked) >= limit:
                 break
-        return list(ranked.values())[:limit]
+        if dense is None:
+            return list(ranked.values())[:limit]
+        rows = []
+        for path in fuse(list(ranked)[:limit], dense, want):
+            if path in ranked:
+                rows.append(ranked[path])
+            else:
+                r = self.db.execute(f"SELECT {_MEMORY_ROW} FROM memories m WHERE m.path = ?", (path,)).fetchone()
+                rows.append({**dict(r), "snippet": _short(r["description"] or "")})
+        return rows
 
     def memories(self, f: Filters = None) -> list:
         where, params = self._memory_where(f or Filters())

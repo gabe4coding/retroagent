@@ -46,11 +46,15 @@ Rules:
 8. **Automatic updates.** Ask (skip when `auto_update` is true). `kb enable updates` pulls the code clone once a day (fast-forward only, only when it
    sits clean on its default branch) and refreshes the plugins on a new version. It runs new code from the retroagent
    repo without review; without it, the user runs `kb update` to update.
-9. **Codex.** When `codex` is installed: tell the user to open Codex once and trust the retroagent hook with `/hooks`.
-10. **Pages routine.** Before you offer it, read `references/pages-routine.md` in this skill's folder: how to
+9. **Semantic search.** Ask (skip when `kb embed --status` says it is on). `kb embed` downloads a local embedding
+   model and its runtime (about 330 MB, checked by sha256, into `~/.cache/retroagent/embed`), embeds every session,
+   page and memory, and turns it on: `kb find` then also matches paraphrases and other languages. Everything runs on
+   this machine; the model uses about 500 MB of RAM while loaded and stops when idle. `kb embed --off` turns it off.
+10. **Codex.** When `codex` is installed: tell the user to open Codex once and trust the retroagent hook with `/hooks`.
+11. **Pages routine.** Before you offer it, read `references/pages-routine.md` in this skill's folder: how to
     explain it, then `kb setup routine` and the routine itself.
-11. **Report.** A short list: data repo and folder, host, automatic syncs and updates on or off, routine state, and
-    the next manual step if any.
+12. **Report.** A short list: data repo and folder, host, automatic syncs and updates on or off, semantic search on or
+    off, routine state, and the next manual step if any.
 
 ## Move to another data repo
 
