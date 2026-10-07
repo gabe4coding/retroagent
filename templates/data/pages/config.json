@@ -9,6 +9,8 @@
   "retro_weeks_back": 4,
   "retro_late_days": 14,
   "max_page_chars": 40000,
+  "stale_days": 90,
+  "stale_days_current": 30,
   "min_hours_between_fires": 3,
   "branch": "main",
   "bootstrap_branch": "claude/pages-bootstrap"
