@@ -84,3 +84,17 @@ def test_every_command_stops_an_idle_server(kb_env, capsys):
 def test_a_broken_reap_never_breaks_a_command(kb_env, capsys, monkeypatch):
     monkeypatch.setattr(embed_runtime.Server, "reap_if_idle", lambda self: 1 / 0)
     assert run(capsys, "recent")[0] == 0
+
+
+def test_find_through_the_bit_index_and_remove_drops_it(kb_env, server, capsys, monkeypatch):
+    from kb import embed
+    _set(embed_url=server.url)
+    run(capsys, "embed")
+    exact = run(capsys, "find", "unstable", "--no-pages", "--no-memories")
+    monkeypatch.setattr(embed, "EXACT_BELOW", 1)
+    run(capsys, "embed", "--rebuild")                                  # writes the bit index too
+    bits = kb_env / ".kb" / embed.BITS
+    assert bits.exists()
+    assert run(capsys, "find", "unstable", "--no-pages", "--no-memories") == exact
+    run(capsys, "embed", "--remove")
+    assert not bits.exists()

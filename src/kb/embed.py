@@ -6,11 +6,14 @@ changes keep them, and .kb/ never syncs. A row is valid for one model key and on
 embedded again. Vectors keep their first DIM numbers (EmbeddingGemma 2 is trained for such cuts): a third of the
 storage and the comparison time for about the same ranking. A session ranks by its best match among its summary
 document and its user turns, so a detail said only in the middle of a session can be found. The prompts follow the
-EmbeddingGemma 2 model card. Stdlib only: comparing a query with a few thousand vectors takes tens of milliseconds.
+EmbeddingGemma 2 model card. Stdlib only: comparing a query with a few thousand vectors takes tens of milliseconds;
+from EXACT_BELOW session and turn vectors on, a sign-bit index (BitIndex) picks PREFILTER candidates first, so the
+cost of a search grows slowly with the KB.
 """
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import math
 import operator
@@ -22,13 +25,18 @@ from array import array
 from dataclasses import dataclass
 from pathlib import Path
 
+from kb.util import atomic_write
+
 STORE = "embeddings.sqlite"  # in <root>/.kb/
+BITS = "embeddings.bits"     # beside STORE: the sign-bit index of the session and turn vectors
 KINDS = ("session", "turn", "page", "memory")
 DIM = 256                   # numbers kept per vector (of 768)
 TURN_MIN = 40               # shorter user turns ("yes", "push it") add only noise
 DOC_CHARS = 2000            # text embedded per item; longer ones are cut (BM25 still sees all of it)
 BATCH = 32
 POOL = 50                   # items each ranking gives to the fusion
+EXACT_BELOW = 5000          # fewer session + turn vectors than this: compare the query with every vector
+PREFILTER = 3000            # else: the vectors closest by sign bits, then the exact comparison on those
 
 
 class EmbedError(Exception):
@@ -129,6 +137,9 @@ class Vectors:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("CREATE TABLE IF NOT EXISTS vectors(kind TEXT, key TEXT, sha TEXT, model TEXT, "
                             "dim INTEGER, vec BLOB, PRIMARY KEY(kind, key))")
+            # generation: raised by every write, so a bit index can tell it is current without reading the store
+            self.db.execute("CREATE TABLE IF NOT EXISTS meta(name TEXT PRIMARY KEY, value INTEGER)")
+            self.db.execute("INSERT OR IGNORE INTO meta VALUES ('generation', 0)")
             self.db.commit()
 
     @classmethod
@@ -157,10 +168,15 @@ class Vectors:
         with self.db:
             self.db.executemany("INSERT OR REPLACE INTO vectors VALUES (?,?,?,?,?,?)",
                                 [(k, key, sha, model, len(v), array("f", v).tobytes()) for k, key, sha, model, v in rows])
+            self._bump()
 
     def delete(self, pairs) -> None:
         with self.db:
             self.db.executemany("DELETE FROM vectors WHERE kind = ? AND key = ?", list(pairs))
+            self._bump()
+
+    def _bump(self) -> None:
+        self.db.execute("UPDATE meta SET value = value + 1 WHERE name = 'generation'")
 
     def load(self, kind: str, model: str) -> dict:
         out = {}
@@ -172,6 +188,138 @@ class Vectors:
 
     def counts(self, model: str) -> dict:
         return dict(self.db.execute("SELECT kind, COUNT(*) FROM vectors WHERE model = ? GROUP BY kind", (model,)))
+
+    def generation(self):
+        """The write counter of the store; None for a store from before it existed (then no bit index is used)."""
+        try:
+            row = self.db.execute("SELECT value FROM meta WHERE name = 'generation'").fetchone()
+        except sqlite3.Error:
+            return None
+        return row[0] if row else None
+
+    def by_rowid(self, rowids) -> dict:
+        """rowid -> vector, for the given rowids."""
+        out, rowids = {}, list(rowids)
+        for i in range(0, len(rowids), 900):
+            chunk = rowids[i:i + 900]
+            for rid, blob in self.db.execute(
+                    f"SELECT rowid, vec FROM vectors WHERE rowid IN ({','.join('?' * len(chunk))})", chunk):
+                v = array("f")
+                v.frombytes(blob)
+                out[rid] = v
+        return out
+
+    def bit_index(self, model: str):
+        """The current bit index for model, read once per store object; None when it is missing or stale (then the
+        search compares every vector). Never written here: a search may run where .kb/ is read-only."""
+        if not hasattr(self, "_bits"):
+            self._bits = {}
+        if model not in self._bits:
+            gen = self.generation()
+            self._bits[model] = None if gen is None else BitIndex.read(self.path.with_name(BITS), model, gen)
+        return self._bits[model]
+
+
+def _signs(v) -> int:
+    """The sign bits of a vector as one integer, first number in the highest bit."""
+    return int("".join("1" if x > 0 else "0" for x in v), 2)
+
+
+_WIDTH = DIM // 8                   # bytes of sign bits per vector
+
+
+def _repeat(pattern: bytes, n: int) -> int:
+    return int.from_bytes(pattern * (n * _WIDTH // len(pattern)), "big")
+
+
+class BitIndex:
+    """Sign bits of every session and turn vector of one model key, in one local file (.kb/embeddings.bits): a JSON
+    header line, then DIM/8 bytes of bits per vector, 8 bytes of store rowid per vector, and the groups (the session
+    id; a turn's group is its session) as a newline-joined text block.
+
+    The bits of all vectors are held as one large integer, so the Hamming distance of the query to every vector takes
+    a fixed number of big-integer operations (XOR, then a shift-and-mask bit count), not one Python step per vector."""
+
+    def __init__(self, model: str, generation: int, block: bytes, rowids: list, groups: list):
+        self.model, self.generation, self.rowids, self.groups = model, generation, rowids, groups
+        self.n = len(rowids)
+        self.block = int.from_bytes(block, "big")
+
+    @classmethod
+    def build(cls, store: Vectors, model: str) -> "BitIndex":
+        bits, rowids, groups = [], [], []
+        for rid, kind, key, blob in store.db.execute(
+                "SELECT rowid, kind, key, vec FROM vectors WHERE model = ? AND kind IN ('session', 'turn') "
+                "ORDER BY rowid", (model,)):
+            v = array("f")
+            v.frombytes(blob)
+            bits.append(_signs(v).to_bytes(_WIDTH, "big"))
+            rowids.append(rid)
+            groups.append(key.rsplit("#", 1)[0] if kind == "turn" else key)
+        return cls(model, store.generation(), b"".join(bits), rowids, groups)
+
+    def write(self, path) -> None:
+        head = json.dumps({"format": 2, "model": self.model, "dim": DIM, "generation": self.generation,
+                           "count": self.n}).encode("utf-8") + b"\n"
+        body = self.block.to_bytes(self.n * _WIDTH, "big") + array("q", self.rowids).tobytes()
+        atomic_write(path, head + body + "\n".join(self.groups).encode("utf-8"))
+
+    @classmethod
+    def read(cls, path, model: str, generation: int):
+        """The index in path when it is for model and the store's generation, else None."""
+        try:
+            raw = Path(path).read_bytes()
+            nl = raw.index(b"\n")
+            head = json.loads(raw[:nl])
+            if head.get("format") != 2 or head.get("model") != model or head.get("dim") != DIM \
+                    or head.get("generation") != generation:
+                return None
+            n, pos = head["count"], nl + 1
+            block = raw[pos: pos + n * _WIDTH]
+            pos += n * _WIDTH
+            rowids = array("q")
+            rowids.frombytes(raw[pos: pos + n * 8])
+            groups = raw[pos + n * 8:].decode("utf-8").split("\n") if n else []
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        if not (len(block) == n * _WIDTH and len(rowids) == n == len(groups)):
+            return None
+        return cls(model, generation, block, list(rowids), groups)
+
+    def distances(self, qvec) -> list:
+        """Hamming distance from the sign bits of qvec to every vector, in index order."""
+        n = self.n
+        x = self.block ^ int.from_bytes(_signs(qvec).to_bytes(_WIDTH, "big") * n, "big")
+        x = x - ((x >> 1) & _repeat(b"\x55", n))                              # bits per 2-bit field
+        m = _repeat(b"\x33", n)
+        x = (x & m) + ((x >> 2) & m)                                          # per 4-bit field
+        x = (x + (x >> 4)) & _repeat(b"\x0f", n)                              # per byte
+        for shift in (8, 16, 32, 64, 128):                                    # add up the bytes of each vector
+            half = shift // 8
+            x = (x + (x >> shift)) & _repeat(b"\x00" * half + b"\xff" * half, n)
+        b = x.to_bytes(n * _WIDTH, "big")                                     # each count: last 2 bytes of its slot
+        return [hi * 256 + lo for hi, lo in zip(b[_WIDTH - 2::_WIDTH], b[_WIDTH - 1::_WIDTH])]
+
+    def candidates(self, qvec, allowed=None, k: int = PREFILTER) -> list:
+        """Positions of the k vectors closest to qvec by Hamming distance, among those whose group is allowed."""
+        pos = range(self.n) if allowed is None else [i for i, g in enumerate(self.groups) if g in allowed]
+        if len(pos) <= k:
+            return list(pos)
+        dist = self.distances(qvec)
+        return heapq.nsmallest(k, pos, key=dist.__getitem__)
+
+
+def save_bit_index(store: Vectors, model: str) -> None:
+    """Write (or remove, when the store is small) the bit index of model. Called after the store changed."""
+    path = store.path.with_name(BITS)
+    n = store.db.execute("SELECT COUNT(*) FROM vectors WHERE model = ? AND kind IN ('session', 'turn')",
+                         (model,)).fetchone()[0]
+    if n >= EXACT_BELOW:
+        BitIndex.build(store, model).write(path)
+    elif path.exists():
+        path.unlink()
+    if hasattr(store, "_bits"):
+        store._bits.pop(model, None)
 
 
 # ---- keeping the store in step with the index
@@ -224,6 +372,8 @@ def run_embed(db, store: Vectors, endpoint, limit: int = None, deadline: float =
         store.put([(k, key, sha, model, v) for (k, key, sha, _), v in zip(chunk, vecs)])
         rep.done += len(chunk)
     rep.left = len(plan(db, store, model))
+    if rep.done or rep.removed or not store.path.with_name(BITS).exists():
+        save_bit_index(store, model)
     return rep
 
 
@@ -235,6 +385,9 @@ def rank(store: Vectors, model: str, kind: str, qvec, allowed=None, n: int = POO
     key = model_key(model)
     if kind != "session":
         return dense(store.load(kind, key), qvec, allowed, n)
+    bits = store.bit_index(key)
+    if bits is not None:
+        return _rank_two_step(store, bits, qvec, allowed, n)
     best = {}
     mul = operator.mul
     for vectors, sid_of in ((store.load("session", key), lambda k: k),
@@ -245,6 +398,22 @@ def rank(store: Vectors, model: str, kind: str, qvec, allowed=None, n: int = POO
                 score = sum(map(mul, qvec, v))
                 if score > best.get(sid, -2.0):
                     best[sid] = score
+    return sorted(best, key=lambda sid: (-best[sid], sid))[:n]
+
+
+def _rank_two_step(store: Vectors, bits: BitIndex, qvec, allowed, n: int) -> list:
+    """Sessions by their best vector, comparing the query exactly with the PREFILTER closest vectors by sign bits."""
+    cand = bits.candidates(qvec, allowed)
+    vecs = store.by_rowid(bits.rowids[i] for i in cand)
+    best = {}
+    mul = operator.mul
+    for i in cand:
+        v = vecs.get(bits.rowids[i])
+        if v is None:                       # the store changed after the index was read
+            continue
+        score, sid = sum(map(mul, qvec, v)), bits.groups[i]
+        if score > best.get(sid, -2.0):
+            best[sid] = score
     return sorted(best, key=lambda sid: (-best[sid], sid))[:n]
 
 

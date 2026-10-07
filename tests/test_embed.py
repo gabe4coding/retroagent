@@ -214,3 +214,111 @@ def test_sync_step_installs_a_missing_pin_and_notes_failures(kbx, monkeypatch):
     rep = Report()
     embed_new(_cfg(root, embed=True), idx, rep)
     assert calls == [1] and rep.notes == ["embed: download failed: offline"] and rep.errors == []
+
+
+# ---------------------------------------------------------------- two-step search (bit index)
+
+def _unit(v):
+    n = sum(x * x for x in v) ** 0.5
+    return [x / n for x in v]
+
+
+def _random_store(path, n_sessions, turns_each=2, seed=1, model="m"):
+    """A store of random unit vectors: n sessions, each with a few turns. Returns (store, model key)."""
+    import random
+    rnd = random.Random(seed)
+    key = embed.model_key(model)
+    store = embed.Vectors(path)
+    rows = []
+    for s in range(n_sessions):
+        sid = f"s{s:04d}"
+        rows.append(("session", sid, "x", key, _unit([rnd.gauss(0, 1) for _ in range(embed.DIM)])))
+        for t in range(turns_each):
+            rows.append(("turn", f"{sid}#{t}", "x", key, _unit([rnd.gauss(0, 1) for _ in range(embed.DIM)])))
+    store.put(rows)
+    return store, key
+
+
+def test_bulk_hamming_equals_one_by_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(embed, "EXACT_BELOW", 0)
+    store, key = _random_store(tmp_path / "v.sqlite", 40)
+    embed.save_bit_index(store, key)
+    bits = embed.BitIndex.read(tmp_path / embed.BITS, key, store.generation())
+    q = _unit([float(i % 7) - 3 for i in range(embed.DIM)])
+    qb = embed._signs(q)
+    vecs = store.by_rowid(bits.rowids)
+    slow = [bin(qb ^ embed._signs(vecs[r])).count("1") for r in bits.rowids]
+    assert bits.distances(q) == slow and bits.n == 120
+    assert bits.groups[:3] == ["s0000", "s0000", "s0000"]                   # a turn's group is its session
+
+
+def test_two_step_equals_exact_when_the_cut_keeps_everything(tmp_path, monkeypatch):
+    store, key = _random_store(tmp_path / "v.sqlite", 50)
+    q = list(store.load("turn", key)["s0007#1"])
+    exact = embed.rank(store, "m", "session", q)
+    assert store.bit_index(key) is None                                       # small: no bit index, exact path
+    monkeypatch.setattr(embed, "EXACT_BELOW", 0)
+    embed.save_bit_index(store, key)
+    assert store.bit_index(key) is not None
+    assert embed.rank(store, "m", "session", q) == exact                    # PREFILTER >= all 150 vectors
+    assert exact[0] == "s0007"                                              # found through its turn
+
+
+def test_filters_apply_before_the_cut(tmp_path, monkeypatch):
+    monkeypatch.setattr(embed, "EXACT_BELOW", 0)
+    monkeypatch.setattr(embed, "PREFILTER", 2)
+    store, key = _random_store(tmp_path / "v.sqlite", 60, turns_each=0)
+    embed.save_bit_index(store, key)
+    q = list(store.load("session", key)["s0001"])
+    far = embed.rank(store, "m", "session", [-x for x in q], allowed={"s0001"})
+    assert far == ["s0001"]                                                 # far from the query, but the only allowed
+
+
+def test_a_stale_or_broken_bit_index_is_never_used(tmp_path, monkeypatch):
+    monkeypatch.setattr(embed, "EXACT_BELOW", 0)
+    store, key = _random_store(tmp_path / "v.sqlite", 20)
+    embed.save_bit_index(store, key)
+    path = tmp_path / embed.BITS
+    assert embed.BitIndex.read(path, key, store.generation()) is not None
+    store.put([("session", "s0000", "y", key, _unit([1.0] * embed.DIM))])   # any write raises the generation
+    assert embed.BitIndex.read(path, key, store.generation()) is None
+    assert embed.BitIndex.read(path, "other/256", store.generation()) is None
+    embed.save_bit_index(store, key)
+    path.write_bytes(path.read_bytes()[:-40])                               # cut short
+    assert embed.BitIndex.read(path, key, store.generation()) is None
+    path.write_bytes(b"not an index")
+    assert embed.BitIndex.read(path, key, store.generation()) is None
+
+
+def test_small_stores_have_no_bit_index_and_old_stores_stay_exact(tmp_path, monkeypatch):
+    import sqlite3
+    store, key = _random_store(tmp_path / "v.sqlite", 10)
+    monkeypatch.setattr(embed, "EXACT_BELOW", 0)
+    embed.save_bit_index(store, key)
+    assert (tmp_path / embed.BITS).exists()
+    monkeypatch.setattr(embed, "EXACT_BELOW", 10_000)
+    embed.save_bit_index(store, key)                                        # under EXACT_BELOW: the file goes
+    assert not (tmp_path / embed.BITS).exists()
+    old = sqlite3.connect(str(tmp_path / "old.sqlite"))                     # a store from before the meta table
+    old.execute("CREATE TABLE vectors(kind TEXT, key TEXT, sha TEXT, model TEXT, dim INTEGER, vec BLOB, "
+                "PRIMARY KEY(kind, key))")
+    old.commit()
+    old.close()
+    ro = embed.Vectors.open_readonly(tmp_path / "old.sqlite")
+    assert ro.generation() is None and ro.bit_index(key) is None
+    ro.close()
+
+
+def test_run_embed_keeps_the_bit_index_current(kbx, server, monkeypatch):
+    root, idx, store = kbx
+    monkeypatch.setattr(embed, "EXACT_BELOW", 1)
+    ep = Endpoint(server.url, "", "m1")
+    embed.run_embed(idx.db, store, ep)
+    key = embed.model_key("m1")
+    bits = embed.BitIndex.read(store.path.with_name(embed.BITS), key, store.generation())
+    assert bits is not None and sorted(set(bits.groups)) == ["a-1", "b-1", "c-1"]
+    put(root, "h/d.md", "d-1", title="New one")
+    idx.update(root)
+    embed.run_embed(idx.db, store, ep)
+    bits = embed.BitIndex.read(store.path.with_name(embed.BITS), key, store.generation())
+    assert bits is not None and "d-1" in bits.groups

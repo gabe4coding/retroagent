@@ -177,8 +177,9 @@ def _dense_rankings(cfg, args, idx, query: str, want_pages: bool, want_memories:
         q = embed.embed([embed.query_text(query)], ep.url, ep.key, timeout=embed_runtime.PROBE)[0]
         if not cfg.embed_url:
             embed_runtime.Server().touch()
-        out = {"session": embed.rank(store, ep.model, "session", q,
-                                     idx.keys("session", _filters(args, not args.no_subagents)))}
+        f = _filters(args, not args.no_subagents)
+        allowed = None if f == Filters(role=f.role) else idx.keys("session", f)      # no filter: skip the check
+        out = {"session": embed.rank(store, ep.model, "session", q, allowed)}
         if want_pages:
             out["page"] = embed.rank(store, ep.model, "page", q, idx.keys("page", project=args.project or ""))
         if want_memories:
@@ -631,8 +632,11 @@ def cmd_embed(args, cfg) -> int:
 
 
 def _drop_store(path) -> None:
-    """Delete the vector store with its WAL files (a stale -wal next to a new file would be read as its log)."""
-    for p in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+    """Delete the vector store with its WAL files (a stale -wal next to a new file would be read as its log) and its
+    bit index."""
+    from kb import embed
+    for p in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm"),
+              path.with_name(embed.BITS)):
         if p.exists():
             p.unlink()
 
