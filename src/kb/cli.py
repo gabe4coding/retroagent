@@ -54,7 +54,9 @@ def parse_since(value: str) -> str:
 
 
 def table(cols, rows, width: int = 80) -> str:
-    data = [["" if v is None else str(v).replace("\n", " ")[:width] for v in row] for row in rows]
+    """Rows as aligned text. A cell longer than `width` chars is cut and ends with "…"; width 0 cuts nothing."""
+    cut = lambda v: v[:width - 1] + "…" if 0 < width < len(v) else v
+    data = [[cut("" if v is None else str(v).replace("\n", " ")) for v in row] for row in rows]
     widths = [max([len(c)] + [len(r[i]) for r in data]) for i, c in enumerate(cols)]
     fmt = lambda vals: "  ".join(v.ljust(w) for v, w in zip(vals, widths)).rstrip()
     return "\n".join([fmt(cols)] + [fmt(r) for r in data])
@@ -93,7 +95,7 @@ def _open_index(cfg) -> Index:
 def _filters(args, subagents: bool = True) -> Filters:
     get = lambda name: getattr(args, name, "") or ""
     return Filters(project=get("project"), agent=get("agent"), host=get("host"), since=parse_since(get("since")),
-                   until=get("until"), tag=get("tag"), subagents=subagents)
+                   until=get("until"), tag=get("tag"), subagents=subagents, role=get("role"))
 
 
 def _get(idx: Index, prefix: str):
@@ -123,9 +125,9 @@ def _memory_row(r: dict) -> str:
 
 def cmd_find(args, cfg) -> int:
     query = " ".join(args.query)
-    # pages have no agent, host, date or tag: those filters ask for sessions only; memories have no date or tag
-    want_pages = not (args.no_pages or args.agent or args.host or args.since or args.until or args.tag)
-    want_memories = not (args.no_memories or args.since or args.until or args.tag)
+    # pages have no agent, host, date, tag or role: those filters ask for sessions only; memories have no date, tag or role
+    want_pages = not (args.no_pages or args.agent or args.host or args.since or args.until or args.tag or args.role)
+    want_memories = not (args.no_memories or args.since or args.until or args.tag or args.role)
     idx = _open_index(cfg)
     try:
         pages = idx.find_pages(query, args.project or "", PAGE_HITS, raw=args.fts) if want_pages else []
@@ -380,7 +382,9 @@ def cmd_sql(args, cfg) -> int:
     except sqlite3.Error as e:
         print(f"sql error: {e}")
         return 2
-    print(table(cols, rows))
+    print(table(cols, rows, args.width))
+    if 0 < args.width < max((len(str(v)) for row in rows for v in row if v is not None), default=0):
+        print(f"[cells cut at {args.width} chars; --width 0 shows them whole]")
     return 0
 
 
@@ -566,11 +570,12 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--since", help="30d, 2w, 6m, 1y or an ISO date")
         sp.add_argument("--until", help="ISO date (exclusive)")
 
-    f = sub.add_parser("find", help="ranked pages and sessions for some words")
+    f = sub.add_parser("find", help="ranked pages and sessions for some words; the exact phrase ranks first")
     f.add_argument("query", nargs="+")
     filters(f)
     f.add_argument("--tag")
     f.add_argument("--limit", type=int, default=10)
+    f.add_argument("--role", choices=("user", "assistant"), help="match only turns by this role (user: your own messages)")
     f.add_argument("--no-subagents", action="store_true", help="hide subagent transcripts")
     f.add_argument("--no-pages", action="store_true", help="hide pages")
     f.add_argument("--no-memories", action="store_true", help="hide memories")
@@ -629,6 +634,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     q = sub.add_parser("sql", help="read-only SQL on the index (tables: sessions, turns, pages, memories)")
     q.add_argument("query")
+    q.add_argument("--width", type=int, default=80, help="cut cells longer than this many chars (0: never cut)")
     q.set_defaults(func=cmd_sql)
 
     sy = sub.add_parser("sync", help="sync local sessions into the KB, commit, push")

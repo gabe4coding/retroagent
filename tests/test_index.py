@@ -8,7 +8,7 @@ from fixtures import AID, SID, T1, T2, make_claude_tree, make_codex_tree
 
 from kb.adapters import claude, codex
 from kb.distill import dump_front_matter
-from kb.index import AmbiguousId, Filters, Index, run_sql
+from kb.index import AmbiguousId, Filters, Index, fts_queries, run_sql
 from kb.store import write_session
 
 
@@ -83,6 +83,37 @@ def test_find_filters_and_fallback(kb):
     assert idx.find("fetch zzznotthere")[0]["id"] in (T1, T2)     # AND finds nothing, OR fallback
     assert idx.find("") == []
     idx.find('a "b" (c) *d* OR NEAR')                              # must not raise
+
+
+def test_fts_queries_try_the_exact_phrase_first():
+    assert fts_queries("not what I asked") == ['"not what I asked"', '"not" "what" "I" "asked"',
+                                               '"not" OR "what" OR "I" OR "asked"']
+    assert fts_queries('fix "flaky test" now') == ['"fix flaky test now"', '"fix" "flaky test" "now"',
+                                                   '"fix" OR "flaky test" OR "now"']
+    assert fts_queries("retry") == ['"retry"']
+    assert fts_queries('"') == [] and fts_queries("") == []
+
+
+def test_find_ranks_the_exact_phrase_above_scattered_words(empty):
+    root, idx = empty
+    scattered = "s" * 8 + "0000000a"
+    phrase = "s" * 8 + "0000000b"
+    put(root, "h/demo/a.md", scattered, turns=("what is not done? I asked twice. not what, asked what",) * 3)
+    put(root, "h/demo/b.md", phrase, turns=("hello", "that is not what I asked for"))
+    idx.update(root)
+    assert [h["id"] for h in idx.find("not what I asked")] == [phrase, scattered]
+
+
+def test_find_role_matches_only_that_roles_turns(empty):
+    root, idx = empty
+    mine = "s" * 8 + "0000000c"
+    agents = "s" * 8 + "0000000d"
+    put(root, "h/demo/c.md", mine, turns=("no, that is the wrong file", "ok"))
+    put(root, "h/demo/d.md", agents, turns=("go", "the wrong file was edited"), title="wrong file")
+    idx.update(root)
+    assert {h["id"] for h in idx.find("wrong file")} == {mine, agents}
+    assert [h["id"] for h in idx.find("wrong file", Filters(role="user"))] == [mine]
+    assert [(h["id"], h["turn"]) for h in idx.find("wrong file", Filters(role="assistant"))] == [(agents, 2)]
 
 
 def test_recent_get_children_sql(kb):
