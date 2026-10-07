@@ -29,11 +29,21 @@ Each machine needs its own `host` (default: the short hostname). Two machines wi
 If the machine has `~/claude-tools`, also register `kb` in the local-tools plugin (symlink `~/claude-tools/plugins/local-tools/bin/kb` → `plugin/bin/kb`, README row, version bump, commit, `claude plugin update local-tools@local`).
 
 ## Use
-`kb find`, `kb recent`, `kb summary`, `kb show`, `kb stats`, `kb sql`, `kb status`, `kb sync --now`, `kb enable`, `kb disable`. Run `kb --help`.
+`kb find`, `kb page`, `kb recent`, `kb summary`, `kb show`, `kb stats`, `kb sql`, `kb status`, `kb sync --now`, `kb enable`, `kb disable`. Run `kb --help`.
 
 Those read commands open the local index read-only: they work in a sandbox where `.kb/` cannot be written and never wait for a running sync. Only a missing or outdated index must be built, which needs write access. If it cannot be built, they print `index not built yet; run: kb reindex` and exit 2. Other errors print one line, `kb: <message>`, and exit 2.
 
 `kb sync --now --no-summaries` syncs fast. `kb backfill --summaries` writes the summaries of every session with no cap and no time limit (a normal run stops after 20 minutes). If another sync is running, `kb sync` prints `another sync is running` and exits 0. Plain `kb sync` and `kb backfill` always run; only `kb sync --auto` (the hook) obeys `auto_sync`.
+
+## Pages
+A cloud routine keeps `pages/` up to date from the sessions: one page per project (`pages/projects/<project>.md`: state, decisions, files, errors → fixes, open threads) and one retrospective per closed week (`pages/retro/<YYYY-Www>.md`). Every bullet names its source session. Read them with `kb page [name] [--section NAME]`; `kb find` lists matching pages before sessions; `kb status` shows the routine's last run.
+
+- `.github/workflows/pages-trigger.yml` fires the routine after each push to `main`. The routine's own commits change only `pages/` and carry `[skip ci]`, so they never fire it again. The routine also runs once a day, to catch fires that were lost.
+- The routine follows `scripts/pages-routine.md`. Code does the parts that need no judgement: `kb pages start` (branch, index), `kb pages plan` (what to write, from the sessions changed since the watermark in `pages/.state.json`), `kb pages digest` (compact input), `kb pages finish` (refuses files outside `pages/`, bad front matter, oversized pages and anything that looks like a secret; records the watermark; commits; pushes, rebasing over session pushes; a run that loses a race with another run drops its work and the next run catches up).
+- Until `main` holds `pages/.state.json`, runs write to `claude/pages-bootstrap` only. Review that branch and merge it to start the normal runs on `main`.
+- Settings: `pages/config.json` (projects to skip, minimum sessions for a page, batch sizes, retro time zone). Local `kb sync` never touches `pages/`.
+
+Set up once: create the routine (repo `gabe4coding/sessions-kb`, prompt: follow `scripts/pages-routine.md`, a daily schedule), add an API trigger at claude.ai/code/routines, and store its URL and token as the repository secrets `PAGES_ROUTINE_FIRE_URL` and `PAGES_ROUTINE_FIRE_TOKEN`.
 
 ## Config
 `~/.config/sessions-kb/config.json`. Every key is optional:
