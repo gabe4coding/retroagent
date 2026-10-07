@@ -7,8 +7,11 @@ description: Use when the user asks about past work in any Claude Code or Codex 
 
 `kb` searches every synced Claude Code and Codex session (all projects, all machines). Output is short on purpose. Go in this order and stop as soon as you have the answer.
 
+0. **Project page:** for a question about one project, `kb page <project> [--section "Key decisions"]` first: its
+   state, decisions, files, errors → fixes and open threads, each with the short id of its session. `kb page` lists the
+   pages; weekly retros are named like `2026-W41`.
 1. **Find:** `kb find "<2-5 distinctive words>" [--project NAME] [--agent claude|codex] [--since 30d] [--tag TAG]`
-   - One line per session: `short date agent project title · «snippet» [turn N]`. `short` is the 8-character session id (the last 8 characters, no dashes). Lines with `↳parent` are subagent transcripts.
+   - Matching pages come first (`page date kind name title`), then one line per session: `short date agent project title · «snippet» [turn N]`. `short` is the 8-character session id (the last 8 characters, no dashes). Lines with `↳parent` are subagent transcripts.
    - Use distinctive words: error text, file names, service or tool names. Add filters when you know them.
    - No match: try synonyms or fewer words. `kb recent --project NAME` lists the latest sessions.
 2. **Summarize:** `kb summary <short>` on the 1–3 best hits: summary, decisions, outcome, files, PRs, subagents.

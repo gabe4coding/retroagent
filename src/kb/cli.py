@@ -1,6 +1,7 @@
 """kb — search and analyze your Claude Code and Codex sessions (all projects, all machines).
 
-  kb find <words…>     ranked sessions, one line each, with a snippet and the best turn
+  kb find <words…>     ranked pages and sessions, one line each, with a snippet and the best turn
+  kb page [name]       a project page or weekly retro written by the cloud routine (--section NAME for one part)
   kb recent            latest sessions
   kb summary <id>      summary, decisions, outcome, files, PRs, subagents of one session
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
@@ -8,6 +9,7 @@
   kb sync | backfill | status | reindex   maintenance
   kb repair            when every sync fails to pull: reset the data clone to the remote; the next sync makes this
                        host's work again
+  kb pages start | plan | digest | finish   steps of the cloud routine that writes pages/ (scripts/pages-routine.md)
   kb enable | disable  switch automatic syncs (the SessionStart hook) on or off
 
 Ids: the 8-character short id shown in lists (or any unique prefix of it or of the full id, 4 characters at least).
@@ -27,11 +29,13 @@ from kb import config as config_mod
 from kb import gitops
 from kb.distill import parse_markdown
 from kb.index import MIN_PREFIX, AmbiguousId, Filters, Index, run_sql
+from kb.pages import parse_page, section, sections
 from kb.stats import REPORTS
 from kb.util import short_id
 
 
 SUBAGENT_LINES = 10
+PAGE_HITS = 3                    # pages listed before the sessions in `kb find`
 
 
 def parse_since(value: str) -> str:
@@ -103,21 +107,32 @@ def _get(idx: Index, prefix: str):
     return r
 
 
+def _page_row(r: dict) -> str:
+    return f"{'page':8} {(r.get('updated') or '')[:10]} {r['kind']:7} {r['name']:<18.18} {(r.get('title') or '')[:70]}"
+
+
 def cmd_find(args, cfg) -> int:
+    query = " ".join(args.query)
+    # pages have no agent, host, date or tag: those filters ask for sessions only
+    want_pages = not (args.no_pages or args.agent or args.host or args.since or args.until or args.tag)
     idx = _open_index(cfg)
     try:
-        hits = idx.find(" ".join(args.query), _filters(args, not args.no_subagents), args.limit, raw=args.fts)
+        pages = idx.find_pages(query, args.project or "", PAGE_HITS, raw=args.fts) if want_pages else []
+        hits = idx.find(query, _filters(args, not args.no_subagents), args.limit, raw=args.fts)
     except ValueError as e:
         print(str(e))
         return 2
     finally:
         idx.close()
     if args.json:
-        print(json.dumps([{**h, "short": short_id(h["id"])} for h in hits], ensure_ascii=False))
-        return 0 if hits else 1
-    if not hits:
+        print(json.dumps([{**p, "kind": "page", "page_kind": p["kind"]} for p in pages]
+                         + [{**h, "short": short_id(h["id"])} for h in hits], ensure_ascii=False))
+        return 0 if hits or pages else 1
+    if not hits and not pages:
         print("no matches")
         return 1
+    for p in pages:
+        print(f"{_page_row(p)} · {p.get('snippet') or ''} [kb page {p['name']}]")
     for h in hits:
         turn = f" [turn {h['turn']}]" if h.get("turn") else ""
         print(f"{_row(h)} · {h.get('snippet') or ''}{turn}")
@@ -172,6 +187,75 @@ def cmd_summary(args, cfg) -> int:
     if len(kids) > SUBAGENT_LINES:
         print(f"subagents: … and {len(kids) - SUBAGENT_LINES} more")
     print(f"md: {r['md_path']}")
+    return 0
+
+
+def cmd_page(args, cfg) -> int:
+    idx = _open_index(cfg)
+    try:
+        if not args.name:
+            rows = idx.pages()
+            if not rows:
+                print("no pages yet (the cloud routine writes them; see scripts/pages-routine.md)")
+            for r in rows:
+                print(f"{_page_row(r)} · {r['sessions']} sessions")
+            return 0
+        try:
+            r = idx.page(args.name)
+        except AmbiguousId as e:
+            print("ambiguous page, candidates: " + " ".join(e.args[0]))
+            return 1
+    finally:
+        idx.close()
+    if r is None:
+        print(f"no page named {args.name}; `kb page` lists them")
+        return 1
+    try:
+        text = (cfg.root / r["path"]).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        print(f"kb: page file missing: {r['path']}; run: kb reindex")
+        return 2
+    _, body = parse_page(text)
+    if args.section:
+        part = section(body, args.section)
+        if part is None:
+            print(f"no section {args.section!r}; sections: " + ", ".join(h for h, _ in sections(body)))
+            return 1
+        body = part
+    out = f"{r['path']} · updated {(r['updated'] or '?')[:16].replace('T', ' ')} · {r['sessions']} sessions\n\n" + body
+    if len(out) > args.max_chars:
+        out = out[: args.max_chars] + f"\n[… cut at {args.max_chars} chars; use --section or raise --max-chars]"
+    print(out.rstrip())
+    return 0
+
+
+def cmd_pages(args, cfg) -> int:
+    from kb import routine
+    try:
+        settings = routine.load_settings(cfg.root)
+        if args.step == "start":
+            print(json.dumps(routine.start(cfg.root, cfg.kb_dir / "index.sqlite", settings)))
+            return 0
+        if args.step == "finish":
+            skip = [s for s in (args.skip or "").split(",") if s]
+            print(json.dumps(routine.finish(cfg.root, settings, push=not args.no_push, skip=skip)))
+            return 0
+        idx = _open_index(cfg)
+        try:
+            if args.step == "plan":
+                print(json.dumps(routine.make_plan(cfg.root, idx, settings), indent=2, ensure_ascii=False))
+            else:
+                only = [s for s in (args.only or "").split(",") if s]
+                if not (only or args.project or args.since or args.until):
+                    print("digest needs --project, --only, or --since/--until")
+                    return 2
+                print(routine.digest(idx, only, args.project or "", args.since or "", args.until or "",
+                                     args.max_chars))
+        finally:
+            idx.close()
+    except (routine.PagesError, gitops.GitError) as e:
+        print(f"kb pages {args.step}: {e}")
+        return 2
     return 0
 
 
@@ -340,6 +424,7 @@ def cmd_status(args, cfg) -> int:
         print("gitleaks: not installed (required: nothing is committed until it is installed)")
     else:
         print("gitleaks: not installed (built-in redaction only)")
+    print(_pages_status(cfg))
     if st.quarantine:
         print(f"quarantined: {len(st.quarantine)} file(s)")
         held = sorted(st.quarantine.items(), key=lambda kv: (kv[1], kv[0]))
@@ -350,14 +435,31 @@ def cmd_status(args, cfg) -> int:
     return 0
 
 
+def _pages_status(cfg) -> str:
+    from kb.routine import load_state
+    state = load_state(cfg.root)
+    if state is None:
+        return "pages: none yet (written by the cloud routine)"
+    pend = state.get("pending") if isinstance(state.get("pending"), dict) else {}
+    waiting = len(pend.get("projects") or {}) + len(pend.get("weeks") or [])
+    line = f"pages: last run {state.get('last_run') or '?'} · {waiting} pending"
+    sha = state.get("sha")
+    if isinstance(sha, str) and sha:
+        p = gitops.git(cfg.root, "rev-list", "--count", f"{sha}..HEAD", "--", "sessions/", check=False)
+        if p.returncode == 0:
+            line += f" · {p.stdout.strip()} session commits since"
+    return line
+
+
 def cmd_reindex(args, cfg) -> int:
     path = cfg.kb_dir / "index.sqlite"
     if path.exists():
         path.unlink()
     idx = Index(path)
     n = idx.update(cfg.root)
+    pages = idx.pages_changed
     idx.close()
-    print(f"indexed {n} sessions")
+    print(f"indexed {n} sessions" + (f", {pages} pages" if pages else ""))
     return 0
 
 
@@ -372,15 +474,33 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--since", help="30d, 2w, 6m, 1y or an ISO date")
         sp.add_argument("--until", help="ISO date (exclusive)")
 
-    f = sub.add_parser("find", help="ranked sessions for some words")
+    f = sub.add_parser("find", help="ranked pages and sessions for some words")
     f.add_argument("query", nargs="+")
     filters(f)
     f.add_argument("--tag")
     f.add_argument("--limit", type=int, default=10)
     f.add_argument("--no-subagents", action="store_true", help="hide subagent transcripts")
+    f.add_argument("--no-pages", action="store_true", help="sessions only")
     f.add_argument("--fts", action="store_true", help="pass the query to SQLite FTS5 unchanged")
     f.add_argument("--json", action="store_true")
     f.set_defaults(func=cmd_find)
+
+    pg = sub.add_parser("page", help="a project page or weekly retro (no name: list them)")
+    pg.add_argument("name", nargs="?", help="project name, ISO week (2026-W41), path, or the start of a name")
+    pg.add_argument("--section", help="only the section whose heading starts with this, e.g. 'Key decisions'")
+    pg.add_argument("--max-chars", type=int, default=12000)
+    pg.set_defaults(func=cmd_page)
+
+    ps = sub.add_parser("pages", help="steps of the cloud routine that writes pages/ (scripts/pages-routine.md)")
+    ps.add_argument("step", choices=["start", "plan", "digest", "finish"])
+    ps.add_argument("--project", help="digest: every session of this project")
+    ps.add_argument("--only", help="digest: these short ids, comma-separated")
+    ps.add_argument("--since", help="digest: sessions started at or after this ISO time")
+    ps.add_argument("--until", help="digest: sessions started before this ISO time")
+    ps.add_argument("--max-chars", type=int, default=150000, help="digest: cut the output here")
+    ps.add_argument("--skip", help="finish: planned names (projects or weeks) not to retry, comma-separated")
+    ps.add_argument("--no-push", action="store_true", help="finish: commit but do not push")
+    ps.set_defaults(func=cmd_pages)
 
     r = sub.add_parser("recent", help="latest sessions (no subagents)")
     filters(r)
@@ -405,7 +525,7 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("report", nargs="?", default="overview")
     st.set_defaults(func=cmd_stats)
 
-    q = sub.add_parser("sql", help="read-only SQL on the index (tables: sessions, turns)")
+    q = sub.add_parser("sql", help="read-only SQL on the index (tables: sessions, turns, pages)")
     q.add_argument("query")
     q.set_defaults(func=cmd_sql)
 

@@ -1,4 +1,5 @@
-"""Local SQLite FTS5 index, built only from committed markdown (so it covers every host after a pull)."""
+"""Local SQLite FTS5 index, built only from committed markdown (so it covers every host after a pull): the sessions,
+and the pages the cloud routine writes under pages/."""
 from __future__ import annotations
 
 import json
@@ -10,9 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kb.distill import parse_markdown
+from kb.pages import page_rel, parse_page
 from kb.util import short_id
 
-SCHEMA_VERSION = 3          # bump when the tables change: the index is disposable, update() rebuilds it
+SCHEMA_VERSION = 4          # bump when the tables change: the index is disposable, update() rebuilds it
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS sessions(
   id TEXT PRIMARY KEY, agent TEXT, host TEXT, project TEXT, cwd TEXT, branch TEXT,
@@ -32,8 +34,14 @@ SCHEMA = (
     # files that were read but lost to another file with the same id: remembered so they are not parsed again
     "CREATE TABLE IF NOT EXISTS dups(md_path TEXT PRIMARY KEY, md_sig TEXT, id TEXT)",
     "CREATE INDEX IF NOT EXISTS dups_id ON dups(id)",
+    """CREATE TABLE IF NOT EXISTS pages(path TEXT PRIMARY KEY, kind TEXT, name TEXT, title TEXT, updated TEXT,
+  sessions INTEGER, sig TEXT)""",
+    "CREATE INDEX IF NOT EXISTS pages_name ON pages(name)",
+    # pages_fts rows use the rowid of their pages row
+    """CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
+  path UNINDEXED, name, title, body, tokenize='porter unicode61')""",
 )
-_TABLES = ("sessions_fts", "turns_fts", "sessions", "turns", "dups")
+_TABLES = ("sessions_fts", "turns_fts", "sessions", "turns", "dups", "pages_fts", "pages")
 _COLUMNS = 24
 MIN_PREFIX = 4               # shortest id prefix get() accepts (an exact full id may be shorter)
 SQL_TIMEOUT = 10.0           # seconds a run_sql query may take
@@ -41,6 +49,8 @@ SNIPPET_CHARS = 200          # longest snippet find() returns
 _INT64 = 2 ** 63
 _LEAN = "id, agent, host, project, started, title, parent"
 _SESSION_SNIPPET = "snippet(sessions_fts, -1, '«', '»', '…', 10)"
+_PAGE_SNIPPET = "snippet(pages_fts, 3, '«', '»', '…', 12)"
+_PAGE_ROW = "p.path, p.kind, p.name, p.title, p.updated, p.sessions"
 _TURN_SNIPPET = "snippet(turns_fts, 2, '«', '»', '…', 12)"
 _FTS_ERRORS = ("fts5:", "syntax error", "unterminated string", "unknown special query")
 _TEXT_FIELDS = ("agent", "host", "project", "cwd", "branch", "started", "ended", "model", "title", "summary",
@@ -169,6 +179,7 @@ class Index:
         snapshot for as long as it is open. Otherwise the file and its folder are created if needed."""
         self.path = Path(path)
         self.errors = []                       # (path, error) of files skipped by the last update()
+        self.pages_changed = 0                 # pages added, changed or removed by the last update()
         if readonly:
             self.db = connect_readonly(self.path)
             self.db.row_factory = sqlite3.Row
@@ -231,13 +242,28 @@ class Index:
     # ---- writing
 
     def update(self, root) -> int:
-        """Re-read changed markdown files, drop deleted ones. Returns the number of sessions changed.
+        """Re-read changed markdown files, drop deleted ones. Returns the number of sessions changed (the number of
+        pages changed is in self.pages_changed).
 
         A file that cannot be read or fails validation is skipped and listed in self.errors as (path, error)."""
         root = Path(root)
-        base = root / "sessions"
         self.errors = []
+        files, pages = self._scan(root, "sessions"), self._scan(root, "pages")
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            changed = self._update(files)
+            self.pages_changed = self._update_pages(pages)
+            self.db.execute("COMMIT")
+        except BaseException:
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
+            raise
+        return changed
+
+    def _scan(self, root: Path, folder: str) -> dict:
+        """{repo-relative path: (path, signature)} of the markdown files under root/folder."""
         files = {}
+        base = root / folder
         for md in base.rglob("*.md") if base.is_dir() else []:
             rel = md.relative_to(root).as_posix()
             try:
@@ -247,15 +273,7 @@ class Index:
                 continue
             if stat.S_ISREG(st.st_mode):
                 files[rel] = (md, f"{st.st_mtime_ns}:{st.st_size}")
-        self.db.execute("BEGIN IMMEDIATE")
-        try:
-            changed = self._update(files)
-            self.db.execute("COMMIT")
-        except BaseException:
-            if self.db.in_transaction:
-                self.db.execute("ROLLBACK")
-            raise
-        return changed
+        return files
 
     def _update(self, files: dict) -> int:
         known = {r["md_path"]: (r["id"], r["md_sig"])
@@ -352,6 +370,40 @@ class Index:
         self.db.execute("INSERT INTO turns_fts(rowid, session_id, n, text) "
                         "SELECT rowid, session_id, n, text FROM turns WHERE session_id=?", (m["id"],))
 
+    def _update_pages(self, files: dict) -> int:
+        known = {r["path"]: r["sig"] for r in self.db.execute("SELECT path, sig FROM pages")}
+        changed = 0
+        for rel in sorted(files):
+            if known.get(rel) != files[rel][1]:
+                self._delete_page(rel)
+                changed += rel in known             # a broken page is tried again each time, but counted once
+                md, sig = files[rel]
+                try:
+                    meta, body = parse_page(md.read_bytes().decode("utf-8", errors="replace"))
+                    if page_rel(meta["kind"], meta["name"]) != rel:
+                        raise ValueError(f"a {meta['kind']} page named {meta['name']} belongs in "
+                                         f"{page_rel(meta['kind'], meta['name'])}")
+                except Exception as e:
+                    self.errors.append((rel, _why(e)))
+                    continue
+                changed += rel not in known
+                cur = self.db.execute("INSERT INTO pages VALUES (?,?,?,?,?,?,?)",
+                                      (rel, meta["kind"], meta["name"], meta["title"], meta["updated"],
+                                       meta["sessions"], sig))
+                self.db.execute("INSERT INTO pages_fts(rowid, path, name, title, body) VALUES (?,?,?,?,?)",
+                                (cur.lastrowid, rel, meta["name"], meta["title"], body))
+        for rel in known:
+            if rel not in files:
+                self._delete_page(rel)
+                changed += 1
+        return changed
+
+    def _delete_page(self, rel: str) -> None:
+        row = self.db.execute("SELECT rowid FROM pages WHERE path=?", (rel,)).fetchone()
+        if row is not None:
+            self.db.execute("DELETE FROM pages_fts WHERE rowid=?", (row["rowid"],))
+            self.db.execute("DELETE FROM pages WHERE path=?", (rel,))
+
     # ---- reading
 
     def _where(self, f: Filters):
@@ -442,6 +494,46 @@ class Index:
         snip = self.db.execute(sql, (c["q"], rid)).fetchone()
         row = self.db.execute(f"SELECT {_LEAN} FROM sessions WHERE id=?", (c["id"],)).fetchone()
         return {**dict(row), "snippet": _short(snip[0] if snip else ""), "turn": c["turn"]}
+
+    def find_pages(self, query: str, project: str = "", limit: int = 3, raw: bool = False) -> list:
+        """Ranked pages, best first, the same way as find(). With project, only that project's page.
+
+        Rows: path, kind, name, title, updated, sessions, snippet."""
+        if limit <= 0 or not (query or "").strip():
+            return []
+        where, params = (" AND p.kind = 'project' AND p.name = ? COLLATE NOCASE", [project]) if project else ("", [])
+        ranked = {}
+        for q in [query] if raw else fts_queries(query):
+            for r in self._fts(
+                    f"SELECT {_PAGE_ROW}, {_PAGE_SNIPPET} AS snippet, bm25(pages_fts, 0.0, 5.0, 5.0, 1.0) AS r "
+                    f"FROM pages_fts JOIN pages p ON p.rowid = pages_fts.rowid WHERE pages_fts MATCH ?{where} "
+                    "ORDER BY r, p.path LIMIT ?", [q] + params + [limit], raw):
+                ranked.setdefault(r["path"], {**{k: r[k] for k in r.keys() if k != "r"},
+                                              "snippet": _short(r["snippet"])})
+            if len(ranked) >= limit:
+                break
+        return list(ranked.values())[:limit]
+
+    def pages(self) -> list:
+        return [dict(r) for r in self.db.execute(f"SELECT {_PAGE_ROW} FROM pages p ORDER BY p.kind, p.name")]
+
+    def page(self, name: str):
+        """One page by name ("demo-app", "2026-W41"), by path, or by the start of its name. None when nothing
+        matches; several candidates raise AmbiguousId (with their names)."""
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("empty page name")
+        for sql in ("p.name = ?", "p.path = ?", "p.name = ? COLLATE NOCASE"):
+            rows = self.db.execute(f"SELECT {_PAGE_ROW} FROM pages p WHERE {sql} ORDER BY p.path", (name,)).fetchall()
+            if len(rows) == 1:
+                return dict(rows[0])
+            if rows:
+                raise AmbiguousId([r["path"] for r in rows])
+        rows = self.db.execute(f"SELECT {_PAGE_ROW} FROM pages p WHERE substr(lower(p.name), 1, ?) = lower(?) "
+                               "ORDER BY p.name LIMIT 6", (len(name), name)).fetchall()
+        if len(rows) > 1:
+            raise AmbiguousId([r["name"] for r in rows])
+        return dict(rows[0]) if rows else None
 
     def recent(self, f: Filters = None, limit: int = 20) -> list:
         where, params = self._where(f or Filters(subagents=False))

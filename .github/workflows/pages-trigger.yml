@@ -1,0 +1,50 @@
+# Fires the "sessions-kb pages" cloud routine after each push to main, so pages/ follows the synced sessions
+# (scripts/pages-routine.md). No loop: the routine's commits change only pages/ (ignored below) and carry [skip ci].
+# Setup: repository secrets PAGES_ROUTINE_FIRE_URL and PAGES_ROUTINE_FIRE_TOKEN, from the routine's API trigger at
+# claude.ai/code/routines. Until both exist, the job does nothing.
+name: pages-trigger
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["pages/**"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  fire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fire the routine
+        env:
+          FIRE_URL: ${{ secrets.PAGES_ROUTINE_FIRE_URL }}
+          FIRE_TOKEN: ${{ secrets.PAGES_ROUTINE_FIRE_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$FIRE_URL" ] || [ -z "$FIRE_TOKEN" ]; then
+            echo "::notice::PAGES_ROUTINE_FIRE_URL or PAGES_ROUTINE_FIRE_TOKEN is not set; nothing to fire"
+            exit 0
+          fi
+          fire() {
+            curl -sS -o body.json -D headers.txt -w '%{http_code}' -X POST "$FIRE_URL" \
+              -H "Authorization: Bearer $FIRE_TOKEN" \
+              -H "anthropic-version: 2023-06-01" \
+              -H "Content-Type: application/json" \
+              -d "{\"text\": \"push to main: $SHA\"}" || true    # no connection: curl still writes 000
+          }
+          code=$(fire)
+          if [ "$code" = 429 ] || [ "$code" = 500 ] || [ "$code" = 503 ] || [ "$code" = 000 ]; then
+            delay=$(awk 'tolower($1) == "retry-after:" {print $2 + 0}' headers.txt 2>/dev/null)
+            delay=${delay:-10}
+            if [ "$delay" -le 60 ]; then
+              sleep "$delay"
+              code=$(fire)
+            fi
+          fi
+          case "$code" in
+            200) echo "fired: $(cat body.json)" ;;
+            429) echo "::warning::rate limited; the routine's daily run catches up" ;;
+            *) echo "::error::fire failed with HTTP $code: $(cat body.json 2>/dev/null)"; exit 1 ;;
+          esac
