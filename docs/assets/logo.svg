@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="retroagent">
+  <title>retroagent</title>
+  <!-- tile: CRT-dark ink, with a faint phosphor edge so it holds on dark pages -->
+  <rect width="256" height="256" rx="58" fill="#14110B"/>
+  <rect x="1.5" y="1.5" width="253" height="253" rx="56.5" fill="none" stroke="#FFB000" stroke-opacity=".18" stroke-width="3"/>
+  <g transform="translate(3 0)">
+    <!-- history ring: 305° counter-clockwise sweep, open on the left -->
+    <path d="M 59.1 160.1 A 76 76 0 1 0 60.3 93.5" fill="none" stroke="#FFB000" stroke-width="20" stroke-linecap="round"/>
+    <!-- arrowhead: points back in time -->
+    <path d="M 46.7 116.8 L 41.4 78 L 83 102 Z" fill="#FFB000" stroke="#FFB000" stroke-width="8" stroke-linejoin="round"/>
+    <!-- terminal prompt: chevron + cursor -->
+    <path d="M 101 104 L 125 128 L 101 152" fill="none" stroke="#FFE2A8" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="135" y="139" width="32" height="15" rx="4" fill="#FFE2A8"/>
+  </g>
+</svg>

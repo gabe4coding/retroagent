@@ -1,0 +1,35 @@
+---
+title: Configuration
+description: Every key of ~/.config/retroagent/config.json and its default.
+---
+
+# Configuration
+
+The config lives in `~/.config/retroagent/config.json`. An install from before the rename keeps reading
+`~/.config/sessions-kb/`. Every key is optional.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `root` | `~/.retroagent-data` | The data clone. |
+| `code` | written by `install.sh` | The code clone that plugin caches forward to. |
+| `host` | short hostname | This machine's name. Must be unique per machine. See [Installation](./installation.mdx#one-host-name-per-machine). |
+| `auto_sync` | `true` when missing; `install.sh` writes `false` | Whether the SessionStart hook syncs. Set with `kb enable` / `kb disable`. |
+| `auto_update` | `false` | Pull the code once a day. Set with `kb enable updates`. |
+| `branch` | `main` | On any other branch, the sync touches no git. |
+| `raw_settle_hours` | `24` | See below. |
+| `skip_headless_single_prompt` | `true` | Skip `claude -p` / `codex exec` sessions. |
+| `gitleaks_path` | found on `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin` | Where gitleaks lives. |
+| `require_gitleaks` | `false`; `install.sh` sets `true` when it finds gitleaks | With no scanner, nothing is committed. |
+| `quiet_minutes` | `15` | How long a session must be idle before it is synced. |
+| `debounce_minutes` | `10` | Read but not used yet. |
+| `summary_model` | `haiku` | Model for the 3-line summaries. |
+| `summary_cap_per_run` | `30` | Maximum summaries per normal sync. |
+| `claude_dir` | `~/.claude/projects` | Where Claude Code transcripts live. |
+| `codex_dirs` | `~/.codex/sessions`, `~/.codex/archived_sessions` | Where Codex transcripts live. |
+| `codex_home` | `~/.codex` | Codex home (for memories). |
+| `exclude_cwd_globs` | temp folders | Projects whose folder matches are left out. |
+
+## `raw_settle_hours`
+
+The raw copy of a session is written once the session has been idle that many hours. Until then, only its markdown
+follows each change. `0` writes the raw copy at every sync. `--now` does not skip the wait.

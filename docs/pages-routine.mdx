@@ -1,0 +1,61 @@
+---
+title: Pages routine
+description: The optional cloud routine that writes one page per project and one retrospective per week.
+---
+
+# Pages routine
+
+A cloud routine keeps `pages/` of the data repo up to date:
+
+- `pages/projects/<project>.md` — state, decisions, files, errors → fixes, open threads
+- `pages/retro/<YYYY-Www>.md` — one retrospective per closed week
+
+Every bullet links to its source session. Read them with `kb page [name] [--section NAME]`; `kb find` lists matching
+pages first; `kb status` shows the routine's last run.
+
+## Set it up
+
+With the `setup` skill, or by hand:
+
+```bash
+kb setup routine
+```
+
+It pushes `pages/config.json` and the trigger workflow to the data repo, and prints:
+
+- the routine to create on claude.ai — no schedule and no connectors, because it reads untrusted session text;
+- the two repository secrets to set from the routine's API trigger: `PAGES_ROUTINE_FIRE_URL` and
+  `PAGES_ROUTINE_FIRE_TOKEN`.
+
+## How a run works
+
+The routine runs on claude.ai with two repos checked out side by side, your data repo and the retroagent code, and
+follows [`scripts/pages-routine.md`](../scripts/pages-routine.md). Code does the parts that need no judgement:
+
+| Step | What it does |
+| --- | --- |
+| `kb pages start` | Branch and index. |
+| `kb pages plan` | What to write, from the sessions and memories changed since the watermark in `pages/.state.json`. |
+| `kb pages digest` | Compact input for the model. |
+| `kb pages finish` | Refuses files outside `pages/`, bad front matter, oversized pages and anything that looks like a secret; records the watermark; commits; pushes, rebasing over session pushes. |
+
+## When it fires
+
+`.github/workflows/pages-trigger.yml` in the data repo decides when to fire the routine, because routine runs are
+counted per day. On each push to `main`, and every 2 hours, it fires only if:
+
+- `kb pages due` finds pages to write (about a second, no LLM), and
+- nothing fired it in the last `min_hours_between_fires` hours (3).
+
+The routine's own commits change only `pages/` and carry `[skip ci]`, so they never start it. Run the workflow by hand
+with the `force` input to fire at once.
+
+## First run
+
+Until `main` holds `pages/.state.json`, runs write to the `claude/pages-bootstrap` branch only. Review that branch and
+merge it to start the normal runs on `main`.
+
+## Settings
+
+`pages/config.json` in the data repo: projects to skip, minimum sessions for a page, batch sizes, retro time zone.
+Local `kb sync` never touches `pages/`.
