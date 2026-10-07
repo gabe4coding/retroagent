@@ -4,7 +4,8 @@ dense= fusion, for sessions (with their user turns), pages and memories.
 Used by run.py --search scripts/search-eval/embed_search.py. Installs and starts the runtime like `kb embed` (in
 ~/.cache/retroagent/embed), but keeps the vectors in the flow folder (EMBED_STORE), never in the data clone. The
 query timeout is generous (EMBED_TIMEOUT, default 10 s), so a cold model does not turn a case into BM25 alone; the
-eval measures ranking quality, and `kb find` itself waits at most embed_runtime.PROBE.
+eval measures ranking quality, and `kb find` itself waits at most embed_runtime.PROBE. EMBED_FORCE_TWO_STEP=1 uses
+the sign-bit pre-filter whatever the store size.
 """
 from __future__ import annotations
 
@@ -16,6 +17,8 @@ from kb.index import Filters
 
 
 def make_search(idx, flow: Path):
+    if os.environ.get("EMBED_FORCE_TWO_STEP"):          # check the bit pre-filter at any store size
+        embed.EXACT_BELOW = 0
     cfg = config.load()
     ep = embed_runtime.ensure(cfg, wait=True)
     store = embed.Vectors(Path(os.environ.get("EMBED_STORE", flow / "_vectors.sqlite")))
