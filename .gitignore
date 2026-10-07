@@ -8,3 +8,7 @@ docs/superpowers/
 
 # Explainer video project (manim scenes, narration, renders): local only.
 .claude/explainer-video/
+
+# Search eval: cases point at private sessions; results are per run.
+scripts/search-eval/*.local.*
+.claude/hillclimb/
