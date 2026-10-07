@@ -39,6 +39,9 @@ committed with the sessions):
 - Claude Code: `~/.claude/projects/*/memory/*.md`
 - Codex: `~/.codex/memories/**/*.md`
 
+Each copy has a `modified` time: the one in the memory's own front matter, or else the file's last change on the
+machine (UTC). A memory touched without a change keeps its date, so it adds nothing to the next commit.
+
 A memory deleted or renamed on the machine leaves the KB too. A memory folder that is gone entirely keeps its copies.
 Projects whose folder matches `exclude_cwd_globs` are left out.
 
