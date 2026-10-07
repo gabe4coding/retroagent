@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Git growth of a KB data clone: what each sync commit added, and how often each raw file was written.
+
+Launch:  scripts/raw-growth                       reads ~/.sessions-kb (read-only)
+         scripts/raw-growth --repo DIR --last 20  another clone, only the newest 20 sync commits
+
+Per sync commit: raw files written (new or changed), the bytes of those blobs whole, the markdown bytes, and the
+bytes of the thin pack a push of that commit sends (git deltas included). Then: how many raw paths were written
+more than once, the bytes of every raw version whole vs the current ones, and the clone's size on disk.
+Reads git metadata and object sizes only, never file contents. Python 3.9, stdlib only.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from collections import Counter
+
+
+def git(repo, *args, data=None) -> bytes:
+    return subprocess.run(["git", "-C", repo, *args], input=data, capture_output=True, check=True).stdout
+
+
+def sizes(repo, shas) -> dict:
+    if not shas:
+        return {}
+    out = git(repo, "cat-file", "--batch-check=%(objectname) %(objectsize)", data="\n".join(shas).encode() + b"\n")
+    return {sha: int(n) for sha, n in (line.split() for line in out.decode().splitlines())}
+
+
+def changes(repo, commit) -> list:
+    """(status, new blob, path) of every file the commit adds or changes, against its first parent."""
+    out = git(repo, "diff-tree", "-r", "--no-commit-id", "--root", "-z", commit).decode()
+    parts, res, i = out.split("\0"), [], 0
+    while i + 1 < len(parts):
+        meta, path = parts[i].split(), parts[i + 1]
+        i += 2
+        if meta[4] in ("A", "M"):
+            res.append((meta[4], meta[3], path))
+    return res
+
+
+def push_bytes(repo, commit) -> int:
+    parent = git(repo, "rev-list", "--parents", "-n", "1", commit).decode().split()[1:2]
+    revs = commit + "\n" + "".join(f"^{p}\n" for p in parent)
+    return len(git(repo, "pack-objects", "--revs", "--thin", "--stdout", "-q", data=revs.encode()))
+
+
+def mb(n: int) -> str:
+    return f"{n / 1e6:.1f} MB"
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--repo", default=os.path.expanduser("~/.sessions-kb"))
+    ap.add_argument("--last", type=int, default=0, help="only the newest N sync commits (0: all)")
+    a = ap.parse_args(argv)
+    log = git(a.repo, "log", "--first-parent", "--reverse", "--format=%H %cs %s").decode().splitlines()
+    syncs = [line.split(" ", 2) for line in log if line.split(" ", 2)[2].startswith("sync(")]
+    syncs = syncs[-a.last:] if a.last else syncs
+    versions, all_raw, all_raw_bytes = Counter(), set(), 0
+    print(f"{'commit':8} {'date':10} {'raw new':>7} {'raw chg':>7} {'raw whole':>10} {'md whole':>9} {'push':>9}")
+    for sha, day, _ in syncs:
+        ch = changes(a.repo, sha)
+        n = sizes(a.repo, [b for _, b, _ in ch])
+        raw = [(st, b, p) for st, b, p in ch if p.startswith("raw/")]
+        new_blobs = {b for _, b, _ in raw} - all_raw
+        all_raw |= new_blobs
+        all_raw_bytes += sum(n[b] for b in new_blobs)
+        versions.update(p for _, _, p in raw)
+        md = sum(n[b] for _, b, p in ch if p.startswith("sessions/"))
+        print(f"{sha[:8]} {day} {sum(st == 'A' for st, _, _ in raw):>7} {sum(st == 'M' for st, _, _ in raw):>7} "
+              f"{mb(sum(n[b] for _, b, _ in raw)):>10} {mb(md):>9} {mb(push_bytes(a.repo, sha)):>9}")
+    head = git(a.repo, "ls-tree", "-r", "-l", "HEAD", "raw/").decode().splitlines()
+    current = sum(int(line.split()[3]) for line in head)
+    multi = [v for v in versions.values() if v > 1]
+    print(f"raw paths written: {len(versions)}; more than once: {len(multi)} (max {max(multi, default=1)} times)")
+    print(f"raw versions whole: {mb(all_raw_bytes)}; current raw files: {mb(current)} ({len(head)} files)")
+    count = dict(line.split(": ") for line in git(a.repo, "count-objects", "-v").decode().splitlines())
+    print(f"clone on disk: packs {mb(int(count['size-pack']) * 1024)}, loose {mb(int(count['size']) * 1024)} "
+          f"({count['count']} loose objects)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

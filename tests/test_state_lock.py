@@ -46,6 +46,17 @@ def test_state_with_wrong_field_shapes_is_sanitized(tmp_path):
     assert st.files == {"k": "fp"} and st.summary_attempts == {"i": 2} and st.last_ok == "t"
 
 
+def test_state_raw_pending_round_trip_and_tolerant_load(tmp_path):
+    p = tmp_path / "s.json"
+    st = State.load(p)
+    assert st.raw_pending == {}
+    st.raw_pending["unit"] = "fp"
+    st.save()
+    assert State.load(p).raw_pending == {"unit": "fp"}
+    p.write_text(json.dumps({"files": {"k": "fp"}, "raw_pending": ["x"]}))
+    assert State.load(p).raw_pending == {} and State.load(p).files == {"k": "fp"}
+
+
 def test_state_unreadable_file_is_empty(tmp_path):
     p = tmp_path / "s.json"
     p.mkdir()  # reading a directory raises OSError

@@ -10,7 +10,7 @@
   kb sync | backfill | status | reindex   maintenance
   kb repair            when every sync fails to pull: reset the data clone to the remote; the next sync makes this
                        host's work again
-  kb pages start | plan | digest | finish   steps of the cloud routine that writes pages/ (scripts/pages-routine.md)
+  kb pages start | plan | digest | finish | due   steps of the cloud routine that writes pages/ (scripts/pages-routine.md)
   kb enable | disable  switch automatic syncs (the SessionStart hook) on or off
 
 Ids: the 8-character short id shown in lists (or any unique prefix of it or of the full id, 4 characters at least).
@@ -295,6 +295,10 @@ def cmd_pages(args, cfg) -> int:
         try:
             if args.step == "plan":
                 print(json.dumps(routine.make_plan(cfg.root, idx, settings), indent=2, ensure_ascii=False))
+            elif args.step == "due":           # exit 0: fire the routine; 1: nothing to write
+                d = routine.due(routine.make_plan(cfg.root, idx, settings), settings)
+                print(json.dumps(d))
+                return 0 if d["due"] else 1
             else:
                 only = [s for s in (args.only or "").split(",") if s]
                 if not (only or args.project or args.since or args.until):
@@ -552,7 +556,7 @@ def build_parser() -> argparse.ArgumentParser:
     me.set_defaults(func=cmd_memory)
 
     ps = sub.add_parser("pages", help="steps of the cloud routine that writes pages/ (scripts/pages-routine.md)")
-    ps.add_argument("step", choices=["start", "plan", "digest", "finish"])
+    ps.add_argument("step", choices=["start", "plan", "digest", "finish", "due"])
     ps.add_argument("--project", help="digest: every session of this project")
     ps.add_argument("--only", help="digest: these short ids, comma-separated")
     ps.add_argument("--since", help="digest: sessions started at or after this ISO time")

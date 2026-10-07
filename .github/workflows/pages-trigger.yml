@@ -1,27 +1,87 @@
-# Fires the "sessions-kb pages" cloud routine after each push to main, so pages/ follows the synced sessions
-# (scripts/pages-routine.md). No loop: the routine's commits change only pages/ (ignored below) and carry [skip ci].
+# Fires the "sessions-kb pages" cloud routine (scripts/pages-routine.md) when it has something to write, at most once
+# every min_hours_between_fires (pages/config.json): routine runs are counted per day, so a push or a check fires it only
+#   1. if no earlier run of this workflow fired it within that gap (bursts of pushes make one run, later), and
+#   2. if `kb pages due` finds project pages or retros to write (no LLM; about a second on a sparse checkout).
+# The check also runs every 2 hours, so work held back by the gap, or sessions that waited for a summary, are not left
+# until the next push. No loop: the routine's commits change only pages/ (ignored below) and carry [skip ci].
 # Setup: repository secrets PAGES_ROUTINE_FIRE_URL and PAGES_ROUTINE_FIRE_TOKEN, from the routine's API trigger at
-# claude.ai/code/routines. Until both exist, the job does nothing.
+# claude.ai/code/routines. Until both exist, nothing is fired.
 name: pages-trigger
 
 on:
   push:
     branches: [main]
     paths-ignore: ["pages/**"]
+  schedule:
+    - cron: "41 */2 * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Fire now, even with nothing to write or within the gap"
+        type: boolean
+        default: false
 
-permissions: {}
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pages-trigger            # one check at a time, so two pushes cannot both pass the gap
+  cancel-in-progress: false
 
 jobs:
   fire:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
+      - name: Fired within the gap?
+        id: gap
+        if: ${{ !inputs.force }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          hours=$(gh api "repos/$GITHUB_REPOSITORY/contents/pages/config.json?ref=$GITHUB_SHA" --jq .content 2>/dev/null \
+            | base64 -d 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("min_hours_between_fires", 3))' \
+            2>/dev/null || echo 3)
+          since=$(date -u -d "-${hours} hours" +%Y-%m-%dT%H:%M:%SZ)
+          fired=0
+          for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow pages-trigger.yml --limit 100 \
+                        --json databaseId,createdAt --jq ".[] | select(.createdAt >= \"$since\") | .databaseId"); do
+            [ "$id" = "$GITHUB_RUN_ID" ] && continue
+            n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" \
+                  --jq '[.jobs[].steps[]? | select(.name == "Fire the routine" and .conclusion == "success")] | length')
+            fired=$((fired + n))
+          done
+          echo "gap: ${hours} h; fires since $since: $fired"
+          echo "open=$([ "$fired" = 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: ${{ inputs.force || steps.gap.outputs.open == 'true' }}
+        with:
+          fetch-depth: 0            # the watermark diff needs history: commits and trees only (blob:none)
+          filter: blob:none
+          sparse-checkout: |
+            src
+            plugin
+            sessions
+            pages
+
+      - name: Anything to write?
+        id: due
+        if: ${{ !inputs.force && steps.gap.outputs.open == 'true' }}
+        run: |
+          code=0
+          KB_ROOT="$PWD" plugin/bin/kb pages due || code=$?
+          [ "$code" -le 1 ] || exit 1
+          echo "due=$([ "$code" = 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
       - name: Fire the routine
+        if: ${{ inputs.force || steps.due.outputs.due == 'true' }}
         env:
           FIRE_URL: ${{ secrets.PAGES_ROUTINE_FIRE_URL }}
           FIRE_TOKEN: ${{ secrets.PAGES_ROUTINE_FIRE_TOKEN }}
           SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
         run: |
           if [ -z "$FIRE_URL" ] || [ -z "$FIRE_TOKEN" ]; then
             echo "::notice::PAGES_ROUTINE_FIRE_URL or PAGES_ROUTINE_FIRE_TOKEN is not set; nothing to fire"
@@ -32,7 +92,7 @@ jobs:
               -H "Authorization: Bearer $FIRE_TOKEN" \
               -H "anthropic-version: 2023-06-01" \
               -H "Content-Type: application/json" \
-              -d "{\"text\": \"push to main: $SHA\"}" || true    # no connection: curl still writes 000
+              -d "{\"text\": \"$EVENT on main: $SHA\"}" || true    # no connection: curl still writes 000
           }
           code=$(fire)
           if [ "$code" = 429 ] || [ "$code" = 500 ] || [ "$code" = 503 ] || [ "$code" = 000 ]; then
@@ -45,6 +105,6 @@ jobs:
           fi
           case "$code" in
             200) echo "fired: $(cat body.json)" ;;
-            429) echo "::warning::rate limited; the routine's daily run catches up" ;;
+            429) echo "::warning::rate limited; a later check fires it" ;;
             *) echo "::error::fire failed with HTTP $code: $(cat body.json 2>/dev/null)"; exit 1 ;;
           esac

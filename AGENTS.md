@@ -37,4 +37,4 @@ Reading needs no write access, except to build a missing or outdated index. If `
 - `raw/<host>/<agent>/<YYYY>/<MM>/<id>.jsonl.gz` — slim, redacted raw transcript.
 - `src/kb/` — code (Python 3.9, stdlib only). Tests: `scripts/test`.
 - `plugin/` — Claude Code / Codex plugin: hook, skills, `bin/kb`.
-- `scripts/pages-routine.md` — what the routine does; `.github/workflows/pages-trigger.yml` fires it on each push.
+- `scripts/pages-routine.md` — what the routine does; `.github/workflows/pages-trigger.yml` decides when to fire it.

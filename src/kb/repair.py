@@ -91,6 +91,7 @@ def _repair(cfg) -> list:
     state = State.load(cfg.kb_dir / "sync-state.json")
     cleared = len(state.files)
     state.files = {}
+    state.raw_pending = {}             # it says "markdown written": the reset may drop that markdown
     state.save()                       # first: a failed save stops here, and an early clear only costs a re-render
     lines = [f"reset {cfg.branch} to {upstream} ({target[:12]}); it was {ahead} commit(s) ahead and {behind} behind"]
     if ahead:

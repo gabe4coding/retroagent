@@ -1,4 +1,5 @@
-"""Sync state (.kb/sync-state.json): what was processed, summary retry counts, quarantined files, last run."""
+"""Sync state (.kb/sync-state.json): what was processed, raw copies that wait, summary retry counts, quarantined
+files, last run."""
 from __future__ import annotations
 
 import json
@@ -12,6 +13,7 @@ from kb.util import atomic_write
 class State:
     path: Path
     files: dict = field(default_factory=dict)              # unit key -> fingerprint
+    raw_pending: dict = field(default_factory=dict)        # unit key -> fingerprint whose markdown is written, raw not yet
     summary_attempts: dict = field(default_factory=dict)   # "<session id>:<turns>" -> unusable answers
     quarantine: dict = field(default_factory=dict)         # repo path -> first-seen ISO time (held back by gitleaks)
     last_ok: str = ""
@@ -39,10 +41,12 @@ class State:
             v = data.get(key)
             return v if isinstance(v, str) else ""
 
-        return cls(path=path, files=_dict("files"), summary_attempts=_dict("summary_attempts"),
-                   quarantine=_times("quarantine"), last_ok=_text("last_ok"), last_result=_text("last_result"), last_error=_text("last_error"))
+        return cls(path=path, files=_dict("files"), raw_pending=_dict("raw_pending"),
+                   summary_attempts=_dict("summary_attempts"), quarantine=_times("quarantine"), last_ok=_text("last_ok"),
+                   last_result=_text("last_result"), last_error=_text("last_error"))
 
     def save(self) -> None:
-        data = {"files": self.files, "summary_attempts": self.summary_attempts, "quarantine": self.quarantine,
-                "last_ok": self.last_ok, "last_result": self.last_result, "last_error": self.last_error}
+        data = {"files": self.files, "raw_pending": self.raw_pending, "summary_attempts": self.summary_attempts,
+                "quarantine": self.quarantine, "last_ok": self.last_ok, "last_result": self.last_result,
+                "last_error": self.last_error}
         atomic_write(self.path, json.dumps(data, indent=1, sort_keys=True).encode("utf-8"))

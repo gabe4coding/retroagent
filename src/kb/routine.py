@@ -5,9 +5,12 @@
                     watermark in pages/.state.json (printed as JSON and kept in .kb/pages-plan.json for finish)
   kb pages digest   compact input for one page: one block per session (summary, decisions, outcome, files, PRs)
   kb pages finish   check the pages, move the watermark, commit with [skip ci], push
+  kb pages due      for the trigger workflow: is there anything to write? (no LLM, about a second)
 
 Everything that needs no judgement is decided here; Claude only writes the pages. The routine's commits change only
-pages/ and carry [skip ci], so the push workflow (.github/workflows/pages-trigger.yml) never fires it again.
+pages/ and carry [skip ci], so they never start the trigger workflow (.github/workflows/pages-trigger.yml), which fires
+the routine only when `due` says so and min_hours_between_fires have passed since its last fire: routine runs are
+counted per day.
 """
 from __future__ import annotations
 
@@ -34,6 +37,7 @@ DEFAULTS = {
     "retro_weeks_back": 4,               # closed weeks that get a retro when they have none
     "retro_late_days": 14,               # a retro is rewritten when new sessions of its week arrive this late
     "max_page_chars": 40000,
+    "min_hours_between_fires": 3,        # the trigger workflow fires the routine at most this often
     "branch": "main",
     "bootstrap_branch": "claude/pages-bootstrap",
 }
@@ -347,6 +351,16 @@ def _plan_retros(root: Path, top: list, ready: dict, st: dict, settings, tz, now
                       "since": _iso(start), "until": _iso(end),
                       "sessions": [r["short"] for r in sorted(weeks[w], key=lambda r: (r["started"] or "", r["id"]))]})
     return items, order[len(batch):]
+
+
+def due(plan: dict, settings) -> dict:
+    """Whether the routine has anything to write, from a plan (make_plan). For the trigger workflow."""
+    n, m = len(plan["projects"]), len(plan["retros"])
+    left = len(plan["pending"]["projects"]) + len(plan["pending"]["weeks"])
+    reason = (f"{n} project page{'s' * (n != 1)} and {m} retro{'s' * (m != 1)} to write" if n or m
+              else f"nothing to write ({len(plan['waiting'])} sessions waiting for a summary)")
+    return {"due": bool(n or m), "reason": reason, "mode": plan["mode"], "pending_after": left,
+            "min_hours_between_fires": settings["min_hours_between_fires"]}
 
 
 # ---- digest

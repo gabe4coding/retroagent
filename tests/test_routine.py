@@ -396,3 +396,30 @@ def test_start_unshallows_and_finds_the_bootstrap_branch(tmp_path):
     started = routine.start(shallow, shallow / ".kb" / "index.sqlite", settings())
     assert started["branch"] == "claude/pages-bootstrap" and (shallow / routine.STATE_REL).is_file()
     assert git(shallow, "rev-parse", "--is-shallow-repository") == "false"
+
+
+def test_due(tmp_path, monkeypatch, capsys):
+    root = repo(tmp_path / "kb")
+    demo(root)
+    d = routine.due(plan(root), settings())
+    assert d == {"due": True, "reason": "1 project page and 2 retros to write", "mode": "bootstrap",
+                 "pending_after": 0, "min_hours_between_fires": 3}
+    plan(root)
+    write_alpha(root)
+    for week, shorts in (("2026-W40", ["a0000002"]), ("2026-W39", ["a0000001"])):
+        write_retro(root, week, shorts)
+    routine.finish(root, settings(), now=NOW, push=False)
+    session(root, "a0000004", "alpha", "2026-10-07T08:00:00Z", summary="")    # 1 prompt: used at once
+    put(root, "h/claude/2026/10/2026-10-07_beta_b0000003.md", "b0000003", turns=("a", "b", "c"), project="beta",
+        started="2026-10-07T08:30:00Z", ended="2026-10-07T08:30:00Z", summary="")   # waits for its summary
+    commit(root)
+    assert routine.due(plan(root), settings())["reason"] == "1 project page and 0 retros to write"
+    routine.finish(root, settings(), now=NOW, push=False)
+    d = routine.due(plan(root), settings())
+    assert d["due"] is False and d["reason"] == "nothing to write (1 sessions waiting for a summary)"
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"root": str(root), "host": "h"}))
+    monkeypatch.setenv("KB_CONFIG", str(cfg))
+    from kb.cli import main
+    assert main(["pages", "due"]) == 1 and json.loads(capsys.readouterr().out)["due"] is False

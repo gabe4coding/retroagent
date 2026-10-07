@@ -27,7 +27,8 @@ def write_jsonl(path, records):
     return path
 
 
-def age(paths, seconds=3600):
+def age(paths, seconds=2 * 86400):
+    """Default: a finished session, past the quiet period and the raw settle time (24 h). 3600 = still active."""
     t = time.time() - seconds
     for p in paths:
         os.utime(p, (t, t))

@@ -70,7 +70,8 @@ def _drop_copy(root: Path, host: str, s, sub, touched) -> None:
         touched.add(month_of(mine))
 
 
-def write_session(root, host: str, s, redactions: Counter, dry_run: bool = False, known=None, touched=None):
+def write_session(root, host: str, s, redactions: Counter, dry_run: bool = False, known=None, touched=None,
+                  raw: bool = True):
     """Return (md paths relative to root, Counter of output sizes).
 
     known: id -> current md path (from the index). When a session's path changes, the old markdown and the raw file it
@@ -78,6 +79,9 @@ def write_session(root, host: str, s, redactions: Counter, dry_run: bool = False
     is added to `touched` (a set) so the caller can rebuild that month's catalog.
     A subagent with `elsewhere` set is another session's to write: it is only linked, and a copy of it that an older
     sync wrote under this session is removed.
+    raw=False: the raw copies wait (the caller writes them once the session settles); an existing one is left as it
+    is. The markdown is the same either way: it names its raw path even before that file exists. Exception: a
+    session that moves away from a raw copy it already has gets its new copy now, so no stale copy stays behind.
     Raises PathCollision, before anything is written, when a target markdown file holds a different session.
     """
     root = Path(root)
@@ -103,19 +107,23 @@ def write_session(root, host: str, s, redactions: Counter, dry_run: bool = False
     written, sizes = [], Counter()
     for sess, parent, mrel, rrel, old, old_meta, keep in plan:
         md, c1 = redact(render_markdown(sess, host, keep, sub_files if parent is None else {}, raw=rrel))
-        raw, c2 = slim(sess.agent, sess.source_paths)
         redactions.update(c1)
-        redactions.update(c2)
         md_bytes = md.encode("utf-8", errors="replace")      # a lone surrogate in a transcript must not stop the write
         sizes["md"] += len(md_bytes)
-        sizes["raw"] += len(raw)
+        stale_raw = _old_raw(root, host, old_meta.get("raw"), rrel) if old_meta else None
+        stale_raw = stale_raw if stale_raw is not None and stale_raw.exists() else None
+        data = None
+        if raw or stale_raw is not None:
+            data, c2 = slim(sess.agent, sess.source_paths)
+            redactions.update(c2)
+            sizes["raw"] += len(data)
         if not dry_run:
             atomic_write(root / mrel, md_bytes)
-            atomic_write(root / rrel, raw)
+            if data is not None:
+                atomic_write(root / rrel, data)
             if old and old != mrel:
                 if old_meta:                                  # raw first: a crash in between is repaired by the next run
-                    stale_raw = _old_raw(root, host, old_meta.get("raw"), rrel)
-                    if stale_raw is not None and stale_raw.exists():
+                    if stale_raw is not None:
                         stale_raw.unlink()
                     (root / old).unlink()
                 if touched is not None:
