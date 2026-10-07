@@ -95,10 +95,44 @@ def test_few_and_matches_do_not_outrank_strong_or_matches(empty):
     assert [h["id"] for h in idx.find("deploy flaky", limit=1)] == ["weak"]    # AND fills the list: AND ranking
 
 
-def test_fts_queries_drop_stopwords():
-    assert fts_queries("how did I fix the flaky test") == ['"fix" "flaky" "test"', '"fix" OR "flaky" OR "test"']
-    assert fts_queries("analisi dei test più lenti") == ['"analisi" "test" "lenti"', '"analisi" OR "test" OR "lenti"']
+def test_fts_queries_drop_stopwords_but_not_from_the_phrase():
+    assert fts_queries("how did I fix the flaky test") == ['"how did I fix the flaky test"', '"fix" "flaky" "test"',
+                                                            '"fix" OR "flaky" OR "test"']
+    assert fts_queries("analisi dei test più lenti") == ['"analisi dei test più lenti"', '"analisi" "test" "lenti"',
+                                                         '"analisi" OR "test" OR "lenti"']
     assert fts_queries("the") == ['"the"']                          # only stopwords: keep them
+    assert fts_queries('"what I asked" now') == ['"what I asked now"', '"what I asked" "now"',
+                                                 '"what I asked" OR "now"']    # a quoted part keeps its stopwords
+
+
+def test_fts_queries_try_the_exact_phrase_first():
+    assert fts_queries("not what I asked") == ['"not what I asked"', '"asked"']     # AND = OR once stopwords go
+    assert fts_queries('fix "flaky test" now') == ['"fix flaky test now"', '"fix" "flaky test" "now"',
+                                                   '"fix" OR "flaky test" OR "now"']
+    assert fts_queries("retry") == ['"retry"']
+    assert fts_queries('"') == [] and fts_queries("") == []
+
+
+def test_find_ranks_the_exact_phrase_above_scattered_words(empty):
+    root, idx = empty
+    scattered = "s" * 8 + "0000000a"
+    phrase = "s" * 8 + "0000000b"
+    put(root, "h/demo/a.md", scattered, turns=("what is not done? I asked twice. not what, asked what",) * 3)
+    put(root, "h/demo/b.md", phrase, turns=("hello", "that is not what I asked for"))
+    idx.update(root)
+    assert [h["id"] for h in idx.find("not what I asked")] == [phrase, scattered]
+
+
+def test_find_role_matches_only_that_roles_turns(empty):
+    root, idx = empty
+    mine = "s" * 8 + "0000000c"
+    agents = "s" * 8 + "0000000d"
+    put(root, "h/demo/c.md", mine, turns=("no, that is the wrong file", "ok"))
+    put(root, "h/demo/d.md", agents, turns=("go", "the wrong file was edited"), title="wrong file")
+    idx.update(root)
+    assert {h["id"] for h in idx.find("wrong file")} == {mine, agents}
+    assert [h["id"] for h in idx.find("wrong file", Filters(role="user"))] == [mine]
+    assert [(h["id"], h["turn"]) for h in idx.find("wrong file", Filters(role="assistant"))] == [(agents, 2)]
 
 
 def test_recent_get_children_sql(kb):

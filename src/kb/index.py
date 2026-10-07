@@ -76,6 +76,7 @@ they this those to too was we were what when where which who why will with would
 al alla alle allo ai agli che chi come con cosa da dal dalla dei del della delle dello di e ed gli ha ho il in la
 le lo ma mi nel nella nelle non per più quando se si sono su sul sulla un una uno
 """.split())
+_QUOTED = re.compile(r'"([^"]*)"')
 
 
 @dataclass
@@ -87,6 +88,7 @@ class Filters:
     until: str = ""
     tag: str = ""
     subagents: bool = True
+    role: str = ""                 # "user" or "assistant": only turns by that role match (find)
 
 
 class AmbiguousId(Exception):
@@ -160,14 +162,28 @@ def _short(snippet: str) -> str:
     return chunk
 
 
+def _phrase(text: str) -> str:
+    """The terms of `text` as one FTS5 phrase ("" when it has none)."""
+    terms = [t for t in (t.strip(".-/") for t in _TERM.findall(text)) if t]
+    return '"' + " ".join(terms) + '"' if terms else ""
+
+
 def fts_queries(text: str) -> list:
-    """Safe FTS5 queries for free text: all terms (AND), then any term (OR). Stopwords are dropped first."""
-    terms = [t.strip(".-/") for t in _TERM.findall(text or "")]
-    terms = [t for t in terms if t.lower() not in _STOPWORDS] or terms
-    quoted = ['"' + t.replace('"', "") + '"' for t in terms if t]
-    if not quoted:
+    """Safe FTS5 queries for free text, best first: the exact phrase, all terms (AND), then any term (OR).
+    A "quoted" part of the text stays one phrase in the AND and OR queries. Stopwords are dropped from the single
+    words of the AND and OR queries (never from the phrase or a quoted part), unless nothing else is left."""
+    text = text or ""
+    pieces = _QUOTED.split(text)                    # odd items were inside quotes
+    parts = []                                      # (FTS5 phrase, is a single stopword)
+    for i, piece in enumerate(pieces):
+        for p in [piece] if i % 2 else _TERM.findall(piece):
+            phrase = _phrase(p)
+            if phrase:
+                parts.append((phrase, not i % 2 and p.strip(".-/").lower() in _STOPWORDS))
+    if not parts:
         return []
-    return [" ".join(quoted), " OR ".join(quoted)] if len(quoted) > 1 else quoted
+    kept = [p for p, stop in parts if not stop] or [p for p, _ in parts]
+    return list(dict.fromkeys([_phrase(text), " ".join(kept), " OR ".join(kept)]))
 
 
 def _probe(uri: str) -> sqlite3.Connection:
@@ -482,20 +498,30 @@ class Index:
         return "".join(" AND " + c for c in clauses), params
 
     def find(self, query: str, f: Filters = None, limit: int = 10, raw: bool = False) -> list:
-        """Ranked sessions, best first: the every-word (AND) ranking when it fills the list, else the any-word (OR)
-        ranking. OR holds every AND match too, so a few weak AND matches cannot push stronger OR matches out.
+        """Ranked sessions, best first. Sessions with the exact phrase come first. The rest: the every-word (AND)
+        ranking when it fills the list, else the any-word (OR) ranking, which holds every AND match too, so a few weak
+        AND matches cannot push stronger OR matches out.
 
         Rows: id, agent, host, project, started, title, parent, snippet, turn (turn is None for a session-level hit).
         raw=True passes the query to FTS5 unchanged; a bad query raises ValueError."""
         f = f or Filters()
         if limit <= 0 or not (query or "").strip():
             return []
+        k = max(200, limit * 20)
+        queries = [query] if raw else fts_queries(query)
+        ranked = {}
+        if len(queries) > 1:                           # [phrase, AND, OR]: the phrase is a strong signal on its own
+            for c in self._candidates(queries[0], f, k, raw):
+                ranked.setdefault(c["id"], c)
+            queries = queries[1:]
         cands = []
-        for q in [query] if raw else fts_queries(query):
-            cands = self._candidates(q, f, max(200, limit * 20), raw)
-            if len(cands) >= limit:
+        for q in queries:
+            cands = self._candidates(q, f, k, raw)
+            if len(ranked) + len(cands) >= limit:
                 break
-        return [self._hit(c) for c in cands[:limit]]
+        for c in cands:
+            ranked.setdefault(c["id"], c)
+        return [self._hit(c) for c in list(ranked.values())[:limit]]
 
     def _fts(self, sql: str, params: list, raw: bool) -> list:
         try:
@@ -514,19 +540,22 @@ class Index:
         """Sessions matching q, best first. Score = session bm25 + best turn bm25 (negative: lower is better)."""
         where, params = self._where(f)
         best = {}
-        for r in self._fts(
+        # session fields (title, summary, …) have no role, so a role filter matches turns only
+        for r in [] if f.role else self._fts(
                 "SELECT sessions_fts.rowid AS rid, sessions_fts.id AS id, "
                 "bm25(sessions_fts, 0.0, 10.0, 5.0, 5.0, 5.0, 2.0) AS r "
                 "FROM sessions_fts JOIN sessions s ON s.id = sessions_fts.id "
                 f"WHERE sessions_fts MATCH ?{where} ORDER BY r, sessions_fts.id LIMIT ?", [q] + params + [k], raw):
             best[r["id"]] = {"id": r["id"], "q": q, "score": r["r"], "srid": r["rid"], "trid": None, "turn": None}
         # best turn of each session, so one long session cannot fill the list
+        join, role = ("JOIN turns tu ON tu.rowid = turns_fts.rowid ", " AND tu.role = ?") if f.role else ("", "")
         for r in self._fts(
                 "WITH t AS MATERIALIZED (SELECT turns_fts.rowid AS rid, turns_fts.session_id AS id, "
                 "turns_fts.n AS n, bm25(turns_fts) AS r FROM turns_fts JOIN sessions s ON s.id = turns_fts.session_id "
-                f"WHERE turns_fts MATCH ?{where}), "
+                f"{join}WHERE turns_fts MATCH ?{where}{role}), "
                 "ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY r, n) AS rn FROM t) "
-                "SELECT id, n, r, rid FROM ranked WHERE rn = 1 ORDER BY r, id LIMIT ?", [q] + params + [k], raw):
+                "SELECT id, n, r, rid FROM ranked WHERE rn = 1 ORDER BY r, id LIMIT ?",
+                [q] + params + ([f.role] if f.role else []) + [k], raw):
             b = best.get(r["id"])
             if b is None:
                 best[r["id"]] = {"id": r["id"], "q": q, "score": r["r"], "srid": None, "trid": r["rid"],
