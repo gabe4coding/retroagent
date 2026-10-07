@@ -241,7 +241,7 @@ def check(cfg, config_file: Path) -> dict:
         "code": str(CODE_ROOT), "code_repo": code_repo(), "code_is_clone": (CODE_ROOT / ".git").exists(),
         "config": str(config_file), "config_exists": config_file.exists(),
         "data_root": str(root), "data_clone": clone, "data_repo": data, "branch": cfg.branch, "host": cfg.host,
-        "auto_sync": cfg.auto_sync,
+        "auto_sync": cfg.auto_sync, "auto_update": cfg.auto_update,
         "gitleaks": bool(gitops.find_gitleaks(cfg.gitleaks_path)),
         "gh": bool(shutil.which("gh")), "claude": bool(shutil.which("claude")), "codex": bool(shutil.which("codex")),
         "kb_on_path": bool(shutil.which("kb")),
