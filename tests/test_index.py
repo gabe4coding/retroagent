@@ -85,9 +85,28 @@ def test_find_filters_and_fallback(kb):
     idx.find('a "b" (c) *d* OR NEAR')                              # must not raise
 
 
+def test_few_and_matches_do_not_outrank_strong_or_matches(empty):
+    root, idx = empty
+    filler = " ".join(f"word{i}" for i in range(300))
+    put(root, "a/weak.md", "weak", turns=(f"deploy {filler} flaky",))       # every word, once, in a long turn
+    put(root, "a/strong.md", "strong", turns=("flaky flaky flaky",), title="flaky test fix")
+    idx.update(root)
+    assert [h["id"] for h in idx.find("deploy flaky")] == ["strong", "weak"]   # OR ranking: AND has < limit hits
+    assert [h["id"] for h in idx.find("deploy flaky", limit=1)] == ["weak"]    # AND fills the list: AND ranking
+
+
+def test_fts_queries_drop_stopwords_but_not_from_the_phrase():
+    assert fts_queries("how did I fix the flaky test") == ['"how did I fix the flaky test"', '"fix" "flaky" "test"',
+                                                            '"fix" OR "flaky" OR "test"']
+    assert fts_queries("analisi dei test più lenti") == ['"analisi dei test più lenti"', '"analisi" "test" "lenti"',
+                                                         '"analisi" OR "test" OR "lenti"']
+    assert fts_queries("the") == ['"the"']                          # only stopwords: keep them
+    assert fts_queries('"what I asked" now') == ['"what I asked now"', '"what I asked" "now"',
+                                                 '"what I asked" OR "now"']    # a quoted part keeps its stopwords
+
+
 def test_fts_queries_try_the_exact_phrase_first():
-    assert fts_queries("not what I asked") == ['"not what I asked"', '"not" "what" "I" "asked"',
-                                               '"not" OR "what" OR "I" OR "asked"']
+    assert fts_queries("not what I asked") == ['"not what I asked"', '"asked"']     # AND = OR once stopwords go
     assert fts_queries('fix "flaky test" now') == ['"fix flaky test now"', '"fix" "flaky test" "now"',
                                                    '"fix" OR "flaky test" OR "now"']
     assert fts_queries("retry") == ['"retry"']
