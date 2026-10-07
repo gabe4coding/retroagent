@@ -39,6 +39,11 @@
 
 Two repos are involved: this one (the code, public) and your **data repo** (private, yours). The code never holds data.
 
+https://github.com/user-attachments/assets/c4393042-e8bf-405b-bb41-e45f9df83a7c
+
+<p align="center"><sub>retroagent, explained in 3.5 minutes: the sync, the two repos, search with <code>kb</code>,
+project pages, and weekly retros that propose changes to your agent's environment.</sub></p>
+
 ## Quick start
 
 You need git, Python 3.9+, [gitleaks](https://github.com/gitleaks/gitleaks) (`brew install gitleaks`) and the GitHub
