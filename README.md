@@ -1,167 +1,101 @@
-# retroagent
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="retroagent logo" width="128" height="128">
+</p>
 
-Sync your Claude Code and Codex sessions, from every machine, into a **private Git repo you choose**. Then search
-them with the `kb` CLI at a tiny token cost, and let a cloud routine keep one page per project and one retrospective
-per week.
+<h1 align="center">retroagent</h1>
 
-- **Sync**: each session becomes a short markdown file (plus a slim, redacted raw copy) in your data repo. Memory files
-  agents keep between sessions are copied too. Secrets are redacted and every commit is scanned with gitleaks.
-- **Search**: `kb find`, `kb summary`, `kb show`, `kb stats`, `kb sql`, on a local SQLite index. Skills teach Claude
-  Code and Codex to look there first ("how did I fix…", "what did I decide about…").
-- **Pages and retros** (optional): a Claude Code routine writes `pages/projects/<project>.md` (state, decisions, files,
-  errors → fixes, open threads) and `pages/retro/<YYYY-Www>.md`, every bullet linked to its source session.
+<p align="center">
+  <b>Your agents forget. retroagent remembers.</b><br>
+  Every Claude Code and Codex session, from every machine, in a private Git repo you own — searchable in one command.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/gabe4coding/retroagent?color=blue"></a>
+  <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white">
+  <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-stdlib%20only-brightgreen">
+  <a href="docs/installation.mdx"><img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-D97757?logo=claude&logoColor=white"></a>
+  <a href="docs/installation.mdx#by-hand-or-for-codex-only"><img alt="Codex plugin" src="https://img.shields.io/badge/Codex-plugin-412991?logo=openai&logoColor=white"></a>
+  <img alt="Secrets scanned with gitleaks" src="https://img.shields.io/badge/secrets-gitleaks%20scanned-orange">
+  <a href="https://github.com/gabe4coding/retroagent/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/gabe4coding/retroagent"></a>
+  <a href="https://github.com/gabe4coding/retroagent/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/gabe4coding/retroagent?style=social"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="docs/commands.mdx">Commands</a> ·
+  <a href="docs/sync.mdx">How it works</a> ·
+  <a href="docs/pages-routine.mdx">Pages &amp; retros</a> ·
+  <a href="docs/configuration.mdx">Config</a>
+</p>
+
+---
+
+- **Sync** — each session becomes a short markdown file in your data repo. Secrets are redacted, and every commit is
+  scanned with gitleaks.
+- **Search** — `kb find "how did I fix the flaky test"` on a local SQLite index, at a tiny token cost. Skills teach
+  Claude Code and Codex to look there first.
+- **Pages and retros** *(optional)* — a cloud routine keeps one page per project and one retrospective per week, every
+  bullet linked to its source session.
 
 Two repos are involved: this one (the code, public) and your **data repo** (private, yours). The code never holds data.
 
-## Install
+## Quick start
 
-You need git, Python 3.9+ with SQLite FTS5 (macOS's `/usr/bin/python3` works), [gitleaks](https://github.com/gitleaks/gitleaks)
-(strongly recommended: `brew install gitleaks`), and the GitHub CLI `gh` to create the data repo and the routine's
-secrets.
+You need git, Python 3.9+, [gitleaks](https://github.com/gitleaks/gitleaks) (`brew install gitleaks`) and the GitHub
+CLI `gh`.
 
-In Claude Code:
+### Let your agent do it
+
+Paste this into Claude Code or Codex:
+
+```text
+Set up retroagent on this machine for me: https://github.com/gabe4coding/retroagent
+1. If ~/.retroagent does not exist, clone the repo there.
+2. Read ~/.retroagent/skills/setup/SKILL.md and follow it step by step. Use ~/.retroagent/bin/kb while `kb` is
+   not on my PATH yet.
+3. Ask me one question at a time, and show me each command before it creates a repo, pushes or changes anything
+   outside this machine. My data repo must be private.
+4. install.sh also installs the Claude Code and Codex plugins: tell me if it prints a WARNING, and at the end
+   remind me to start a new session (and, in Codex, to trust the retroagent hook with /hooks).
+5. Never ask me for a token or a secret: I type those in my own terminal.
+```
+
+The agent creates or picks your private data repo, installs the plugins and the `kb` CLI, runs the first sync and
+turns automatic syncs on, asking you before each step.
+
+### Or with the Claude Code plugin
+
 ```
 /plugin marketplace add gabe4coding/retroagent
 /plugin install retroagent@retroagent
 /retroagent:setup
 ```
-The `setup` skill asks a few questions (new or existing data repo, this machine's name, first sync now or later,
-automatic syncs and updates, the pages routine now or later) and runs the steps below for you. Run it again at any
-time to finish or change the setup.
 
-By hand, or for Codex only:
+For a manual install, see [Installation](docs/installation.mdx).
+
+## Use it
+
 ```bash
-git clone https://github.com/gabe4coding/retroagent ~/.retroagent
-gh repo create <you>/retroagent-data --private          # or use an existing private repo
-~/.retroagent/install.sh --repo git@github.com:<you>/retroagent-data.git --host <unique-name>
-kb backfill                   # process every session; the first push
-kb backfill --summaries       # 3-line summaries with Haiku (slow; uses your Claude quota)
-kb enable                     # sync automatically when a session starts
+kb find flaky test timeout     # ranked pages, memories and sessions
+kb summary 9a1be7d2            # decisions, outcome, files and PRs of one session
+kb show 9a1be7d2 --grep error  # only the part you need
+kb stats                       # how you use your agents
 ```
-`install.sh` clones the data repo into `~/.retroagent-data` (`--root DIR` changes that), pushes the base files it
-lacks (README.md, AGENTS.md, CLAUDE.md, .gitignore) in one commit, writes `~/.config/retroagent/config.json` with
-`auto_sync: false`, installs the Claude Code and Codex plugins from the code clone, links `kb` into `~/.local/bin`, and
-builds the index. It starts no sync. Run it again at any time; it keeps your other config keys. In Codex, open it once
-and trust the retroagent hook with `/hooks`.
 
-Each machine needs its own `host` (default: the short hostname). Two machines with the same `host` would write the same
-folders. The first sync commits `sessions/<host>/.machine-id`, a copy of the random id in `.kb/machine-id`; a sync or
-install on a machine with another id stops with `host '<host>' belongs to another machine`. Never delete
-`.kb/machine-id`. A machine that wrote `sessions/<host>` before markers existed claims it once with
-`install.sh --force-host`.
+Or just ask your agent: *"how did I fix this last time?"*, *"retro of last week"*.
 
-## Update
+## Documentation
 
-`kb update` pulls the code clone (fast-forward only) and runs `install.sh` again (plugins, link, config).
-`kb enable updates` does the pull once a day from the background sync instead, and refreshes the plugins when their
-version changes. Both run the latest `main` of the code repo: read what changed if you care.
-
-Every entry point runs one copy of the code: `~/.local/bin/kb` links to the clone, and a plugin's cached copy (Claude
-Code, Codex) forwards to the clone recorded as `code` in the config.
-
-## How the sync works
-- A SessionStart hook (Claude Code and Codex) runs `kb sync --auto` in the background. It prints nothing. It does
-  nothing until you run `kb enable` (`auto_sync` in the config).
-- `kb sync` turns each session that has been idle for 15 minutes into markdown (`sessions/<host>/…`), keeps a slim
-  redacted raw copy (`raw/<host>/…`) once the session has been idle for 24 hours, asks Haiku for a 3-line summary,
-  updates `catalog/<host>/…`, scans with gitleaks, commits only this machine's folders, and pushes. Headless
-  one-prompt sessions (`claude -p`, `codex exec`) are skipped.
-- It also copies the memory files agents keep: Claude Code's `~/.claude/projects/*/memory/*.md` and Codex's
-  `~/.codex/memories/**/*.md`, to `memories/<host>/…` (redacted, scanned, committed with the sessions). A memory
-  deleted or renamed on the machine leaves the KB too; a memory folder that is gone entirely keeps its copies.
-  Projects whose folder matches `exclude_cwd_globs` are left out.
-- A resumed or forked Claude session can copy its parent's subagents. Such a subagent is written once, under the
-  session its own records name first; the others link to that file.
-- The sync works in its own data clone. Nobody edits it by hand. It only touches git on the configured `branch`
-  (`main`), and it never pushes commits that touch anything outside this machine's folders.
-- Search is local: `kb` builds a SQLite FTS5 index in `.kb/` of the data clone.
-- gitleaks uses the data repo's own `.gitleaks.toml` when it has one, else the one shipped here (it needs gitleaks
-  8.25 or newer).
-
-## One writer per host
-Only the machine that owns a host writes `sessions/<host>`, `raw/<host>`, `catalog/<host>` and `memories/<host>`,
-summaries included: make them on that machine with `kb backfill --summaries`.
-
-Do not make them on another machine (a cloud session, a second laptop) and merge them by pull request. The owner's
-sync writes the same files from its local transcripts; after the merge its pull conflicts, and every later sync fails
-the same way.
-
-- `kb backfill --summaries --host <other host>` refuses, and so does the library (`summarize_pending` raises
-  `ForeignHost`).
-- `--force-host` overrides this: it writes only the summary fields and the catalog of that host, and syncs, commits
-  and pushes nothing. Use it only when the owner cannot run the summaries itself, send the result as a pull request,
-  and expect to run `kb repair` on the owner after the merge.
-- A script that calls `summarize()`, `update_front_matter()` or `write_catalog()` itself skips every check. Don't.
-
-## Repair
-If every sync fails with `pull: the remote changed this host's files too; run: kb repair`, run on that machine:
-```bash
-kb repair
-kb sync --now --no-summaries
-```
-`kb repair` fetches, resets the data clone to its upstream and clears the fingerprints (`files` in
-`.kb/sync-state.json`). The next sync renders every session again on top of the remote files, keeps the summaries it
-finds there, commits only real changes and pushes. Only this host's own work is dropped, and the sync makes it again
-from the local transcripts. Dropped commits stay in the clone as `refs/kb/repair/<time>`.
-
-`kb repair` refuses, and changes nothing, when a sync runs, the clone is not on the configured branch, has no upstream
-or cannot fetch, or when a local-only commit or an uncommitted change touches a file outside this host's folders.
-
-## Use
-`kb find`, `kb page`, `kb memory`, `kb recent`, `kb summary`, `kb show`, `kb stats`, `kb sql`, `kb status`,
-`kb sync --now`, `kb enable [updates]`, `kb disable [updates]`, `kb repair`, `kb update`. Run `kb --help`.
-
-The read commands open the local index read-only: they work in a sandbox where `.kb/` cannot be written and never wait
-for a running sync. Only a missing or outdated index must be built, which needs write access; if it cannot be built
-they print `index not built yet; run: kb reindex` and exit 2. Other errors print one line, `kb: <message>`, and exit 2.
-
-`kb sync --now --no-summaries` syncs fast. `kb backfill --summaries` writes the summaries of every session with no cap
-and no time limit (a normal run stops after 20 minutes). Plain `kb sync` and `kb backfill` always run; only
-`kb sync --auto` (the hook) obeys `auto_sync`.
-
-## Pages routine
-A cloud routine keeps `pages/` of the data repo up to date: one page per project and one retrospective per closed
-week. Read them with `kb page [name] [--section NAME]`; `kb find` lists matching pages first; `kb status` shows the
-routine's last run.
-
-- The routine runs on claude.ai with two repos checked out side by side, your data repo and this code, and follows
-  `scripts/pages-routine.md`. Code does the parts that need no judgement: `kb pages start` (branch, index),
-  `kb pages plan` (what to write, from the sessions and memories changed since the watermark in
-  `pages/.state.json`), `kb pages digest` (compact input), `kb pages finish` (refuses files outside `pages/`, bad
-  front matter, oversized pages and anything that looks like a secret; records the watermark; commits; pushes,
-  rebasing over session pushes).
-- `.github/workflows/pages-trigger.yml` in the data repo decides when to fire it, because routine runs are counted per
-  day. On each push to `main`, and every 2 hours, it fires only if `kb pages due` finds pages to write (a second, no
-  LLM) and nothing fired it in the last `min_hours_between_fires` (3). The routine's own commits change only `pages/`
-  and carry `[skip ci]`, so they never start it. Run it by hand with the `force` input to fire at once.
-- Until `main` holds `pages/.state.json`, runs write to `claude/pages-bootstrap` only. Review that branch and merge it
-  to start the normal runs on `main`.
-- Settings: `pages/config.json` in the data repo (projects to skip, minimum sessions for a page, batch sizes, retro
-  time zone). Local `kb sync` never touches `pages/`.
-
-Set it up with the `setup` skill, or by hand: `kb setup routine` pushes `pages/config.json` and the workflow to the
-data repo and prints the routine to create (no schedule, no connectors: it reads untrusted session text) and the two
-repository secrets to set from the routine's API trigger, `PAGES_ROUTINE_FIRE_URL` and `PAGES_ROUTINE_FIRE_TOKEN`.
-
-## Config
-`~/.config/retroagent/config.json` (an install from before the rename keeps reading `~/.config/sessions-kb/`). Every
-key is optional:
-`root` (the data clone; `~/.retroagent-data`), `code` (the code clone plugin caches forward to; install.sh writes it),
-`host` (short hostname; unique per machine), `auto_sync` (true when the key is missing; `install.sh` writes false;
-`kb enable` / `kb disable`), `auto_update` (false; `kb enable updates`), `branch` (`main`; on any other branch the sync
-touches no git), `raw_settle_hours` (24), `skip_headless_single_prompt` (true), `gitleaks_path` (found on PATH, then
-`/opt/homebrew/bin`, `/usr/local/bin`), `require_gitleaks` (false; `install.sh` sets true when it finds gitleaks: with
-no scanner nothing is committed), `quiet_minutes` (15), `debounce_minutes` (10), `summary_model` (`haiku`),
-`summary_cap_per_run` (30), `claude_dir` (`~/.claude/projects`), `codex_dirs` (`~/.codex/sessions`,
-`~/.codex/archived_sessions`), `codex_home` (`~/.codex`), `exclude_cwd_globs` (temp folders).
-
-`raw_settle_hours`: the raw copy of a session is written once the session has been idle that many hours; until then
-only its markdown follows each change. `0` writes the raw copy at every sync. `--now` does not skip the wait.
-
-## Develop
-The whole repo is the plugin (`.claude-plugin/`, `.codex-plugin/`, `bin/`, `hooks/`, `skills/`); the Python package
-is `src/kb`. `templates/data/` holds the files `kb setup` writes into data repos. Rules for changing code, tests,
-skills and docs: [CODING_STANDARDS.md](CODING_STANDARDS.md).
+| Page | |
+| --- | --- |
+| [Installation](docs/installation.mdx) | Requirements, plugin and manual install, host names, updates |
+| [Commands](docs/commands.mdx) | Every `kb` command |
+| [How the sync works](docs/sync.mdx) | What gets written, when, and the one-writer-per-host rule |
+| [Pages routine](docs/pages-routine.mdx) | The optional cloud routine for project pages and weekly retros |
+| [Configuration](docs/configuration.mdx) | Every key of `config.json` |
+| [Troubleshooting](docs/troubleshooting.mdx) | `kb repair` and common errors |
+| [Development](docs/development.mdx) | Layout, tests, releases |
 
 ## License
-MIT. See `LICENSE`.
+
+MIT. See [LICENSE](LICENSE).

@@ -1,0 +1,74 @@
+---
+title: How the sync works
+description: What kb sync writes to the data repo, when, and the one-writer-per-host rule.
+---
+
+# How the sync works
+
+## When it runs
+
+A SessionStart hook (Claude Code and Codex) runs `kb sync --auto` in the background. It prints nothing. It does
+nothing until you run `kb enable` (`auto_sync` in the [config](./configuration.mdx)).
+
+Plain `kb sync` and `kb backfill` always run; only `kb sync --auto` (the hook) obeys `auto_sync`.
+
+## What it does
+
+For each session that has been idle for 15 minutes, `kb sync`:
+
+1. Turns it into markdown under `sessions/<host>/…`.
+2. Keeps a slim, redacted raw copy under `raw/<host>/…` once the session has been idle for 24 hours
+   (`raw_settle_hours`).
+3. Asks Haiku for a 3-line summary.
+4. Updates `catalog/<host>/…`.
+5. Scans everything with gitleaks.
+6. Commits only this machine's folders, and pushes.
+
+Headless one-prompt sessions (`claude -p`, `codex exec`) are skipped.
+
+### Memory files
+
+The sync also copies the memory files agents keep between sessions to `memories/<host>/…` (redacted, scanned,
+committed with the sessions):
+
+- Claude Code: `~/.claude/projects/*/memory/*.md`
+- Codex: `~/.codex/memories/**/*.md`
+
+A memory deleted or renamed on the machine leaves the KB too. A memory folder that is gone entirely keeps its copies.
+Projects whose folder matches `exclude_cwd_globs` are left out.
+
+### Subagents of resumed sessions
+
+A resumed or forked Claude session can copy its parent's subagents. Such a subagent is written once, under the session
+its own records name first; the others link to that file.
+
+### Speed and summaries
+
+- `kb sync --now --no-summaries` syncs fast.
+- A normal run writes at most `summary_cap_per_run` summaries and stops after 20 minutes.
+- `kb backfill --summaries` writes the summaries of every session, with no cap and no time limit.
+
+## Safety
+
+- The sync works in its own data clone. Nobody edits it by hand.
+- It only touches git on the configured `branch` (`main`).
+- It never pushes commits that touch anything outside this machine's folders.
+- Secrets are redacted, and every commit is scanned with gitleaks. gitleaks uses the data repo's own `.gitleaks.toml`
+  when it has one, else the one shipped with retroagent (it needs gitleaks 8.25 or newer).
+- Search is local: `kb` builds a SQLite FTS5 index in `.kb/` of the data clone.
+
+## One writer per host
+
+Only the machine that owns a host writes `sessions/<host>`, `raw/<host>`, `catalog/<host>` and `memories/<host>`,
+summaries included. Make them on that machine with `kb backfill --summaries`.
+
+Do not make them on another machine (a cloud session, a second laptop) and merge them by pull request. The owner's
+sync writes the same files from its local transcripts; after the merge its pull conflicts, and every later sync fails
+the same way.
+
+- `kb backfill --summaries --host <other host>` refuses, and so does the library (`summarize_pending` raises
+  `ForeignHost`).
+- `--force-host` overrides this: it writes only the summary fields and the catalog of that host, and syncs, commits
+  and pushes nothing. Use it only when the owner cannot run the summaries itself, send the result as a pull request,
+  and expect to run [`kb repair`](./troubleshooting.mdx#every-sync-fails-to-pull) on the owner after the merge.
+- A script that calls `summarize()`, `update_front_matter()` or `write_catalog()` itself skips every check. Don't.
