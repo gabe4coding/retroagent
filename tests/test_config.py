@@ -68,6 +68,17 @@ def test_good_int_values_are_kept(tmp_path, monkeypatch):
     assert (cfg.quiet_minutes, cfg.debounce_minutes, cfg.summary_cap_per_run) == (0, 7, 3)
 
 
+def test_raw_settle_hours_defaults_to_a_day_and_0_turns_the_wait_off(tmp_path, monkeypatch):
+    assert _load(tmp_path, monkeypatch, {})[0].raw_settle_hours == 24
+    assert _load(tmp_path, monkeypatch, {"raw_settle_hours": 0})[0].raw_settle_hours == 0
+    assert _load(tmp_path, monkeypatch, {"raw_settle_hours": "6"})[0].raw_settle_hours == 6
+
+
+@pytest.mark.parametrize("bad", ["abc", None, -1, True, [], 1e999])
+def test_unusable_raw_settle_hours_keep_the_default(tmp_path, monkeypatch, bad):
+    assert _load(tmp_path, monkeypatch, {"raw_settle_hours": bad})[0].raw_settle_hours == 24
+
+
 def test_string_instead_of_list_becomes_one_item_list(tmp_path, monkeypatch):
     cfg, _ = _load(tmp_path, monkeypatch, {"codex_dirs": str(tmp_path / "cx"), "exclude_cwd_globs": "/work/*"})
     assert cfg.codex_dirs == [tmp_path / "cx"]

@@ -3,8 +3,9 @@
 Order of a run (nothing is pulled before our own files are written and committed, so our own uncommitted
 files never block a pull): lock, host check (another machine's marker: stop), git gate (branch, half-done rebase,
 stale index.lock: otherwise skip git, keep processing), index, process sessions (headless one-prompt runs are
-skipped), summaries, catalog, host marker, stage + secrets check + commit, pull, index again (other machines'
-sessions), push (never commits that touch anything outside this host's folders).
+skipped; a raw copy waits until its session has been idle raw_settle_hours), summaries, catalog, host marker,
+stage + secrets check + commit, pull, index again (other machines' sessions), push (never commits that touch
+anything outside this host's folders).
 
 Only the machine that owns a host writes sessions/<host>, summaries included: summarize_pending refuses any other
 host (ForeignHost). A pull that conflicts because the remote changed this host's files anyway points to `kb repair`.
@@ -86,8 +87,17 @@ def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def raw_due(cfg, newest: float, clock=time.time) -> bool:
+    """A unit's raw copy is written once the unit has been idle raw_settle_hours (0: at every sync).
+
+    A session that grows all day would otherwise write a new full raw copy at every pause; its markdown still follows
+    every change after quiet_minutes."""
+    return not cfg.raw_settle_hours or clock() - newest >= cfg.raw_settle_hours * 3600
+
+
 def pending_units(cfg, state, now: bool = False, clock=time.time) -> list:
-    """Changed units, newest first. Without `now`, skip units modified in the last quiet_minutes."""
+    """Changed units, newest first, as (unit, fingerprint, raw due). Without `now`, skip units modified in the last
+    quiet_minutes. A unit whose markdown is current and whose raw copy waits is skipped until it settles."""
     ready = []
     for u in claude.discover(cfg.claude_dir) + codex.discover(cfg.codex_dirs):
         try:
@@ -96,11 +106,14 @@ def pending_units(cfg, state, now: bool = False, clock=time.time) -> list:
             continue
         if state.files.get(u.key) == fp:
             continue
+        due = raw_due(cfg, newest, clock)
+        if state.raw_pending.get(u.key) == fp and not due:
+            continue
         if not now and clock() - newest < cfg.quiet_minutes * 60:
             continue
-        ready.append((newest, u, fp))
+        ready.append((newest, u, fp, due))
     ready.sort(key=lambda x: -x[0])
-    return [(u, fp) for _, u, fp in ready]
+    return [(u, fp, due) for _, u, fp, due in ready]
 
 
 def excluded(cfg, cwd: str) -> bool:
@@ -206,12 +219,19 @@ def place_subagents(cfg, s, unit, known) -> None:
         sub.elsewhere = _kept(cfg, s, sub, unit, known) or _owner_file(cfg, unit, sub)
 
 
-def process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_run, picker=None) -> None:
+def _done(state, key: str, fp: str) -> None:
+    state.files[key] = fp
+    state.raw_pending.pop(key, None)
+
+
+def process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_run, picker=None,
+                 raw: bool = True) -> None:
+    """raw=False: write the markdown only and remember the unit in state.raw_pending until its raw copy is due."""
     try:
         s = claude.parse_unit(unit) if unit.agent == "claude" else codex.parse_unit(unit, titles)
         if s is None or s.id in seen or not _taken(cfg, s):
             if not dry_run:
-                state.files[unit.key] = fp
+                _done(state, unit.key, fp)
             return
         seen.add(s.id)
         report.skipped.update(s.skipped)
@@ -220,14 +240,18 @@ def process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_
         if unit.agent == "claude":
             place_subagents(cfg, s, unit, known)
         written, sizes = write_session(cfg.root, cfg.host, s, report.redactions, dry_run=dry_run, known=known,
-                                       touched=months)
+                                       touched=months, raw=raw)
         if picker is not None:
             picker.offer(s)
         report.sizes.update(sizes)
         months.update(month_of(p) for p in written)
         report.sessions += 1
-        if not dry_run:
-            state.files[unit.key] = fp
+        if dry_run:
+            return
+        if raw:
+            _done(state, unit.key, fp)
+        else:
+            state.raw_pending[unit.key] = fp
     except Exception as e:  # one bad session must not stop the sync
         report.errors.append(f"{unit.key}: {type(e).__name__}: {e}")
 
@@ -511,9 +535,9 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
             titles = codex.load_titles(cfg.codex_home)
             months, seen = set(), set()
             picker = SamplePicker(sample) if dry_run and sample > 0 else None
-            for n, (unit, fp) in enumerate(pending_units(cfg, state, now, clock), 1):
+            for n, (unit, fp, due) in enumerate(pending_units(cfg, state, now, clock), 1):
                 lock.touch()
-                process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_run, picker)
+                process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_run, picker, raw=due)
                 if not dry_run and n % CHECKPOINT_EVERY == 0:
                     save_state(state, report)        # a crash later keeps what is already written and recorded
             if dry_run:

@@ -4,7 +4,7 @@ Private knowledge base of my Claude Code and Codex sessions, from every machine.
 
 ## How it works
 - A SessionStart hook (Claude Code and Codex) runs `kb sync --auto` in the background. It prints nothing. It does nothing until you run `kb enable` (`auto_sync` in the config).
-- `kb sync` turns each session that has been idle for 15 minutes into markdown (`sessions/<host>/…`), keeps a slim redacted raw copy (`raw/<host>/…`), asks Haiku for a 3-line summary, updates `catalog/<host>/…`, scans with gitleaks, commits only this machine's folders, and pushes. Headless one-prompt sessions (`claude -p`, `codex exec`) are skipped.
+- `kb sync` turns each session that has been idle for 15 minutes into markdown (`sessions/<host>/…`), keeps a slim redacted raw copy (`raw/<host>/…`) once the session has been idle for 24 hours, asks Haiku for a 3-line summary, updates `catalog/<host>/…`, scans with gitleaks, commits only this machine's folders, and pushes. Headless one-prompt sessions (`claude -p`, `codex exec`) are skipped.
 - A resumed or forked Claude session can copy its parent's subagents. Such a subagent is written once, under the session that its own records name first (the one it ran under); the other sessions link to that file. A file whose session is gone from `~/.claude` stays where it is.
 - The sync works in its own data clone, `~/.sessions-kb`. Nobody edits it by hand; develop in a separate checkout. It only touches git on the configured `branch` (`main`), and it never pushes commits that touch anything outside this machine's folders.
 - Search is local: `kb` builds a SQLite FTS5 index in `.kb/` from the markdown.
@@ -68,11 +68,13 @@ Set up once: create the routine (repo `gabe4coding/sessions-kb`, prompt: follow 
 
 ## Config
 `~/.config/sessions-kb/config.json`. Every key is optional:
-`root` (`~/Repositories/sessions-kb`; `install.sh` writes `~/.sessions-kb`), `host` (short hostname; unique per machine), `auto_sync` (true when the key is missing; `install.sh` writes false; `kb enable` / `kb disable` change it), `branch` (`main`; on any other branch the sync touches no git), `skip_headless_single_prompt` (true), `gitleaks_path` (found on PATH, then `/opt/homebrew/bin`, `/usr/local/bin`), `require_gitleaks` (false; `install.sh` sets true when it finds gitleaks: with no scanner nothing is committed), `quiet_minutes` (15), `debounce_minutes` (10), `summary_model` (`haiku`), `summary_cap_per_run` (30), `claude_dir` (`~/.claude/projects`), `codex_dirs` (`~/.codex/sessions`, `~/.codex/archived_sessions`), `codex_home` (`~/.codex`), `exclude_cwd_globs` (temp folders).
+`root` (`~/Repositories/sessions-kb`; `install.sh` writes `~/.sessions-kb`), `host` (short hostname; unique per machine), `auto_sync` (true when the key is missing; `install.sh` writes false; `kb enable` / `kb disable` change it), `branch` (`main`; on any other branch the sync touches no git), `raw_settle_hours` (24; see below), `skip_headless_single_prompt` (true), `gitleaks_path` (found on PATH, then `/opt/homebrew/bin`, `/usr/local/bin`), `require_gitleaks` (false; `install.sh` sets true when it finds gitleaks: with no scanner nothing is committed), `quiet_minutes` (15), `debounce_minutes` (10), `summary_model` (`haiku`), `summary_cap_per_run` (30), `claude_dir` (`~/.claude/projects`), `codex_dirs` (`~/.codex/sessions`, `~/.codex/archived_sessions`), `codex_home` (`~/.codex`), `exclude_cwd_globs` (temp folders).
+
+`raw_settle_hours`: the raw copy of a session is written once the session has been idle that many hours; until then only its markdown follows each change (the markdown names the raw path before the file exists). A session that grows all day would otherwise add a full new raw copy to git at each pause. `0` writes the raw copy at every sync, as before. `--now` does not skip the wait.
 
 Without gitleaks and with `require_gitleaks` off, files that gitleaks already held back stay held back, and the rest is committed with the built-in redaction only.
 
 The repo's `.gitleaks.toml` (`disabledRules`, `[[allowlists]]`) needs gitleaks 8.25 or newer (`brew upgrade gitleaks`).
 
 ## Develop
-`scripts/test` runs the suite on `/usr/bin/python3` with pytest from `uv`.
+`scripts/test` runs the suite on `/usr/bin/python3` with pytest from `uv`. `scripts/raw-growth` shows what each sync commit of the data clone added to git (raw files rewritten, bytes whole and pushed).

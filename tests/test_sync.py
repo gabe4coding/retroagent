@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from kb.cli import cmd_sync
 from kb.index import Index
 from kb.lock import Lock
 from kb.state import State
-from kb.sync import Report, run_sync
+from kb.sync import Report, pending_units, run_sync
 from kb.util import short_id
 
 SUMMARY = {"summary": "Did the thing.", "tags": ["demo"], "outcome": "done", "decisions": []}
@@ -930,7 +931,7 @@ def _mixed_host(tmp_path):
     projects = make_claude_tree(src, sid=SID, aid=AID)
     sid2, aid2 = "22222222-3333-4444-5555-666666666666", "b2b2b2b2b2b2b2b2b"
     make_claude_tree(src, sid=sid2, aid=aid2)
-    age([p for p in Path(projects).rglob("*.jsonl") if sid2 in str(p)], 7200)
+    age([p for p in Path(projects).rglob("*.jsonl") if sid2 in str(p)], 3 * 86400)              # older than SID
     plain = []
     for i in range(4):
         sid = f"0000000{i}-2222-3333-4444-{i + 1:012x}"
@@ -1457,3 +1458,120 @@ def test_the_owner_follows_the_session_the_records_name(tmp_path, names, owner):
     cfg = _pair_host(tmp_path, names=[ids[n] for n in names.split()])
     assert run_sync(cfg, now=True, runner=FakeRunner(), summary_cap=0).errors == []
     assert _subs_of(cfg, AID) == sorted(_owned_by(cfg, ids[owner]))
+
+
+# ================================================================ raw copies wait until the session settles
+
+def _fresh(cfg, sid=""):
+    """Make the host's source files (only those of `sid`, if given) 1 hour old: past the quiet period, not settled."""
+    files = list(Path(cfg.claude_dir).rglob("*.jsonl")) + list(Path(cfg.codex_dirs[0]).rglob("*.jsonl"))
+    age([f for f in files if sid in str(f)], 3600)
+
+
+def _days_later(days=1.1):
+    return FakeClock(time.time() + days * 86400)
+
+
+def _raw(cfg, sid=SID):
+    return cfg.root / f"raw/{cfg.host}/claude/2026/10/{sid}.jsonl.gz"
+
+
+def _tree(root, folder):
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in (root / folder).rglob("*") if p.is_file()}
+
+
+def _clean(cfg):
+    return gitops.git(cfg.root, "status", "--porcelain").stdout == ""
+
+
+def _wipe(cfg):
+    """Remove everything the sync derives; keep .kb/machine-id (it says which machine owns the host)."""
+    mid = (cfg.kb_dir / "machine-id").read_text()
+    for d in ("sessions", "raw", "catalog", ".kb"):
+        shutil.rmtree(cfg.root / d, ignore_errors=True)
+    cfg.kb_dir.mkdir()
+    (cfg.kb_dir / "machine-id").write_text(mid)
+
+
+def test_an_active_session_gets_its_markdown_now_and_its_raw_copy_once_it_settles(hosts):
+    a, _ = hosts
+    assert a.raw_settle_hours == 24
+    _fresh(a)
+    r = run_sync(a, runner=FakeRunner())
+    assert r.errors == [] and r.sessions == 3 and r.committed and r.pushed
+    assert _md(a, "_55555555.md") in _tracked(a.root) and not (a.root / "raw").exists()
+    waiting = State.load(a.kb_dir / "sync-state.json").raw_pending
+    assert len(waiting) == 3
+    assert pending_units(a, State.load(a.kb_dir / "sync-state.json"), now=True) == []      # kb status: 0 pending
+    r = run_sync(a, now=True, runner=FakeRunner())          # waiting is no work, even with --now
+    assert r.errors == [] and r.sessions == 0 and not r.committed and not (a.root / "raw").exists()
+    md = _tree(a.root, "sessions")
+    later = _days_later()
+    assert len(pending_units(a, State.load(a.kb_dir / "sync-state.json"), clock=later)) == 3
+    r = run_sync(a, runner=FakeRunner(), clock=later)
+    assert r.errors == [] and r.sessions == 3 and r.committed and r.pushed
+    assert _raw(a).exists() and set(_head_files(a.root)) == set(_tree(a.root, "raw"))     # the commit is the raw copies
+    assert _tree(a.root, "sessions") == md                                                  # the markdown did not change
+    st = State.load(a.kb_dir / "sync-state.json")
+    assert st.raw_pending == {} and all(st.files.get(k) == fp for k, fp in waiting.items())
+    r = run_sync(a, runner=FakeRunner(), clock=later)
+    assert r.sessions == 0 and not r.committed
+
+
+def test_a_growing_session_rewrites_its_markdown_but_not_its_raw_copy_until_it_settles_again(hosts):
+    a, _ = hosts
+    run_sync(a, runner=FakeRunner(), clock=_days_later())  # the fixture sessions are settled: all raw copies written
+    raw = _raw(a)
+    rel, before = raw.relative_to(a.root).as_posix(), raw.read_bytes()
+    md = _md(a, "_55555555.md")
+    for _ in range(3):                                      # the session goes on, with pauses past the quiet period
+        _grow_claude(a)
+        _fresh(a, SID)
+        r = run_sync(a, runner=FakeRunner())
+        assert r.errors == [] and r.sessions == 1 and r.committed
+        assert md in _head_files(a.root) and rel not in _head_files(a.root) and raw.read_bytes() == before
+    r = run_sync(a, runner=FakeRunner(), clock=_days_later())
+    assert r.errors == [] and r.sessions == 1 and r.committed
+    assert _head_files(a.root) == [rel] and raw.read_bytes() != before                     # one new version, once
+    assert _clean(a)
+
+
+def test_raw_settle_hours_0_writes_the_raw_copy_at_every_sync_as_before(hosts):
+    a, _ = hosts
+    a.raw_settle_hours = 0
+    _fresh(a)
+    r = run_sync(a, runner=FakeRunner())
+    assert r.errors == [] and _raw(a).exists() and State.load(a.kb_dir / "sync-state.json").raw_pending == {}
+    rel, before = _raw(a).relative_to(a.root).as_posix(), _raw(a).read_bytes()
+    _grow_claude(a)
+    _fresh(a, SID)
+    r = run_sync(a, runner=FakeRunner())
+    assert r.errors == [] and rel in _head_files(a.root) and _raw(a).read_bytes() != before
+
+
+def test_cold_rebuild_is_identical_while_raw_copies_wait_and_after_they_settle(hosts):
+    a, _ = hosts
+    _fresh(a)
+    run_sync(a, runner=FakeRunner())
+    _wipe(a)
+    r = run_sync(a, runner=FakeRunner())
+    assert r.errors == [] and r.sessions == 3 and not r.committed and _clean(a) and not (a.root / "raw").exists()
+    later = _days_later()
+    assert run_sync(a, runner=FakeRunner(), clock=later).committed
+    _wipe(a)
+    r = run_sync(a, runner=FakeRunner(), clock=later)
+    assert r.errors == [] and r.sessions == 3 and not r.committed and _clean(a) and _raw(a).exists()
+
+
+def test_a_session_that_moves_while_its_raw_copy_waits_takes_the_copy_along(hosts):
+    a, _ = hosts
+    run_sync(a, runner=FakeRunner(), clock=_days_later())  # settled: raw copies in 2026/10
+    _rewrite_month(a, SID)
+    _fresh(a, SID)                                          # it now starts in 2026/11 and is active again
+    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.committed
+    tracked = _tracked(a.root)
+    for name in (f"{SID}.jsonl.gz", f"{SID}__sub-{AID}.jsonl.gz"):
+        assert f"raw/host-a/claude/2026/11/{name}" in tracked and f"raw/host-a/claude/2026/10/{name}" not in tracked
+        assert not (a.root / f"raw/host-a/claude/2026/10/{name}").exists()
+    assert _clean(a)

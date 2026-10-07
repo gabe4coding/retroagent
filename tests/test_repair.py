@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 from fixtures import SID, clone, git
-from test_sync import (FakeRunner, _grow_claude, _head_files, _md, _no_gitleaks, _remote_files, hosts)  # noqa: F401
+from test_sync import (FakeRunner, _fresh, _grow_claude, _head_files, _md, _no_gitleaks, _remote_files,  # noqa: F401
+                       hosts)
 
 from kb import gitops, repair as repair_mod
 from kb import sync as sync_mod
@@ -186,6 +187,18 @@ def test_kb_repair_recovers_and_the_next_sync_pushes_and_keeps_the_remote_summar
     assert grown["turns"] > grown["summary_turns"]                        # the new turns are there, with the summary
     catalog = [json.loads(x) for x in _show(remote, "catalog/host-a/2026-10.jsonl").splitlines()]
     assert {c["summary"] for c in catalog if not c.get("parent")} == {VM_SUMMARY["summary"]}
+
+
+def test_kb_repair_forgets_waiting_raw_copies_so_an_active_session_renders_again(hosts, tmp_path):
+    """A raw copy that waits records that the session's markdown is written; the reset can drop that markdown."""
+    a, _ = _incident(hosts, tmp_path)
+    _fresh(a, SID)                                                        # the grown session is still active
+    r = run_sync(a, now=True, runner=FakeRunner(), summary_cap=0)
+    assert not r.pushed and State.load(a.kb_dir / "sync-state.json").raw_pending
+    repair_mod.repair(a)
+    assert State.load(a.kb_dir / "sync-state.json").raw_pending == {}
+    r = run_sync(a, now=True, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.pushed and _md(a, "_55555555.md") in _head_files(a.root)    # rendered again, pushed
 
 
 def _show(remote, rel, ref="main"):

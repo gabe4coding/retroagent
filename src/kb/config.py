@@ -40,6 +40,7 @@ class Config:
     gitleaks_path: str = ""                     # optional: where gitleaks is, tried before PATH
     require_gitleaks: bool = False              # true: no scanner means no commit
     branch: str = "main"                        # the sync touches git only on this branch
+    raw_settle_hours: int = 24                  # raw copy only once the session is idle this long (0: every sync)
 
     @property
     def kb_dir(self) -> Path:
@@ -147,4 +148,5 @@ def load(path: str | None = None) -> Config:
     cfg.require_gitleaks = _bool(raw, "require_gitleaks", False, bad=True)
     cfg.gitleaks_path = _text(raw, "gitleaks_path")
     cfg.branch = _text(raw, "branch") or cfg.branch
+    cfg.raw_settle_hours = _int(raw, "raw_settle_hours", cfg.raw_settle_hours)
     return cfg

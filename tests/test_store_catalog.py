@@ -177,6 +177,62 @@ def test_a_rename_inside_the_month_keeps_the_raw_file(tmp_path):
     assert (root / f"raw/h/claude/2026/10/{SID}.jsonl.gz").exists() and not (root / MAIN).exists()
 
 
+def _grown(tmp_path):
+    """The fixture session with one more prompt appended to its main transcript, parsed again."""
+    projects = tmp_path / "src" / "projects"
+    main = next(projects.rglob(f"{SID}.jsonl"))
+    with open(main, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"sessionId": SID, "cwd": "/Users/me/Repositories/demo", "type": "user", "uuid": "u-more",
+                             "timestamp": "2026-10-06T12:00:00.000Z",
+                             "message": {"role": "user", "content": "one more question"}}) + "\n")
+    return claude.parse_unit(claude.discover(projects)[0])
+
+
+def test_without_raw_only_the_markdown_is_written_and_it_is_the_same_markdown(tmp_path):
+    with_raw, without = tmp_path / "a", tmp_path / "b"
+    s = _session(tmp_path)
+    write_session(with_raw, "h", s, Counter())
+    written, sizes = write_session(without, "h", s, Counter(), raw=False)
+    assert written == [MAIN, SUB] and sizes["md"] > 0 and sizes["raw"] == 0
+    assert not (without / "raw").exists()
+    for rel in (MAIN, SUB):                                    # the markdown names its raw path either way
+        assert (without / rel).read_bytes() == (with_raw / rel).read_bytes()
+
+
+def test_without_raw_an_existing_raw_copy_is_left_as_it_is(tmp_path):
+    root = tmp_path / "kb"
+    write_session(root, "h", _session(tmp_path), Counter())
+    raw = root / f"raw/h/claude/2026/10/{SID}.jsonl.gz"
+    before, md_before = raw.read_bytes(), (root / MAIN).read_bytes()
+    grown = _grown(tmp_path)
+    write_session(root, "h", grown, Counter(), raw=False)
+    assert raw.read_bytes() == before and (root / MAIN).read_bytes() != md_before
+    write_session(root, "h", grown, Counter())
+    assert raw.read_bytes() != before
+
+
+def test_a_move_takes_an_existing_raw_copy_along_even_without_raw(tmp_path):
+    """A session moves to another month while its raw copy waits: the copy is written at the new path and the old
+    one is removed, so no stale copy stays behind and none goes missing."""
+    root = tmp_path / "kb"
+    s = _session(tmp_path)
+    write_session(root, "h", s, Counter())
+    touched = set()
+    _, sizes = write_session(root, "h", _moved(s), Counter(), known={SID: MAIN, AID: SUB}, touched=touched, raw=False)
+    for name in (f"{SID}.jsonl.gz", f"{SID}__sub-{AID}.jsonl.gz"):
+        assert not (root / f"raw/h/claude/2026/10/{name}").exists() and (root / f"raw/h/claude/2026/11/{name}").exists()
+    assert sizes["raw"] > 0 and touched == {"2026/10"}
+
+
+def test_a_move_without_an_earlier_raw_copy_still_waits(tmp_path):
+    root = tmp_path / "kb"
+    s = _session(tmp_path)
+    write_session(root, "h", s, Counter(), raw=False)
+    written, sizes = write_session(root, "h", _moved(s), Counter(), known={SID: MAIN, AID: SUB}, raw=False)
+    assert all("/2026/11/" in w for w in written) and not (root / MAIN).exists()
+    assert not (root / "raw").exists() and sizes["raw"] == 0
+
+
 @pytest.mark.parametrize("hostile", ["../README.md", "raw/other-host/claude/2026/10/x.jsonl.gz", "/etc/hosts",
                                      "README.md", "raw/h/claude/2026/10/../../../../README.md", 5, ["x"]])
 def test_a_raw_value_that_points_outside_this_hosts_raw_folder_is_never_deleted(tmp_path, hostile):
