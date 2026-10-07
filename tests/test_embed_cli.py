@@ -9,6 +9,15 @@ from kb import config, embed_runtime
 from kb.cli import main
 
 
+@pytest.fixture(autouse=True)
+def fills(monkeypatch):
+    """Background fills `kb find` would start, recorded instead of run (a fast test starts no process)."""
+    from kb import cli
+    started = []
+    monkeypatch.setattr(cli, "_spawn_fill", lambda: started.append(1))
+    return started
+
+
 @pytest.fixture
 def server():
     s = FakeEmbedServer()
@@ -98,3 +107,82 @@ def test_find_through_the_bit_index_and_remove_drops_it(kb_env, server, capsys, 
     assert run(capsys, "find", "unstable", "--no-pages", "--no-memories") == exact
     run(capsys, "embed", "--remove")
     assert not bits.exists()
+
+
+def test_find_starts_one_background_fill_when_vectors_are_behind(kb_env, server, capsys, fills, monkeypatch):
+    import os
+    import time
+
+    from kb import cli, embed_runtime
+    run(capsys, "find", "flaky")
+    assert fills == []                                                 # feature off: never
+    _set(embed_url=server.url)
+    main(["find", "flaky", "-v"])
+    assert fills == [1] and "filling them in the background" in capsys.readouterr().err   # no store yet
+    run(capsys, "find", "flaky")
+    assert fills == [1]                                                # at most once per FILL_EVERY
+    stamp = embed_runtime.cache_dir() / "last-fill"
+    old = time.time() - cli.FILL_EVERY - 1
+    os.utime(stamp, (old, old))
+    run(capsys, "embed")                                               # complete now
+    run(capsys, "find", "flaky")
+    assert fills == [1]                                                # not behind: nothing to fill
+    os.utime(stamp, (old, old))
+    from test_index import put
+    put(kb_env, "h/new.md", "new-1", title="A new session")
+    run(capsys, "reindex")
+    run(capsys, "find", "flaky")
+    assert fills == [1, 1]                                             # behind again
+
+
+def test_no_fill_without_a_runnable_model(kb_env, capsys, fills):
+    _set(embed=True)                                                   # on, but the runtime is not installed
+    run(capsys, "find", "flaky")
+    assert fills == []
+
+
+def test_quiet_does_nothing_when_off_and_embeds_silently_when_on(kb_env, server, capsys):
+    code, out = run(capsys, "embed", "--quiet")
+    assert (code, out) == (0, "") and config.load().embed is False and server.calls == 0
+    _set(embed_url=server.url)
+    code, out = run(capsys, "embed", "--quiet")
+    assert (code, out) == (0, "") and server.calls > 0
+    assert "5 items" not in out and "4 sessions" in run(capsys, "embed", "--status")[1]
+
+
+def test_install_downloads_and_turns_on_without_starting_anything(kb_env, capsys, monkeypatch, tmp_path):
+    from kb import embed_runtime
+    calls = []
+    monkeypatch.setattr(embed_runtime, "install", lambda progress=None: calls.append(1))
+    code, out = run(capsys, "embed", "--install", "--root", str(tmp_path / "data"))
+    assert code == 0 and calls == [1] and "installed" in out
+    cfg = config.load()
+    assert cfg.embed is True and cfg.root == (tmp_path / "data").resolve()
+    assert not embed_runtime.Server().state_path.exists()              # no server started
+    monkeypatch.setattr(embed_runtime, "install", lambda progress=None: (_ for _ in ()).throw(
+        embed_runtime.EmbedUnavailable("download failed: offline")))
+    assert run(capsys, "embed", "--install") == (2, "kb: download failed: offline\n")
+
+
+@pytest.mark.slow
+def test_the_background_fill_really_runs(kb_env, server, capsys, fills):
+    import importlib
+    import time
+
+    from kb import cli, embed
+    real = importlib.reload(cli)._spawn_fill                           # the unpatched function (env stays isolated)
+    _set(embed_url=server.url)
+    run(capsys, "reindex")                                             # the child opens the index read-only
+    real()
+    store = kb_env / ".kb" / embed.STORE
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        st = embed.Vectors.open_readonly(store)
+        if st is not None:
+            n = sum(st.counts(embed.model_key("url:" + server.url)).values())
+            st.close()
+            if n >= 5:
+                break
+        time.sleep(0.2)
+    else:
+        raise AssertionError("the background kb embed --quiet did not fill the store")

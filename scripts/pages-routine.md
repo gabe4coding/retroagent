@@ -44,7 +44,9 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
    `/home/user/<repo name>`); your working directory may be that parent or one of them. `<data>` is the checkout of
    the data repo your task names. `<code>` is the folder that holds `bin/kb` and this file
    (`ls -d <parent>/*/bin/kb`). Check both with `KB_ROOT=<data> <code>/bin/kb --help`. If either is missing, stop and
-   report it; do not clone anything.
+   report it; do not clone anything. Then run `kb embed --quiet` once. It does nothing unless the environment's setup
+   script turned semantic search on (`kb setup cloud`). When it is on, it imports the vectors the owner's machines
+   committed and embeds what changed, within a minute and only under `.kb/`, so `kb find` also matches by meaning.
 1. **Start.** `kb pages start`. It prints the branch this run writes to. `bootstrap: true`
    means the first build: it works on the bootstrap branch and reaches `main` only through a pull request.
 2. **Plan.** `kb pages plan`, once per run (save its output to a file if you need it
