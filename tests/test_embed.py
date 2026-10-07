@@ -176,6 +176,11 @@ def test_dense_none_keeps_todays_results(kbx):
     assert idx.find("flaky", dense=[]) == idx.find("flaky")                    # an empty dense ranking: same order
 
 
+def test_a_vector_of_a_session_gone_from_the_index_is_dropped(kbx):
+    _, idx, _ = kbx
+    assert idx.find("flaky", dense=["gone-session"]) == idx.find("flaky")
+
+
 def _cfg(root, **kw):
     from kb.config import Config
     cfg = Config(root=root, host="h")

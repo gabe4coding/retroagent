@@ -9,6 +9,7 @@ from test_index import OLD_SCHEMA, build_kb, put
 
 from kb import cli
 from kb.cli import main
+from kb.index import Index
 from kb.state import State
 from kb.stats import REPORTS
 from kb.util import short_id
@@ -85,6 +86,40 @@ def test_reindex_and_status(kb_env, capsys):
     assert code == 0 and out.strip() == "indexed 4 sessions"
     _, out = run(capsys, "status")
     assert "last sync: never" in out and "pending sessions: 0" in out and "summary backlog: 2" in out
+
+
+def test_reindex_keeps_an_open_writer_working(kb_env, capsys):
+    run(capsys, "reindex")
+    writer = Index(kb_env / ".kb" / "index.sqlite")                     # a sync that has the index open
+    try:
+        code, out = run(capsys, "reindex")
+        assert code == 0 and out.strip() == "indexed 4 sessions"
+        put(kb_env, "h/claude/2026/10/2026-10-07_demo_99999999.md", "99999999-0000")
+        assert writer.update(kb_env) == 1                                # it writes into the file the others read
+    finally:
+        writer.close()
+    assert "99999999" in run(capsys, "find", "hello", "--no-pages", "--no-memories")[1]
+
+
+def test_reindex_during_a_sync_only_updates(kb_env, capsys):
+    from kb.lock import Lock
+    run(capsys, "reindex")
+    lock = Lock(kb_env / ".kb" / "lock")
+    assert lock.acquire()
+    try:
+        code, out = run(capsys, "reindex")
+    finally:
+        lock.release()
+    assert code == 0 and out.splitlines() == ["kb: a sync is running, so the index was brought up to date, not rebuilt",
+                                              "indexed 0 sessions"]
+
+
+def test_reindex_replaces_a_file_that_is_not_a_database(kb_env, capsys):
+    path = kb_env / ".kb" / "index.sqlite"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"not a database" * 100)
+    code, out = run(capsys, "reindex")
+    assert code == 0 and out.strip() == "indexed 4 sessions"
 
 
 def test_help(capsys):

@@ -201,6 +201,25 @@ def test_finish_without_news_makes_no_commit(tmp_path):
     assert res["committed"] is False and git(root, "rev-parse", "HEAD") == head
 
 
+def test_an_unwritten_page_is_planned_again(tmp_path):
+    root = repo(tmp_path / "kb")
+    demo(root)
+    plan(root, retro_weeks_back=0)
+    res = routine.finish(root, settings(), now=NOW, push=False)                # the create is not written
+    assert res["returned"] == ["alpha"]
+    p = plan(root, retro_weeks_back=0)
+    assert [(i["name"], i["action"]) for i in p["projects"]] == [("alpha", "create")]
+    write_alpha(root)
+    routine.finish(root, settings(), now=NOW, push=False)
+    session(root, "a0000004", "alpha", "2026-10-07T08:00:00Z")
+    commit(root)
+    plan(root, retro_weeks_back=0)
+    res = routine.finish(root, settings(), now=NOW, push=False)                # the update is not written
+    assert res["returned"] == ["alpha"]
+    p = plan(root, retro_weeks_back=0)
+    assert [(i["name"], i["action"], i["sessions"]) for i in p["projects"]] == [("alpha", "update", ["a0000004"])]
+
+
 def test_skip_drops_an_unwritten_page(tmp_path):
     root = repo(tmp_path / "kb")
     demo(root)
@@ -461,6 +480,7 @@ def test_due(tmp_path, monkeypatch, capsys):
         started="2026-10-07T08:30:00Z", ended="2026-10-07T08:30:00Z", summary="")   # waits for its summary
     commit(root)
     assert routine.due(plan(root), settings())["reason"] == "1 project page and 0 retros to write"
+    write_alpha(root, sources=("a0000001", "a0000002", "a0000003", "a0000004"))
     routine.finish(root, settings(), now=NOW, push=False)
     d = routine.due(plan(root), settings())
     assert d["due"] is False and d["reason"] == "nothing to write (1 sessions waiting for a summary)"

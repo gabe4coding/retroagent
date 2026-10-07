@@ -122,6 +122,30 @@ def test_a_branch_with_other_changes_is_kept(setup_):
     idx.close()
 
 
+def test_an_older_copy_on_a_kept_branch_never_replaces_a_newer_import(setup_):
+    remote, cfg, transcript, home = setup_
+    (cfg.root / "notes.md").write_text("work\n")
+    git("add", "notes.md", cwd=cfg.root)
+    git("commit", "-q", "-m", "notes", cwd=cfg.root)
+    git("push", "-q", "origin", BRANCH, cwd=cfg.root)
+    cloud.push(cfg, str(transcript))                                         # the old copy, on a kept branch
+    with open(transcript, "a", encoding="utf-8") as fh:
+        for i in range(3):
+            fh.write(json.dumps({"type": "user", "sessionId": SID, "timestamp": f"2026-10-06T14:0{i}:00.000Z",
+                                 "message": {"role": "user", "content": f"turn {i} " * 20}}) + "\n")
+    git("checkout", "-q", "-b", "claude/other-z9", "origin/main", cwd=cfg.root)
+    cloud.push(cfg, str(transcript))                                         # the newer copy, on another branch
+    ccfg = cloud.lane(home)
+    written, errors, done = cloud.import_inbox(home, ccfg)
+    assert errors == [] and [name for name, _ in done] == ["claude/other-z9"]
+    assert cloud.delete_branches(home.root, done) == []
+    local = next(Path(ccfg.claude_dir).glob("*/*.jsonl"))
+    newer = local.read_bytes()
+    assert b"turn 2" in newer
+    written, errors, _ = cloud.import_inbox(home, ccfg)
+    assert errors == [] and written == 0 and local.read_bytes() == newer
+
+
 def test_a_second_importer_stops_with_a_note(setup_, tmp_path):
     remote, cfg, transcript, home = setup_
     cloud.push(cfg, str(transcript))

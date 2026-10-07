@@ -9,8 +9,9 @@
 #   --host NAME    this machine's name in the KB (default: the config's host, else the short hostname).
 #                  It must be unique per machine.
 #   --no-sync      do not start a background sync (only matters when auto_sync is already on).
-#   --force-host   skip the check that sessions/<host> belongs to another machine (use it on the machine that
-#                  already wrote those sessions, once, to claim them).
+#   --force-host   skip the check that sessions/<host> belongs to another machine, and take the id of its
+#                  committed marker (use it on the machine that already wrote those sessions, once, to claim them:
+#                  after a new clone or a lost .kb/machine-id).
 # Does: data clone, config file, Claude plugin, Codex plugin, ~/.local/bin/kb, index. Automatic syncs stay off
 # (auto_sync=false) until you run `kb enable`.
 set -eu
@@ -125,8 +126,15 @@ if [ -e "$HOSTDIR" ] && [ "$FORCE_HOST" != 1 ]; then
     die "sessions/$HOST already exists in $ROOT and this machine has no id yet (.kb/machine-id), so another machine may use the host '$HOST'. Choose a unique name with --host NAME. If this is the machine that wrote those sessions, run again with --force-host."
   fi
   if [ -s "$MARKER" ] && [ "$(squash "$MARKER")" != "$(squash "$LOCAL_ID")" ]; then
-    die "host '$HOST' belongs to another machine (sessions/$HOST/.machine-id is not this machine's id). Choose a unique name with --host NAME."
+    die "host '$HOST' belongs to another machine (sessions/$HOST/.machine-id is not this machine's id). Choose a unique name with --host NAME. If this is the machine that wrote those sessions (a new clone, a lost .kb/machine-id), run again with --force-host."
   fi
+fi
+# --force-host on the owner after a new clone or a lost .kb/machine-id: take the committed id back, else every sync
+# stops with "belongs to another machine"
+if [ "$FORCE_HOST" = 1 ] && [ -s "$MARKER" ] && { [ ! -s "$LOCAL_ID" ] || [ "$(squash "$MARKER")" != "$(squash "$LOCAL_ID")" ]; }; then
+  mkdir -p "$ROOT/.kb"
+  cp "$MARKER" "$LOCAL_ID"
+  say "host: this machine takes the id of sessions/$HOST/.machine-id (--force-host)"
 fi
 
 # 6. gitleaks: look in PATH, then the usual folders

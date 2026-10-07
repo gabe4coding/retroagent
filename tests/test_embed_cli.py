@@ -43,7 +43,8 @@ def test_embed_then_find_a_paraphrase(kb_env, server, capsys):
     calls = server.calls
     assert run(capsys, "find", "unstable", "--no-embed")[0] == 1
     assert run(capsys, "find", "unstable", "--fts")[0] == 1
-    assert server.calls == calls                                       # neither asked the model
+    assert run(capsys, "find", "unstable", "--role", "user")[0] == 1    # the vectors do not know who wrote a text
+    assert server.calls == calls                                       # none asked the model
     code, out = run(capsys, "embed")
     assert out.startswith("embedded 0 items")
     code, out = run(capsys, "embed", "--rebuild")
