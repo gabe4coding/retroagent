@@ -1,5 +1,5 @@
 #!/bin/sh
 # Run the test suite on the runtime target (/usr/bin/python3, 3.9) with pytest provided by uv.
-# Usage: scripts/test [pytest args]
+# Usage: scripts/test [pytest args]   (-q is already on: another -q hides the summary line with the counts)
 cd "$(dirname "$0")/.." || exit 1
 exec uv run --no-project --python /usr/bin/python3 --with pytest -- python -m pytest -q "$@"
