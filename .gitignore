@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 docs/superpowers/
 *.tmp
+
+# Explainer video project (manim scenes, narration, renders): local only.
+.claude/explainer-video/
