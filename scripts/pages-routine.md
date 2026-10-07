@@ -1,7 +1,7 @@
 # Pages routine
 
-Instructions for the retroagent pages routine. It runs in the cloud on two checkouts side by side: a data repo (your
-working directory: the synced sessions, memories and pages) and the retroagent code (where this file is). The data
+Instructions for the retroagent pages routine. It runs in the cloud on two checkouts side by side, in one parent
+folder: a data repo (the synced sessions, memories and pages) and the retroagent code (where this file is). The data
 repo's `.github/workflows/pages-trigger.yml` fires it when there is something to write, at most once every few hours (routine runs are counted per day). It keeps `pages/` up to date
 from the synced sessions and memories: one page per project (`pages/projects/<name>.md`) and one retrospective per
 closed week (`pages/retro/<YYYY-Www>.md`). People and agents read them with `kb page` and find them with `kb find`.
@@ -40,10 +40,11 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
 
 ## Steps
 
-0. **Find the two checkouts.** `<data>` is the checkout of the data repo your task names: normally your working
-   directory, in a folder with the repo's name (`git rev-parse --show-toplevel`). `<code>` is the retroagent checkout
-   next to it, the folder that holds `bin/kb` and this file (`ls -d "$(dirname <data>)"/*/bin/kb`). Check both with
-   `KB_ROOT=<data> <code>/bin/kb --help`. If either is missing, stop and report it; do not clone anything.
+0. **Find the two checkouts.** Both sit in one parent folder, each in a folder named after its repo (in the cloud:
+   `/home/user/<repo name>`); your working directory may be that parent or one of them. `<data>` is the checkout of
+   the data repo your task names. `<code>` is the folder that holds `bin/kb` and this file
+   (`ls -d <parent>/*/bin/kb`). Check both with `KB_ROOT=<data> <code>/bin/kb --help`. If either is missing, stop and
+   report it; do not clone anything.
 1. **Start.** `kb pages start`. It prints the branch this run writes to. `bootstrap: true`
    means the first build: it works on the bootstrap branch and reaches `main` only through a pull request.
 2. **Plan.** `kb pages plan`, once per run (save its output to a file if you need it
