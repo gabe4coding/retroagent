@@ -48,8 +48,9 @@ Rules:
    repo without review; without it, the user runs `kb update` to update.
 9. **Semantic search.** Ask (skip when `kb embed --status` says it is on). `kb embed` downloads a local embedding
    model and its runtime (about 330 MB, checked by sha256, into `~/.cache/retroagent/embed`), embeds every session,
-   page and memory, and turns it on: `kb find` then also matches paraphrases and other languages. Everything runs on
-   this machine; the model uses about 500 MB of RAM while loaded and stops when idle. `kb embed --off` turns it off.
+   the user's messages, every page and memory, and turns it on: `kb find` then also matches paraphrases and other
+   languages. Everything runs on this machine; the model uses about 500 MB of RAM while loaded and stops when idle.
+   `kb embed --off` turns it off.
 10. **Codex.** When `codex` is installed: tell the user to open Codex once and trust the retroagent hook with `/hooks`.
 11. **Pages routine.** Before you offer it, read `references/pages-routine.md` in this skill's folder: how to
     explain it, then `kb setup routine` and the routine itself.

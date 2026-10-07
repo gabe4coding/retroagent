@@ -43,7 +43,8 @@ Ids are the 8-character short id shown in lists, or any unique prefix of it or o
 Optional. `kb find` matches words with BM25. With semantic search on, it also ranks pages, memories and sessions by
 meaning with a local embedding model ([EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2)) and merges
 both rankings. Then "make the CI cheaper" finds a session about "cutting token spend", and an Italian query finds an
-English session.
+English session. A session counts as a match when its summary or one of your own messages in it (40 characters or
+more) is close to the query, so a detail you said in the middle of a session can be found too.
 
 `kb embed` sets it up, once:
 
@@ -51,7 +52,7 @@ English session.
   (about 330 MB together) into `~/.cache/retroagent/embed/`, and checks both against a pinned sha256. macOS
   (Apple Silicon and Intel) and Linux (x86-64 and arm64) are supported.
 - It starts a `llama-server` on `127.0.0.1` (a free port, an API key only `kb` reads, no network access), embeds
-  every session, page and memory, and turns the feature on.
+  every session, your messages, every page and memory, and turns the feature on.
 
 You manage nothing after that:
 
@@ -62,7 +63,8 @@ You manage nothing after that:
   fails because of it.
 - The server unloads the model after 5 minutes idle (it uses about 500 MB of RAM while loaded), and any `kb` command
   stops the process after an hour without use.
-- Vectors live in `<data clone>/.kb/embeddings.sqlite`. They never sync; each machine embeds its own copy.
+- Vectors live in `<data clone>/.kb/embeddings.sqlite` (a few MB: each keeps 256 of the model's 768 numbers). They
+  never sync; each machine embeds its own copy.
 - `kb update` brings new pinned versions; the next sync downloads them.
 
 `kb embed --status` shows what is installed, running and embedded. `kb embed --off` turns the feature off and keeps

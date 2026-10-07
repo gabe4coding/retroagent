@@ -177,7 +177,7 @@ def test_managed_path_end_to_end(site, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("KB_CONFIG", str(cfg))
     site(_fake_runtime())
     code, out = run(capsys, "embed")
-    assert code == 0 and out.startswith("embedded 4 items") and config.load().embed is True
+    assert code == 0 and out.startswith("embedded 5 items") and config.load().embed is True
     srv = er.Server()
     assert srv.alive()
     code, out = run(capsys, "find", "unstable", "--no-pages", "--no-memories")

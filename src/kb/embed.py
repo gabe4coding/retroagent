@@ -1,9 +1,12 @@
-"""Semantic search data: embed the text of sessions, pages and memories, keep the vectors, rank by similarity.
+"""Semantic search data: embed the text of sessions, their user turns, pages and memories, keep the vectors, rank
+by similarity.
 
 Vectors live in <root>/.kb/embeddings.sqlite, beside the index but in their own file: `kb reindex` and index schema
-changes keep them, and .kb/ never syncs. A row is valid for one model and one text (sha1); anything else is embedded
-again. The prompts follow the EmbeddingGemma 2 model card. Stdlib only: a dot product over ~1000 vectors takes tens
-of milliseconds in plain Python.
+changes keep them, and .kb/ never syncs. A row is valid for one model key and one text (sha1); anything else is
+embedded again. Vectors keep their first DIM numbers (EmbeddingGemma 2 is trained for such cuts): a third of the
+storage and the comparison time for about the same ranking. A session ranks by its best match among its summary
+document and its user turns, so a detail said only in the middle of a session can be found. The prompts follow the
+EmbeddingGemma 2 model card. Stdlib only: comparing a query with a few thousand vectors takes tens of milliseconds.
 """
 from __future__ import annotations
 
@@ -20,14 +23,27 @@ from dataclasses import dataclass
 from pathlib import Path
 
 STORE = "embeddings.sqlite"  # in <root>/.kb/
-KINDS = ("session", "page", "memory")
-DOC_CHARS = 2000            # text embedded per item; longer pages are cut (BM25 still sees all of it)
+KINDS = ("session", "turn", "page", "memory")
+DIM = 256                   # numbers kept per vector (of 768)
+TURN_MIN = 40               # shorter user turns ("yes", "push it") add only noise
+DOC_CHARS = 2000            # text embedded per item; longer ones are cut (BM25 still sees all of it)
 BATCH = 32
 POOL = 50                   # items each ranking gives to the fusion
 
 
 class EmbedError(Exception):
     """The embedding server did not give vectors. One line."""
+
+
+def describe(counts: dict) -> str:
+    """'12 sessions, 30 turns, 1 page, 0 memories' from {kind: count}."""
+    plural = {"session": "sessions", "turn": "turns", "page": "pages", "memory": "memories"}
+    return ", ".join(f"{counts.get(k, 0)} {plural[k] if counts.get(k, 0) != 1 else k}" for k in KINDS)
+
+
+def model_key(model: str) -> str:
+    """What a stored vector is valid for: the model and the cut."""
+    return f"{model}/{DIM}"
 
 
 def query_text(q: str) -> str:
@@ -39,7 +55,7 @@ def doc_text(title: str, text: str) -> str:
 
 
 def embed(texts: list, url: str, key: str = "", timeout: float = 60.0) -> list:
-    """Unit vectors for texts, in order, from an OpenAI-compatible /v1/embeddings server."""
+    """Unit vectors for texts, in order, from an OpenAI-compatible /v1/embeddings server, cut to DIM numbers."""
     out = []
     headers = {"Content-Type": "application/json"}
     if key:
@@ -56,6 +72,7 @@ def embed(texts: list, url: str, key: str = "", timeout: float = 60.0) -> list:
         if len(vecs) != len(chunk) or len({len(v) for v in vecs}) != 1:
             raise EmbedError("embedding server returned a wrong number or size of vectors")
         for v in vecs:
+            v = v[:DIM]
             n = math.sqrt(sum(x * x for x in v)) or 1.0
             out.append([x / n for x in v])
     return out
@@ -64,13 +81,16 @@ def embed(texts: list, url: str, key: str = "", timeout: float = 60.0) -> list:
 # ---- what gets embedded
 
 def documents(db) -> list:
-    """(kind, key, text) for every session, page and memory in the index."""
+    """(kind, key, text) for every session, user turn (key "<session id>#<n>"), page and memory in the index."""
     docs = []
     for r in db.execute("SELECT s.id, f.title, f.summary, f.tags, f.decisions, f.first_prompt "
                         "FROM sessions s JOIN sessions_fts f ON f.rowid = s.rowid"):
         parts = [r["summary"], _list("Tags", r["tags"]), _list("Decisions", r["decisions"]),
                  r["first_prompt"] and "First prompt: " + r["first_prompt"]]
         docs.append(("session", r["id"], doc_text(r["title"], "\n".join(p for p in parts if p))))
+    for r in db.execute("SELECT t.session_id, t.n, t.text, s.title FROM turns t JOIN sessions s ON s.id = t.session_id "
+                        "WHERE t.role = 'user' AND length(t.text) >= ?", (TURN_MIN,)):
+        docs.append(("turn", f"{r['session_id']}#{r['n']}", doc_text(r["title"], r["text"])))
     for r in db.execute("SELECT p.path, f.title, f.body FROM pages p JOIN pages_fts f ON f.rowid = p.rowid"):
         docs.append(("page", r["path"], doc_text(r["title"], r["body"] or "")))
     for r in db.execute("SELECT m.path, f.name, f.description, f.body "
@@ -187,8 +207,9 @@ def prune(db, store: Vectors) -> int:
 def run_embed(db, store: Vectors, endpoint, limit: int = None, deadline: float = None, clock=time.time) -> EmbedReport:
     """Embed what is missing, a batch per transaction, until done, limit items, or the deadline. Never raises
     EmbedError: it lands in the report, and the finished batches stay."""
+    model = model_key(endpoint.model)
     rep = EmbedReport(removed=prune(db, store))
-    todo = plan(db, store, endpoint.model)
+    todo = plan(db, store, model)
     if limit is not None:
         todo = todo[:limit]
     for i in range(0, len(todo), BATCH):
@@ -200,13 +221,32 @@ def run_embed(db, store: Vectors, endpoint, limit: int = None, deadline: float =
         except EmbedError as e:
             rep.error = str(e)
             break
-        store.put([(k, key, sha, endpoint.model, v) for (k, key, sha, _), v in zip(chunk, vecs)])
+        store.put([(k, key, sha, model, v) for (k, key, sha, _), v in zip(chunk, vecs)])
         rep.done += len(chunk)
-    rep.left = len(plan(db, store, endpoint.model))
+    rep.left = len(plan(db, store, model))
     return rep
 
 
 # ---- ranking
+
+def rank(store: Vectors, model: str, kind: str, qvec, allowed=None, n: int = POOL) -> list:
+    """Keys of kind ranked by similarity to qvec, best first. A session scores its best match among its summary
+    document and its user turns."""
+    key = model_key(model)
+    if kind != "session":
+        return dense(store.load(kind, key), qvec, allowed, n)
+    best = {}
+    mul = operator.mul
+    for vectors, sid_of in ((store.load("session", key), lambda k: k),
+                            (store.load("turn", key), lambda k: k.rsplit("#", 1)[0])):
+        for k, v in vectors.items():
+            sid = sid_of(k)
+            if allowed is None or sid in allowed:
+                score = sum(map(mul, qvec, v))
+                if score > best.get(sid, -2.0):
+                    best[sid] = score
+    return sorted(best, key=lambda sid: (-best[sid], sid))[:n]
+
 
 def dense(vectors: dict, qvec, allowed=None, n: int = POOL) -> list:
     """Keys of the n vectors closest to qvec (dot product of unit vectors), best first; only keys in allowed."""

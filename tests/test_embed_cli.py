@@ -26,7 +26,7 @@ def test_embed_then_find_a_paraphrase(kb_env, server, capsys):
     code, out = run(capsys, "find", "unstable", "--no-pages", "--no-memories")
     assert code == 1                                                   # no vectors yet: BM25 alone, no match
     code, out = run(capsys, "embed")
-    assert code == 0 and out.startswith("embedded 4 items (4 sessions") and "0 left" in out
+    assert code == 0 and out.startswith("embedded 5 items (4 sessions, 1 turn,") and "0 left" in out
     assert config.load().embed is True
     code, out = run(capsys, "find", "unstable", "--no-pages", "--no-memories")
     assert code == 0 and SID[-8:] in out.splitlines()[0]               # "unstable" means "flaky" to the model
@@ -38,7 +38,7 @@ def test_embed_then_find_a_paraphrase(kb_env, server, capsys):
     code, out = run(capsys, "embed")
     assert out.startswith("embedded 0 items")
     code, out = run(capsys, "embed", "--rebuild")
-    assert code == 0 and out.startswith("embedded 4 items")                # everything again
+    assert code == 0 and out.startswith("embedded 5 items")                # everything again
 
 
 def test_a_dead_server_gives_plain_bm25(kb_env, server, capsys):

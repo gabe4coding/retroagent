@@ -88,7 +88,8 @@ def test_run_embed_is_incremental_and_follows_changes(kbx, server):
     rep = embed.run_embed(idx.db, store, ep)
     assert (rep.done, rep.removed) == (1, 1)                                  # the edited summary; the gone memory
     assert embed.run_embed(idx.db, store, Endpoint(server.url, "", "m2")).done == 4    # another model: all again
-    assert store.counts("m2") == {"session": 3, "page": 1}
+    assert store.counts(embed.model_key("m2")) == {"session": 3, "page": 1}
+    assert store.counts(embed.model_key("m1")) == {}                          # same items: their rows were replaced
 
 
 def test_run_embed_stops_at_deadline_limit_and_errors(kbx, server):
@@ -100,18 +101,45 @@ def test_run_embed_stops_at_deadline_limit_and_errors(kbx, server):
     server.fail = True
     rep = embed.run_embed(idx.db, store, ep)
     assert rep.done == 0 and rep.left == 3 and rep.error
-    assert sum(store.counts("m1").values()) == 2                              # finished batches stay
+    assert sum(store.counts(embed.model_key("m1")).values()) == 2             # finished batches stay
 
 
 def test_store_round_trip_and_readonly(kbx, server, tmp_path):
     root, idx, store = kbx
     embed.run_embed(idx.db, store, Endpoint(server.url, "", "m1"))
     ro = embed.Vectors.open_readonly(root / ".kb" / "embeddings.sqlite")
-    vecs = ro.load("session", "m1")
+    vecs = ro.load("session", embed.model_key("m1"))
     assert set(vecs) == {"a-1", "b-1", "c-1"} and len(vecs["a-1"]) == 64
     assert list(vecs["a-1"]) == pytest.approx(fake_vector(embed.documents(idx.db)[0][2]), abs=1e-6)
     ro.close()
     assert embed.Vectors.open_readonly(tmp_path / "missing.sqlite") is None
+
+
+def test_a_session_ranks_by_its_best_turn(kbx, server):
+    root, idx, store = kbx
+    long_turn = "and the unstable motion check broke again on the release branch, look at it"
+    put(root, "h/e.md", "e-1", title="Release prep", summary="Prepared the release notes.",
+        turns=("start", "ok", long_turn, "ok", "yes"))                  # "yes" and "start": too short to embed
+    idx.update(root)
+    rep = embed.run_embed(idx.db, store, Endpoint(server.url, "", "m1"))
+    assert store.counts(embed.model_key("m1"))["turn"] == 1
+    docs = {key: text for kind, key, text in embed.documents(idx.db) if kind == "turn"}
+    assert docs == {"e-1#3": f"title: Release prep | text: {long_turn}"}
+    q = embed.embed([embed.query_text("motion check")], server.url)[0]    # only in the turn, not the summary
+    assert embed.rank(store, "m1", "session", q, idx.keys("session"))[0] == "e-1"
+    assert "e-1" not in embed.rank(store, "m1", "session", q, idx.keys("session", Filters(project="other")))
+    assert rep.done == 7                                                     # 4 sessions, 1 turn, page, memory
+
+
+def test_vectors_are_cut_to_dim(server, monkeypatch):
+    monkeypatch.setattr(embed, "DIM", 8)
+    v = embed.embed(["some words here"], server.url)[0]
+    assert len(v) == 8 and sum(x * x for x in v) == pytest.approx(1.0)
+    assert embed.model_key("m") == "m/8"
+
+
+def test_describe_counts():
+    assert embed.describe({"session": 1, "turn": 3, "memory": 2}) == "1 session, 3 turns, 0 pages, 2 memories"
 
 
 def test_dense_ranks_and_filters():
@@ -129,17 +157,16 @@ def test_find_fuses_and_keeps_filters(kbx, server):
     root, idx, store = kbx
     ep = Endpoint(server.url, "", "m1")
     embed.run_embed(idx.db, store, ep)
-    vecs = store.load("session", "m1")
     q = embed.embed([embed.query_text("cheaper spend")], server.url)[0]
     assert [h["id"] for h in idx.find("cheaper spend")] == []                   # BM25 alone: no shared word
-    hits = idx.find("cheaper spend", dense=embed.dense(vecs, q, idx.keys("session")))
+    hits = idx.find("cheaper spend", dense=embed.rank(store, "m1", "session", q, idx.keys("session")))
     assert hits[0]["id"] == "a-1" and hits[0]["snippet"].startswith("Cut the cost")
     f = Filters(project="other")
-    hits = idx.find("cheaper spend", f, dense=embed.dense(vecs, q, idx.keys("session", f)))
+    hits = idx.find("cheaper spend", f, dense=embed.rank(store, "m1", "session", q, idx.keys("session", f)))
     assert {h["id"] for h in hits} == {"b-1"}
-    mem = idx.find_memories("cheaper", dense=embed.dense(store.load("memory", "m1"), q, idx.keys("memory")))
+    mem = idx.find_memories("cheaper", dense=embed.rank(store, "m1", "memory", q, idx.keys("memory")))
     assert mem[0]["name"] == "budget"
-    pages = idx.find_pages("cheaper", dense=embed.dense(store.load("page", "m1"), q, idx.keys("page")))
+    pages = idx.find_pages("cheaper", dense=embed.rank(store, "m1", "page", q, idx.keys("page")))
     assert pages[0]["name"] == "demo"
 
 

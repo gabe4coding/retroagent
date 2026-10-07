@@ -177,12 +177,12 @@ def _dense_rankings(cfg, args, idx, query: str, want_pages: bool, want_memories:
         q = embed.embed([embed.query_text(query)], ep.url, ep.key, timeout=embed_runtime.PROBE)[0]
         if not cfg.embed_url:
             embed_runtime.Server().touch()
-        out = {"session": embed.dense(store.load("session", ep.model), q,
-                                      idx.keys("session", _filters(args, not args.no_subagents)))}
+        out = {"session": embed.rank(store, ep.model, "session", q,
+                                     idx.keys("session", _filters(args, not args.no_subagents)))}
         if want_pages:
-            out["page"] = embed.dense(store.load("page", ep.model), q, idx.keys("page", project=args.project or ""))
+            out["page"] = embed.rank(store, ep.model, "page", q, idx.keys("page", project=args.project or ""))
         if want_memories:
-            out["memory"] = embed.dense(store.load("memory", ep.model), q, idx.keys("memory", _filters(args)))
+            out["memory"] = embed.rank(store, ep.model, "memory", q, idx.keys("memory", _filters(args)))
         return out
     except (embed.EmbedError, embed_runtime.EmbedUnavailable, sqlite3.Error, OSError) as e:
         return _no_dense(args, str(e))
@@ -618,7 +618,7 @@ def cmd_embed(args, cfg) -> int:
     store = embed.Vectors(store_path)
     try:
         rep = embed.run_embed(idx.db, store, ep, limit=args.limit)
-        counts = store.counts(ep.model)
+        counts = store.counts(embed.model_key(ep.model))
     finally:
         store.close()
         idx.close()
@@ -626,8 +626,7 @@ def cmd_embed(args, cfg) -> int:
         srv.touch()
     if not cfg.embed:
         config_mod.set_key("embed", True)
-    have = ", ".join(f"{counts.get(k, 0)} {k}s" for k in embed.KINDS)
-    print(f"embedded {rep.done} items ({have}; {rep.left} left)" + (f"; stopped: {rep.error}" if rep.error else ""))
+    print(f"embedded {rep.done} items ({embed.describe(counts)}; {rep.left} left)" + (f"; stopped: {rep.error}" if rep.error else ""))
     return 1 if rep.error else 0
 
 
@@ -674,10 +673,10 @@ def _embed_status(cfg, srv, store_path) -> int:
         print("vectors: none yet")
         return 0
     try:
-        counts = store.counts(model)
+        counts = store.counts(embed.model_key(model))
     finally:
         store.close()
-    print(f"vectors ({model}): " + ", ".join(f"{counts.get(k, 0)} {k}s" for k in embed.KINDS))
+    print(f"vectors ({embed.model_key(model)}): {embed.describe(counts)}")
     return 0
 
 
