@@ -1,12 +1,14 @@
-"""kb sync: discover changed sessions, distill, summarize, catalog, commit this host's folders, then pull and push.
+"""kb sync: discover changed sessions, distill, copy memories, summarize, catalog, commit this host's folders, then
+pull and push.
 
 Order of a run (nothing is pulled before our own files are written and committed, so our own uncommitted
 files never block a pull): lock, host check (another machine's marker: stop), git gate (branch, half-done rebase,
 stale index.lock: otherwise skip git, keep processing), index, process sessions (headless one-prompt runs are
-skipped), summaries, catalog, host marker, stage + secrets check + commit, pull, index again (other machines'
-sessions), push (never commits that touch anything outside this host's folders).
+skipped), memories (kb.memories), summaries, catalog, host marker, stage + secrets check + commit, pull, index
+again (other machines' sessions), push (never commits that touch anything outside this host's folders).
 
-Only the machine that owns a host writes sessions/<host>, summaries included: summarize_pending refuses any other
+Only the machine that owns a host writes sessions/<host> and memories/<host>, summaries included: summarize_pending
+refuses any other
 host (ForeignHost). A pull that conflicts because the remote changed this host's files anyway points to `kb repair`.
 """
 from __future__ import annotations
@@ -21,7 +23,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kb import gitops, machine
+from kb import gitops, machine, memories
 from kb.adapters import claude, codex
 from kb.catalog import write_catalog
 from kb.distill import update_front_matter
@@ -54,6 +56,7 @@ def one_line(text, limit: int) -> str:
 class Report:
     sessions: int = 0
     summarized: int = 0
+    memories: int = 0                                   # memory files written or removed
     errors: list = field(default_factory=list)
     redactions: Counter = field(default_factory=Counter)
     skipped: Counter = field(default_factory=Counter)
@@ -66,12 +69,14 @@ class Report:
 
     @property
     def happened(self) -> bool:
-        return bool(self.sessions or self.summarized or self.errors or self.committed or self.pushed
-                    or self.newly_quarantined)
+        return bool(self.sessions or self.summarized or self.memories or self.errors or self.committed
+                    or self.pushed or self.newly_quarantined)
 
     def line(self) -> str:
         """One line, whatever the error texts contain."""
         parts = [f"{self.sessions} sessions", f"{self.summarized} summaries"]
+        if self.memories:
+            parts.append(f"{self.memories} memories")
         if self.redactions:
             parts.append(f"{sum(self.redactions.values())} redactions")
         if self.quarantined:
@@ -359,7 +364,7 @@ def _staged(root, paths) -> bool:
 
 def own_paths(cfg) -> list:
     """The only folders this machine ever stages, commits or pushes."""
-    return [f"sessions/{cfg.host}", f"raw/{cfg.host}", f"catalog/{cfg.host}"]
+    return [f"sessions/{cfg.host}", f"raw/{cfg.host}", f"catalog/{cfg.host}", f"memories/{cfg.host}"]
 
 
 def _within(path: str, folders) -> bool:
@@ -444,7 +449,8 @@ def commit_own(cfg, state, report) -> None:
         return
     # `git commit -- <paths>` also takes unstaged changes of tracked files inside the paths, so name the held-back
     # files as exclusions; otherwise a flagged file that was committed before would go in with its new content.
-    gitops.commit(root, f"sync({cfg.host}): {report.sessions} sessions, {report.summarized} summaries",
+    memories_part = f", {report.memories} memories" if report.memories else ""
+    gitops.commit(root, f"sync({cfg.host}): {report.sessions} sessions, {report.summarized} summaries{memories_part}",
                   own + [f":(exclude,literal){f}" for f in held])
     report.committed = True
 
@@ -516,15 +522,19 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
                 process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_run, picker)
                 if not dry_run and n % CHECKPOINT_EVERY == 0:
                     save_state(state, report)        # a crash later keeps what is already written and recorded
+            skip_cwd = lambda cwd: excluded(cfg, cwd)
             if dry_run:
+                report.memories = memories.sync_memories(cfg, None, report, skip_cwd, dry_run=True)
                 if picker is not None:
                     write_samples(cfg, picker, report)
                 return report
             idx.update(cfg.root)
+            # after the index has this run's sessions: they tell the cwd of a memory folder whose transcripts are gone
+            report.memories = memories.sync_memories(cfg, idx, report, skip_cwd)
             cap = cfg.summary_cap_per_run if summary_cap == "default" else summary_cap
             report.summarized, touched = summarize_pending(cfg, idx, state, cap, runner, report, lock, clock)
             months |= touched
-            if report.summarized:
+            if report.summarized or report.memories:
                 idx.update(cfg.root)
             if months:
                 for path, why in write_catalog(cfg.root, cfg.host, months):

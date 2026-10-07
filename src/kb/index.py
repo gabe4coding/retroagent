@@ -1,5 +1,5 @@
 """Local SQLite FTS5 index, built only from committed markdown (so it covers every host after a pull): the sessions,
-and the pages the cloud routine writes under pages/."""
+the memories each machine copies under memories/, and the pages the cloud routine writes under pages/."""
 from __future__ import annotations
 
 import json
@@ -10,11 +10,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from kb.distill import parse_markdown
+from kb.distill import parse_markdown, split_front_matter
 from kb.pages import page_rel, parse_page
 from kb.util import short_id
 
-SCHEMA_VERSION = 4          # bump when the tables change: the index is disposable, update() rebuilds it
+SCHEMA_VERSION = 5          # bump when the tables change: the index is disposable, update() rebuilds it
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS sessions(
   id TEXT PRIMARY KEY, agent TEXT, host TEXT, project TEXT, cwd TEXT, branch TEXT,
@@ -40,8 +40,14 @@ SCHEMA = (
     # pages_fts rows use the rowid of their pages row
     """CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
   path UNINDEXED, name, title, body, tokenize='porter unicode61')""",
+    """CREATE TABLE IF NOT EXISTS memories(path TEXT PRIMARY KEY, ref TEXT, agent TEXT, host TEXT, project TEXT,
+  name TEXT, description TEXT, type TEXT, origin_session TEXT, modified TEXT, sig TEXT)""",
+    "CREATE INDEX IF NOT EXISTS memories_ref ON memories(ref)",
+    # memories_fts rows use the rowid of their memories row
+    """CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+  path UNINDEXED, name, description, body, tokenize='porter unicode61')""",
 )
-_TABLES = ("sessions_fts", "turns_fts", "sessions", "turns", "dups", "pages_fts", "pages")
+_TABLES = ("sessions_fts", "turns_fts", "sessions", "turns", "dups", "pages_fts", "pages", "memories_fts", "memories")
 _COLUMNS = 24
 MIN_PREFIX = 4               # shortest id prefix get() accepts (an exact full id may be shorter)
 SQL_TIMEOUT = 10.0           # seconds a run_sql query may take
@@ -51,6 +57,9 @@ _LEAN = "id, agent, host, project, started, title, parent"
 _SESSION_SNIPPET = "snippet(sessions_fts, -1, '«', '»', '…', 10)"
 _PAGE_SNIPPET = "snippet(pages_fts, 3, '«', '»', '…', 12)"
 _PAGE_ROW = "p.path, p.kind, p.name, p.title, p.updated, p.sessions"
+_MEMORY_SNIPPET = "snippet(memories_fts, -1, '«', '»', '…', 12)"
+_MEMORY_ROW = "m.path, m.ref, m.agent, m.host, m.project, m.name, m.description, m.type, m.origin_session, m.modified"
+_MEMORY_TEXT = ("agent", "host", "project", "name", "description", "type", "origin_session", "modified")
 _TURN_SNIPPET = "snippet(turns_fts, 2, '«', '»', '…', 12)"
 _FTS_ERRORS = ("fts5:", "syntax error", "unterminated string", "unknown special query")
 _TEXT_FIELDS = ("agent", "host", "project", "cwd", "branch", "started", "ended", "model", "title", "summary",
@@ -180,6 +189,7 @@ class Index:
         self.path = Path(path)
         self.errors = []                       # (path, error) of files skipped by the last update()
         self.pages_changed = 0                 # pages added, changed or removed by the last update()
+        self.memories_changed = 0              # memories added, changed or removed by the last update()
         if readonly:
             self.db = connect_readonly(self.path)
             self.db.row_factory = sqlite3.Row
@@ -242,17 +252,18 @@ class Index:
     # ---- writing
 
     def update(self, root) -> int:
-        """Re-read changed markdown files, drop deleted ones. Returns the number of sessions changed (the number of
-        pages changed is in self.pages_changed).
+        """Re-read changed markdown files, drop deleted ones. Returns the number of sessions changed (the numbers of
+        pages and memories changed are in self.pages_changed and self.memories_changed).
 
         A file that cannot be read or fails validation is skipped and listed in self.errors as (path, error)."""
         root = Path(root)
         self.errors = []
-        files, pages = self._scan(root, "sessions"), self._scan(root, "pages")
+        files, pages, mems = self._scan(root, "sessions"), self._scan(root, "pages"), self._scan(root, "memories")
         self.db.execute("BEGIN IMMEDIATE")
         try:
             changed = self._update(files)
             self.pages_changed = self._update_pages(pages)
+            self.memories_changed = self._update_memories(mems)
             self.db.execute("COMMIT")
         except BaseException:
             if self.db.in_transaction:
@@ -404,6 +415,36 @@ class Index:
             self.db.execute("DELETE FROM pages_fts WHERE rowid=?", (row["rowid"],))
             self.db.execute("DELETE FROM pages WHERE path=?", (rel,))
 
+    def _update_memories(self, files: dict) -> int:
+        known = {r["path"]: r["sig"] for r in self.db.execute("SELECT path, sig FROM memories")}
+        changed = 0
+        for rel in sorted(files):
+            if known.get(rel) == files[rel][1]:
+                continue
+            self._delete_memory(rel)
+            changed += rel in known                 # a broken file is tried again each time, but counted once
+            try:
+                meta, body = _memory(rel, files[rel][0].read_bytes().decode("utf-8", errors="replace"))
+            except Exception as e:
+                self.errors.append((rel, _why(e)))
+                continue
+            changed += rel not in known
+            cur = self.db.execute("INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                  (rel, meta["ref"], *(meta[k] for k in _MEMORY_TEXT), files[rel][1]))
+            self.db.execute("INSERT INTO memories_fts(rowid, path, name, description, body) VALUES (?,?,?,?,?)",
+                            (cur.lastrowid, rel, meta["name"], meta["description"], body))
+        for rel in known:
+            if rel not in files:
+                self._delete_memory(rel)
+                changed += 1
+        return changed
+
+    def _delete_memory(self, rel: str) -> None:
+        row = self.db.execute("SELECT rowid FROM memories WHERE path=?", (rel,)).fetchone()
+        if row is not None:
+            self.db.execute("DELETE FROM memories_fts WHERE rowid=?", (row["rowid"],))
+            self.db.execute("DELETE FROM memories WHERE path=?", (rel,))
+
     # ---- reading
 
     def _where(self, f: Filters):
@@ -535,6 +576,57 @@ class Index:
             raise AmbiguousId([r["name"] for r in rows])
         return dict(rows[0]) if rows else None
 
+    def _memory_where(self, f: Filters):
+        clauses, params = [], []
+        for col in ("project", "agent", "host"):
+            if getattr(f, col):
+                clauses.append(f"m.{col} = ?" + (" COLLATE NOCASE" if col == "project" else ""))
+                params.append(getattr(f, col))
+        return "".join(" AND " + c for c in clauses), params
+
+    def find_memories(self, query: str, f: Filters = None, limit: int = 3, raw: bool = False) -> list:
+        """Ranked memories, best first, the same way as find(). Project, agent and host filters apply.
+
+        Rows: path, ref, agent, host, project, name, description, type, origin_session, modified, snippet."""
+        if limit <= 0 or not (query or "").strip():
+            return []
+        where, params = self._memory_where(f or Filters())
+        ranked = {}
+        for q in [query] if raw else fts_queries(query):
+            for r in self._fts(
+                    f"SELECT {_MEMORY_ROW}, {_MEMORY_SNIPPET} AS snippet, bm25(memories_fts, 0.0, 5.0, 5.0, 1.0) AS r "
+                    f"FROM memories_fts JOIN memories m ON m.rowid = memories_fts.rowid WHERE memories_fts MATCH ?"
+                    f"{where} ORDER BY r, m.path LIMIT ?", [q] + params + [limit], raw):
+                ranked.setdefault(r["path"], {**{k: r[k] for k in r.keys() if k != "r"},
+                                              "snippet": _short(r["snippet"])})
+            if len(ranked) >= limit:
+                break
+        return list(ranked.values())[:limit]
+
+    def memories(self, f: Filters = None) -> list:
+        where, params = self._memory_where(f or Filters())
+        return [dict(r) for r in self.db.execute(
+            f"SELECT {_MEMORY_ROW} FROM memories m WHERE 1=1{where} ORDER BY m.project, m.ref, m.host", params)]
+
+    def memory(self, ref: str):
+        """One memory by path, by ref ("sessions-kb/prefer-small-prs"), by name or by the start of its ref. None when
+        nothing matches; several candidates raise AmbiguousId (with their paths)."""
+        ref = (ref or "").strip()
+        if not ref:
+            raise ValueError("empty memory name")
+        for sql in ("m.path = ?", "m.ref = ?", "m.name = ?", "m.ref = ? COLLATE NOCASE", "m.name = ? COLLATE NOCASE"):
+            rows = self.db.execute(f"SELECT {_MEMORY_ROW} FROM memories m WHERE {sql} ORDER BY m.path",
+                                   (ref,)).fetchall()
+            if len(rows) == 1:
+                return dict(rows[0])
+            if rows:
+                raise AmbiguousId([r["path"] for r in rows])
+        rows = self.db.execute(f"SELECT {_MEMORY_ROW} FROM memories m WHERE substr(lower(m.ref), 1, ?) = lower(?) "
+                               "ORDER BY m.path LIMIT 6", (len(ref), ref)).fetchall()
+        if len(rows) > 1:
+            raise AmbiguousId([r["path"] for r in rows])
+        return dict(rows[0]) if rows else None
+
     def recent(self, f: Filters = None, limit: int = 20) -> list:
         where, params = self._where(f or Filters(subagents=False))
         sql = f"SELECT {_LEAN} FROM sessions s WHERE 1=1{where} ORDER BY started DESC LIMIT ?"
@@ -565,6 +657,26 @@ class Index:
 
     def paths_by_id(self, host: str) -> dict:
         return {r["id"]: r["md_path"] for r in self.db.execute("SELECT id, md_path FROM sessions WHERE host=?", (host,))}
+
+
+def _memory(rel: str, text: str):
+    """(meta, body) of a KB memory file, meta with every _MEMORY_TEXT field as text and its ref. Raises ValueError.
+
+    The path must be memories/<host>/<agent>/… with the host and agent of the front matter. The ref is
+    "<project or agent>/<file without .md>": short, and the same on every machine."""
+    meta, body = split_front_matter(text)
+    if meta.get("kind") != "memory":
+        raise ValueError("not a memory file (kind must be \"memory\")")
+    out = {}
+    for key in _MEMORY_TEXT + ("file",):
+        v = meta.get(key)
+        out[key] = v if isinstance(v, str) else ("" if v is None else json.dumps(v, ensure_ascii=False))
+    parts = rel.split("/")
+    if len(parts) < 4 or parts[1] != out["host"] or parts[2] != out["agent"]:
+        raise ValueError(f"a memory of host {out['host'] or '?'} and agent {out['agent'] or '?'} does not belong in {rel}")
+    stem = out["file"][:-3] if out["file"].endswith(".md") else out["file"]
+    out["ref"] = f"{out['project'] or out['agent']}/{stem or parts[-1][:-3]}"
+    return out, body
 
 
 def run_sql(path, query: str, limit: int = 200):

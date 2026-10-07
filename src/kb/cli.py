@@ -1,7 +1,8 @@
 """kb — search and analyze your Claude Code and Codex sessions (all projects, all machines).
 
-  kb find <words…>     ranked pages and sessions, one line each, with a snippet and the best turn
+  kb find <words…>     ranked pages, memories and sessions, one line each, with a snippet and the best turn
   kb page [name]       a project page or weekly retro written by the cloud routine (--section NAME for one part)
+  kb memory [name]     a memory file Claude Code or Codex keeps between sessions (no name: list them)
   kb recent            latest sessions
   kb summary <id>      summary, decisions, outcome, files, PRs, subagents of one session
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
@@ -27,7 +28,7 @@ import sys
 
 from kb import config as config_mod
 from kb import gitops
-from kb.distill import parse_markdown
+from kb.distill import parse_markdown, split_front_matter
 from kb.index import MIN_PREFIX, AmbiguousId, Filters, Index, run_sql
 from kb.pages import parse_page, section, sections
 from kb.stats import REPORTS
@@ -36,6 +37,7 @@ from kb.util import short_id
 
 SUBAGENT_LINES = 10
 PAGE_HITS = 3                    # pages listed before the sessions in `kb find`
+MEMORY_HITS = 3                  # memories listed after the pages, before the sessions
 
 
 def parse_since(value: str) -> str:
@@ -111,13 +113,20 @@ def _page_row(r: dict) -> str:
     return f"{'page':8} {(r.get('updated') or '')[:10]} {r['kind']:7} {r['name']:<18.18} {(r.get('title') or '')[:70]}"
 
 
+def _memory_row(r: dict) -> str:
+    return (f"{'memory':8} {(r.get('modified') or '')[:10]:10} {(r.get('agent') or ''):7} "
+            f"{(r.get('project') or ''):<18.18} {r.get('name') or ''}")
+
+
 def cmd_find(args, cfg) -> int:
     query = " ".join(args.query)
-    # pages have no agent, host, date or tag: those filters ask for sessions only
+    # pages have no agent, host, date or tag: those filters ask for sessions only; memories have no date or tag
     want_pages = not (args.no_pages or args.agent or args.host or args.since or args.until or args.tag)
+    want_memories = not (args.no_memories or args.since or args.until or args.tag)
     idx = _open_index(cfg)
     try:
         pages = idx.find_pages(query, args.project or "", PAGE_HITS, raw=args.fts) if want_pages else []
+        mems = idx.find_memories(query, _filters(args), MEMORY_HITS, raw=args.fts) if want_memories else []
         hits = idx.find(query, _filters(args, not args.no_subagents), args.limit, raw=args.fts)
     except ValueError as e:
         print(str(e))
@@ -126,13 +135,16 @@ def cmd_find(args, cfg) -> int:
         idx.close()
     if args.json:
         print(json.dumps([{**p, "kind": "page", "page_kind": p["kind"]} for p in pages]
+                         + [{**m, "kind": "memory"} for m in mems]
                          + [{**h, "short": short_id(h["id"])} for h in hits], ensure_ascii=False))
-        return 0 if hits or pages else 1
-    if not hits and not pages:
+        return 0 if hits or pages or mems else 1
+    if not hits and not pages and not mems:
         print("no matches")
         return 1
     for p in pages:
         print(f"{_page_row(p)} · {p.get('snippet') or ''} [kb page {p['name']}]")
+    for m in mems:
+        print(f"{_memory_row(m)} · {m.get('snippet') or ''} [kb memory {m['ref']}]")
     for h in hits:
         turn = f" [turn {h['turn']}]" if h.get("turn") else ""
         print(f"{_row(h)} · {h.get('snippet') or ''}{turn}")
@@ -225,6 +237,45 @@ def cmd_page(args, cfg) -> int:
     out = f"{r['path']} · updated {(r['updated'] or '?')[:16].replace('T', ' ')} · {r['sessions']} sessions\n\n" + body
     if len(out) > args.max_chars:
         out = out[: args.max_chars] + f"\n[… cut at {args.max_chars} chars; use --section or raise --max-chars]"
+    print(out.rstrip())
+    return 0
+
+
+def cmd_memory(args, cfg) -> int:
+    idx = _open_index(cfg)
+    try:
+        if not args.name:
+            rows = idx.memories(_filters(args))
+            if not rows:
+                print("no memories yet (kb sync copies them from ~/.claude/projects/*/memory and ~/.codex/memories)")
+            for r in rows:
+                print(f"{r['ref']:<44} {(r.get('host') or ''):<10} {(r.get('type') or ''):<9} "
+                      f"{(r.get('description') or '')[:70]}")
+            return 0
+        try:
+            r = idx.memory(args.name)
+        except AmbiguousId as e:
+            print("ambiguous memory; use the path of one of these:\n" + "\n".join(f"  {p}" for p in e.args[0]))
+            return 1
+    finally:
+        idx.close()
+    if r is None:
+        print(f"no memory named {args.name}; `kb memory` lists them")
+        return 1
+    try:
+        text = (cfg.root / r["path"]).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        print(f"kb: memory file missing: {r['path']}; run: kb reindex")
+        return 2
+    head = [r["path"], r.get("host") or "?", r.get("type") or "-"]
+    if r.get("modified"):
+        head.append(f"modified {r['modified'][:16].replace('T', ' ')}")
+    if r.get("origin_session"):
+        head.append(f"from session {short_id(r['origin_session'])}")
+    desc = f"{r['description']}\n\n" if r.get("description") else ""
+    out = " · ".join(head) + "\n" + desc + split_front_matter(text)[1]
+    if len(out) > args.max_chars:
+        out = out[: args.max_chars] + f"\n[… cut at {args.max_chars} chars; raise --max-chars]"
     print(out.rstrip())
     return 0
 
@@ -327,7 +378,7 @@ def cmd_sql(args, cfg) -> int:
 
 def dry_run_text(rep) -> str:
     mb = lambda n: f"{n / 1e6:.1f} MB"
-    lines = [f"sessions: {rep.sessions}", f"markdown: {mb(rep.sizes['md'])} · raw.gz: {mb(rep.sizes['raw'])}",
+    lines = [f"sessions: {rep.sessions}", f"memories to write or remove: {rep.memories}", f"markdown: {mb(rep.sizes['md'])} · raw.gz: {mb(rep.sizes['raw'])}",
              f"errors: {len(rep.errors)}"] + [f"  {e}" for e in rep.errors[:10]]
     lines.append("redactions: " + (", ".join(f"{k}={v}" for k, v in rep.redactions.most_common()) or "none"))
     lines.append("skipped record types: " + (", ".join(f"{k}={v}" for k, v in rep.skipped.most_common(25)) or "none"))
@@ -457,9 +508,9 @@ def cmd_reindex(args, cfg) -> int:
         path.unlink()
     idx = Index(path)
     n = idx.update(cfg.root)
-    pages = idx.pages_changed
+    pages, mems = idx.pages_changed, idx.memories_changed
     idx.close()
-    print(f"indexed {n} sessions" + (f", {pages} pages" if pages else ""))
+    print(f"indexed {n} sessions" + (f", {pages} pages" if pages else "") + (f", {mems} memories" if mems else ""))
     return 0
 
 
@@ -480,7 +531,8 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--tag")
     f.add_argument("--limit", type=int, default=10)
     f.add_argument("--no-subagents", action="store_true", help="hide subagent transcripts")
-    f.add_argument("--no-pages", action="store_true", help="sessions only")
+    f.add_argument("--no-pages", action="store_true", help="hide pages")
+    f.add_argument("--no-memories", action="store_true", help="hide memories")
     f.add_argument("--fts", action="store_true", help="pass the query to SQLite FTS5 unchanged")
     f.add_argument("--json", action="store_true")
     f.set_defaults(func=cmd_find)
@@ -490,6 +542,14 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--section", help="only the section whose heading starts with this, e.g. 'Key decisions'")
     pg.add_argument("--max-chars", type=int, default=12000)
     pg.set_defaults(func=cmd_page)
+
+    me = sub.add_parser("memory", help="a synced memory file (no name: list them)")
+    me.add_argument("name", nargs="?", help="ref from the list (project/file), the memory's name, or its path")
+    me.add_argument("--project", help="list: only this project (case-insensitive, exact)")
+    me.add_argument("--agent", choices=["claude", "codex"], help="list: only this agent")
+    me.add_argument("--host", help="list: only this machine")
+    me.add_argument("--max-chars", type=int, default=12000)
+    me.set_defaults(func=cmd_memory)
 
     ps = sub.add_parser("pages", help="steps of the cloud routine that writes pages/ (scripts/pages-routine.md)")
     ps.add_argument("step", choices=["start", "plan", "digest", "finish"])
@@ -525,7 +585,7 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("report", nargs="?", default="overview")
     st.set_defaults(func=cmd_stats)
 
-    q = sub.add_parser("sql", help="read-only SQL on the index (tables: sessions, turns, pages)")
+    q = sub.add_parser("sql", help="read-only SQL on the index (tables: sessions, turns, pages, memories)")
     q.add_argument("query")
     q.set_defaults(func=cmd_sql)
 

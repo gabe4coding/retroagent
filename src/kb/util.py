@@ -100,14 +100,18 @@ def is_scratch_path(path: str) -> bool:
 _WORKTREE = re.compile(r"^(.*?)/\.(?:claude/)?worktrees/[^/]+")
 
 
+def main_checkout(cwd: str) -> str:
+    """The checkout a worktree folder belongs to (`<repo>/.claude/worktrees/<name>/…` gives `<repo>`), else cwd."""
+    m = _WORKTREE.match(cwd or "")
+    return (m.group(1) if m else cwd or "").rstrip("/")
+
+
 def project_from_cwd(cwd: str) -> str:
     if not cwd:
         return "unknown"
     if "/scratch-workspaces/" in cwd:
         return "scratch"
-    m = _WORKTREE.match(cwd)
-    base = (m.group(1) if m else cwd).rstrip("/")
-    return slug(base.rsplit("/", 1)[-1])
+    return slug(main_checkout(cwd).rsplit("/", 1)[-1])
 
 
 def project_from_git_url(url: str) -> str:

@@ -5,6 +5,7 @@ Private knowledge base of my Claude Code and Codex sessions, from every machine.
 ## How it works
 - A SessionStart hook (Claude Code and Codex) runs `kb sync --auto` in the background. It prints nothing. It does nothing until you run `kb enable` (`auto_sync` in the config).
 - `kb sync` turns each session that has been idle for 15 minutes into markdown (`sessions/<host>/…`), keeps a slim redacted raw copy (`raw/<host>/…`), asks Haiku for a 3-line summary, updates `catalog/<host>/…`, scans with gitleaks, commits only this machine's folders, and pushes. Headless one-prompt sessions (`claude -p`, `codex exec`) are skipped.
+- `kb sync` also copies the memory files agents keep between sessions: Claude Code's `~/.claude/projects/*/memory/*.md` and Codex's `~/.codex/memories/**/*.md`, to `memories/<host>/…` (redacted, scanned and committed with the sessions). A memory deleted or renamed on the machine leaves the KB too; a memory folder that is gone entirely (a moved or cleaned-up project) keeps its copies. A project's memories are left out when its folder matches `exclude_cwd_globs`. `kb find` lists matching memories after the pages; `kb memory` lists them all or prints one.
 - A resumed or forked Claude session can copy its parent's subagents. Such a subagent is written once, under the session that its own records name first (the one it ran under); the other sessions link to that file. A file whose session is gone from `~/.claude` stays where it is.
 - The sync works in its own data clone, `~/.sessions-kb`. Nobody edits it by hand; develop in a separate checkout. It only touches git on the configured `branch` (`main`), and it never pushes commits that touch anything outside this machine's folders.
 - Search is local: `kb` builds a SQLite FTS5 index in `.kb/` from the markdown.
@@ -29,7 +30,7 @@ Each machine needs its own `host` (default: the short hostname). Two machines wi
 If the machine has `~/claude-tools`, also register `kb` in the local-tools plugin (symlink `~/claude-tools/plugins/local-tools/bin/kb` → `plugin/bin/kb`, README row, version bump, commit, `claude plugin update local-tools@local`).
 
 ## One writer per host
-Only the machine that owns a host writes `sessions/<host>`, `raw/<host>` and `catalog/<host>`. That includes the summaries: make them on that machine with `kb backfill --summaries`.
+Only the machine that owns a host writes `sessions/<host>`, `raw/<host>`, `catalog/<host>` and `memories/<host>`. That includes the summaries: make them on that machine with `kb backfill --summaries`.
 
 Do not make them on another machine (a cloud session, a second laptop) and merge them by PR. The owner's sync writes the same files from its local transcripts. After the merge its pull conflicts, and every later sync fails the same way. This happened once: PR #1 added 169 summaries for `laptop-1` from a cloud session (host `vm`).
 
@@ -50,7 +51,7 @@ Only this host's own work is dropped, and the sync makes it again from the local
 `kb repair` refuses, and changes nothing, when a sync runs, the clone is not on the configured branch, has no upstream or cannot fetch, or when a local-only commit or an uncommitted change touches a file outside this host's folders.
 
 ## Use
-`kb find`, `kb page`, `kb recent`, `kb summary`, `kb show`, `kb stats`, `kb sql`, `kb status`, `kb sync --now`, `kb enable`, `kb disable`, `kb repair`. Run `kb --help`.
+`kb find`, `kb page`, `kb memory`, `kb recent`, `kb summary`, `kb show`, `kb stats`, `kb sql`, `kb status`, `kb sync --now`, `kb enable`, `kb disable`, `kb repair`. Run `kb --help`.
 
 Those read commands open the local index read-only: they work in a sandbox where `.kb/` cannot be written and never wait for a running sync. Only a missing or outdated index must be built, which needs write access. If it cannot be built, they print `index not built yet; run: kb reindex` and exit 2. Other errors print one line, `kb: <message>`, and exit 2.
 
