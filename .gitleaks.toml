@@ -16,3 +16,7 @@ disabledRules = ["generic-api-key", "sourcegraph-access-token"]
 description = "Atlassian account ids are not secrets"
 regexTarget = "line"
 regexes = ['''atlassianAccountId''']
+
+[[allowlists]]
+description = "Synthetic fixtures that test the redactor itself; the sync only scans sessions/, raw/ and catalog/"
+paths = ['''^tests/''']
