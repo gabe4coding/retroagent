@@ -21,6 +21,7 @@ def test_parse_tail():
     assert parse_tail("- fact (memory m/old-fact)")[1] == Ref([], ["m/old-fact"], "")
     text, ref, content = parse_tail("- fact (a0000001, memory m/old-fact · 2026-06-01)")
     assert (text, ref, content) == ("- fact", Ref(["a0000001"], ["m/old-fact"], "2026-06-01"), "a0000001, memory m/old-fact")
+    assert parse_tail("- fact (a0000001).") == ("- fact", Ref(["a0000001"], [], ""), "a0000001")   # a period after
     assert parse_tail("- fact with no source")[1] is None
     assert parse_tail("- see PR (#12)")[1] is None                             # parentheses that cite nothing
     assert parse_tail("- `f(a0000001)` is called twice")[1] is None           # parentheses not at the end
@@ -102,7 +103,8 @@ def test_index_lookup(tmp_path):
     put(root, "h/claude/2026/06/2026-06-01_demo_b0000002.md", "22222222-b0000001", project="demo",
         started="2026-06-03T10:00:00Z")
     for name, meta in (("noted.md", {"modified": "2026-07-01T00:00:00Z", "origin_session": ""}),
-                       ("from-session.md", {"modified": "", "origin_session": "a0000001"})):
+                       ("from-session.md", {"modified": "", "origin_session": "a0000001"}),
+                       ("bare.md", {"modified": "", "origin_session": ""})):
         m = {"kind": "memory", "agent": "claude", "host": "h", "project": "demo", "cwd": "/w/demo", "folder": "-w-demo",
              "file": name, "name": name[:-3], "description": "", "type": "project", **meta}
         p = root / "memories" / "h" / "claude" / "-w-demo" / name
@@ -118,6 +120,7 @@ def test_index_lookup(tmp_path):
         assert look(Ref([], ["demo/not"], "")) == "2026-07-01"                 # a ref the writer cut
         assert look(Ref([], ["demo/from-session"], "")) == "2026-06-01"        # no modified: its session's start
         assert look(Ref(["a0000001"], ["demo/noted"], "")) == "2026-07-01"
+        assert look(Ref([], ["demo/bare"], "")) == ""                           # no date anywhere: undated
     finally:
         idx.close()
 

@@ -44,7 +44,7 @@ GATE = re.compile(r"error|fail|denied|blocked|not found|no such|cannot|can't|una
 DENY = re.compile(r"classifier|auto[ -]?mode|permission to use|permission prompt|permission request|requires? approval"
                   r"|approval|user (?:denied|declined|rejected)|doesn't want to proceed|does not want to proceed"
                   r"|denied by (?:the )?(?:user|policy|sandbox|harness)|sandbox|safety|unsafe", re.I)
-_SOURCE = re.compile(r"\s*\(([^()]*)\)\s*$")
+_SOURCE = re.compile(r"\s*\(([^()]*)\)\.?\s*$")
 _SHORT = re.compile(r"\b[0-9a-f]{8}\b")
 _MEMORY = re.compile(r"^memory\s+(\S+)")
 _EXIT = re.compile(r"^\s*Exit code:?\s*(-?\d+)")

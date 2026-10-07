@@ -156,12 +156,17 @@ def test_finish_dates_only_the_pages_it_writes_and_lists_the_undated(tmp_path):
     write_page(root, "project", "beta", sources=["b0000001"])
     commit(root, "an old page, written before dates")
     plan(root)
+    memory(root, "alpha", "bare-fact.md")                                   # no modified time, no session
+    commit(root, "sync(h): a memory")
+    plan(root)
     write_alpha(root)
     path = root / "pages" / "projects" / "alpha.md"
-    path.write_text(path.read_text() + "\n## Open threads\n- ask about it (ffffffff)\n- no source at all\n")
+    path.write_text(path.read_text() + "\n## Open threads\n- ask about it (ffffffff)\n- no source at all\n"
+                    "- a memory fact (memory alpha/bare-fact)\n")
     res = routine.finish(root, settings(), now=NOW, push=False)
     assert res["undated"] == ["pages/projects/alpha.md: ask about it (ffffffff)",
-                              "pages/projects/alpha.md: no source at all"]
+                              "pages/projects/alpha.md: no source at all",
+                              "pages/projects/alpha.md: a memory fact (memory alpha/bare-fact)"]   # no date known
     assert "· 20" not in (root / "pages" / "projects" / "beta.md").read_text()      # not written in this run
 
 
