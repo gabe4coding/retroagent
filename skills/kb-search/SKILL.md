@@ -5,7 +5,7 @@ description: Use when the user asks about past work in any Claude Code or Codex 
 
 # kb-search
 
-`kb` searches every synced Claude Code and Codex session and memory file (all projects, all machines). Output is short on purpose. Go in this order and stop as soon as you have the answer.
+`kb` searches every synced Claude Code and Codex session and memory file (all projects, all machines). Go in this order and stop as soon as you have the answer.
 
 0. **Project page:** for a question about one project, `kb page <project> [--section "Key decisions"]` first: its
    state, decisions, files, errors → fixes and open threads, each with the short id of its session. `kb page` lists the
