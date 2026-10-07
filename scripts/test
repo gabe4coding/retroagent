@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run the test suite on the runtime target (/usr/bin/python3, 3.9) with pytest provided by uv, in parallel.
-# Usage: scripts/test [--all] [pytest args]
+# Usage: scripts/test [--all] [pytest args]   (-q is already on: another -q hides the summary line with the counts)
 #   default: the fast tests only (no processes started; a few seconds)
 #   --all:   also the tests marked slow (real git, gitleaks, install.sh; about a minute)
 cd "$(dirname "$0")/.." || exit 1
