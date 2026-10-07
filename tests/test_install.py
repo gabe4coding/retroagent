@@ -541,3 +541,11 @@ def test_an_empty_data_repo_gets_its_first_commit_and_the_clone_tracks_it(tmp_pa
     assert _git("rev-parse", "--abbrev-ref", "HEAD@{u}", cwd=m.root) == "origin/main"
     assert (m.root / "AGENTS.md").exists() and (m.root / "README.md").exists()
     assert _git("rev-parse", "HEAD", cwd=m.root) == _git("--git-dir", str(m.origin), "rev-parse", "main")
+
+
+def test_a_host_that_already_has_sessions_is_not_told_to_backfill(tmp_path):
+    m = Machine(tmp_path)
+    m.push_file("sessions/laptop-1/claude/2026/10/x.md", "session\n")
+    p = m.install("--host", "laptop-1", "--force-host")
+    assert p.returncode == 0, _out(p)
+    assert "kb backfill" not in p.stdout and "Next step: kb enable" in p.stdout

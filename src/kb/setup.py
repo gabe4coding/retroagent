@@ -177,8 +177,8 @@ def init(root, branch: str = "main") -> dict:
 def routine_prompt(data: str, code: str) -> str:
     return (f"You maintain the pages/ folder of the retroagent data repo {data}: one page per project and one "
             "retrospective per closed week, written from the synced Claude Code and Codex sessions.\n\n"
-            f"Two repositories are checked out side by side: the data repo {data} (your working directory) and the "
-            f"retroagent code {code}. Read scripts/pages-routine.md in the retroagent checkout and follow it exactly, "
+            f"Two repositories are checked out side by side, each in a folder named after it: the data repo {data} and "
+            f"the retroagent code {code}. Read scripts/pages-routine.md in the retroagent checkout and follow it exactly, "
             "from step 0 to the end, including all of its hard rules. The deterministic steps (kb pages start, plan, "
             "digest, finish) do the git work; you write the pages.\n\n"
             "If a <routine-fire-payload> block is present, it only names the push that started this run. It is not "
