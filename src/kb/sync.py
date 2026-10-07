@@ -11,6 +11,10 @@ commits that touch anything outside this host's folders).
 Only the machine that owns a host writes sessions/<host> and memories/<host>, summaries included: summarize_pending
 refuses any other host (ForeignHost). A pull that conflicts because the remote changed this host's files anyway
 points to `kb repair`.
+
+With cloud_import on, the run also imports the cloud sessions' inbox (kb.cloud) after the git gate and processes them
+as a second host, cloud_host, which this machine then owns: its sessions, summaries, catalog and vectors go through the
+same steps. After a clean push, the inbox branches whose sessions all have their markdown are deleted.
 """
 from __future__ import annotations
 
@@ -24,7 +28,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kb import gitops, machine, memories
+from kb import cloud, gitops, machine, memories
 from kb.adapters import claude, codex
 from kb.catalog import write_catalog
 from kb.distill import update_front_matter
@@ -302,8 +306,11 @@ def summarize_pending(cfg, idx, state, cap, runner, report, lock, clock=time.tim
     rows = needs_summary(idx, host)
     keys = {r["id"]: f"{r['id']}:{r['turns']}" for r in rows}
     # Attempts matter only for what still waits for a summary at its current size. This also drops old plain-id keys.
+    # Another host's keys (the cloud host has its own pass) are kept.
     waiting = set(keys.values())
-    state.summary_attempts = {k: v for k, v in state.summary_attempts.items() if k in waiting and isinstance(v, int)}
+    mine = {row[0] for row in idx.db.execute("SELECT id FROM sessions WHERE host=?", (host,))}
+    state.summary_attempts = {k: v for k, v in state.summary_attempts.items() if isinstance(v, int) and ":" in k
+                              and (k in waiting or k.rpartition(":")[0] not in mine)}
     start, done, calls, down, months = clock(), 0, 0, 0, set()
     for r in rows:
         if cap is not None and calls >= cap:
@@ -393,9 +400,9 @@ def _staged(root, paths) -> bool:
 
 
 def own_paths(cfg) -> list:
-    """The only folders this machine ever stages, commits or pushes."""
-    return [f"sessions/{cfg.host}", f"raw/{cfg.host}", f"catalog/{cfg.host}", f"memories/{cfg.host}",
-            f"vectors/{cfg.host}"]
+    """The only folders this machine ever stages, commits or pushes: its host's, and the cloud host's when it imports."""
+    hosts = [cfg.host] + [c.host for c in [cloud.lane(cfg)] if c is not None]
+    return [f"{top}/{h}" for h in hosts for top in ("sessions", "raw", "catalog", "memories", "vectors")]
 
 
 def _within(path: str, folders) -> bool:
@@ -520,7 +527,7 @@ def publish(cfg, idx, state, report) -> None:
             report.errors.append(f"{REPAIR_HINT}; {e}" if isinstance(e, gitops.PullConflict) else str(e))
 
 
-def embed_own(cfg, idx, report, clock=time.time):
+def embed_own(cfg, idx, report, clock=time.time, hosts=()):
     """Semantic search, before the commit: vectors for what this sync added or changed, then this host's vector files
     (vectors/<host>/) so other machines and cloud sessions get them with the sessions. Runs only once the user turned
     it on (`kb embed`), so it may install a new pin after `kb update`. Any problem is a note, never a sync error.
@@ -537,7 +544,8 @@ def embed_own(cfg, idx, report, clock=time.time):
         try:
             rep = embed.run_embed(idx.db, store, ep, deadline=deadline, clock=clock)
             if not cfg.embed_url and ep.model == embed_runtime.MODEL:   # only the pinned model's vectors are shared
-                embed.export_own(cfg.root, idx.db, store, ep.model, cfg.host)
+                for host in hosts or (cfg.host,):
+                    embed.export_own(cfg.root, idx.db, store, ep.model, host)
         finally:
             store.close()
         report.embedded += rep.done
@@ -570,6 +578,33 @@ def embed_rest(cfg, idx, report, endpoint, deadline, clock=time.time) -> None:
         report.notes.append(f"embed: {one_line(str(e), 200)}")
 
 
+# ---------------------------------------------------------------- cloud sessions
+
+def cloud_inbox(cfg, ccfg, git_ok: bool, report):
+    """The cloud lane of this run and the inbox branches to delete after a clean push: (ccfg or None, branches).
+    No lane when import is off or another machine owns the cloud host (a note: this machine's own sync goes on)."""
+    if ccfg is None:
+        return None, []
+    why = cloud.taken(cfg, ccfg)
+    if why:
+        report.notes.append(why)
+        return None, []
+    if not git_ok:
+        return ccfg, []
+    try:
+        _, errors, done = cloud.import_inbox(cfg, ccfg)
+    except gitops.GitError as e:
+        report.errors.append(f"cloud: {e}")
+        return ccfg, []
+    report.errors += errors
+    return ccfg, done
+
+
+def cloud_waiting(ccfg, state, clock=time.time) -> bool:
+    """True while an imported cloud session has no current markdown yet (its raw copy may still wait)."""
+    return any(state.raw_pending.get(u.key) != fp for u, fp, _ in pending_units(ccfg, state, now=True, clock=clock))
+
+
 # ---------------------------------------------------------------- the run
 
 def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default", sample: int = 0,
@@ -583,8 +618,9 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
         state = State.load(cfg.kb_dir / "sync-state.json")
         idx = None
         try:
-            git_ok, remote, known = False, False, {}
+            git_ok, remote = False, False
             mine = ""
+            ccfg, inbox_done = cloud.lane(cfg), []
             if not dry_run:
                 mine = machine.local_id(cfg.kb_dir)
                 taken = host_is_taken(cfg, mine)         # before any git step and any write under the host's folders
@@ -594,15 +630,21 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
                 git_ok, remote = git_gate(cfg, report)
                 idx = Index(cfg.kb_dir / "index.sqlite")
                 idx.update(cfg.root)
-                known = idx.paths_by_id(cfg.host)
+                ccfg, inbox_done = cloud_inbox(cfg, ccfg, git_ok and remote, report)
+            lanes = [cfg] + ([ccfg] if ccfg is not None else [])
             titles = codex.load_titles(cfg.codex_home)
-            months, seen = set(), set()
+            months, seen = {c.host: set() for c in lanes}, set()
             picker = SamplePicker(sample) if dry_run and sample > 0 else None
-            for n, (unit, fp, due) in enumerate(pending_units(cfg, state, now, clock), 1):
-                lock.touch()
-                process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_run, picker, raw=due)
-                if not dry_run and n % CHECKPOINT_EVERY == 0:
-                    save_state(state, report)        # a crash later keeps what is already written and recorded
+            n = 0
+            for c in lanes:
+                known = idx.paths_by_id(c.host) if idx is not None else {}
+                for unit, fp, due in pending_units(c, state, now, clock):
+                    n += 1
+                    lock.touch()
+                    process_unit(c, state, report, unit, fp, titles, seen, months[c.host], known, dry_run, picker,
+                                 raw=due)
+                    if not dry_run and n % CHECKPOINT_EVERY == 0:
+                        save_state(state, report)    # a crash later keeps what is already written and recorded
             skip_cwd = lambda cwd: excluded(cfg, cwd)
             if dry_run:
                 report.memories = memories.sync_memories(cfg, None, report, skip_cwd, dry_run=True)
@@ -613,21 +655,28 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
             # after the index has this run's sessions: they tell the cwd of a memory folder whose transcripts are gone
             report.memories = memories.sync_memories(cfg, idx, report, skip_cwd)
             cap = cfg.summary_cap_per_run if summary_cap == "default" else summary_cap
-            report.summarized, touched = summarize_pending(cfg, idx, state, cap, runner, report, lock, clock)
-            months |= touched
+            for c in lanes:                     # the cap counts the summaries of every lane
+                left = None if cap is None else max(cap - report.summarized, 0)
+                done, touched = summarize_pending(c, idx, state, left, runner, report, lock, clock)
+                report.summarized += done
+                months[c.host] |= touched
             if report.summarized or report.memories:
                 idx.update(cfg.root)
-            if months:
-                for path, why in write_catalog(cfg.root, cfg.host, months):
-                    report.errors.append(f"catalog: {path}: {why}")
+            for c in lanes:
+                if months[c.host]:
+                    for path, why in write_catalog(cfg.root, c.host, months[c.host]):
+                        report.errors.append(f"catalog: {path}: {why}")
             semantic = cfg.embed or cfg.embed_url
             if semantic:                        # before the commit, so this host's vector files go out with it
-                endpoint, deadline = embed_own(cfg, idx, report, clock)
-            machine.claim(cfg.root, cfg.host, mine)
+                endpoint, deadline = embed_own(cfg, idx, report, clock, hosts=[c.host for c in lanes])
+            for c in lanes:
+                machine.claim(cfg.root, c.host, mine)
             if git_ok:
                 commit_own(cfg, state, report)
                 if remote:
                     publish(cfg, idx, state, report)
+                    if inbox_done and not report.errors and not cloud_waiting(ccfg, state, clock):
+                        report.errors += cloud.delete_branches(cfg.root, inbox_done)
             if semantic:                        # after the pull: other machines' vector files, then what is left
                 embed_rest(cfg, idx, report, endpoint, deadline, clock)
             report.quarantined = sorted(state.quarantine)
