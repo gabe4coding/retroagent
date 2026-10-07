@@ -39,3 +39,15 @@ Another machine already uses this `host` name. Give this machine its own name wi
 
 The read commands could not build the index because `.kb/` is not writable (for example, in a sandbox). Run
 `kb reindex` once from a normal shell.
+
+## Semantic search seems off
+
+`kb find -v <words…>` says on stderr why a query used keywords only:
+
+- `no vectors yet; run: kb embed`: the feature is on but nothing is embedded on this machine.
+- `the embedding model is starting`: the server was stopped; it starts in the background, so the next query uses it.
+- A timeout right after a long idle: the model was unloaded and is loading again (about a second).
+
+`kb embed --status` shows the runtime, the server and the vector counts, and the path of the server log. A sync line
+that ends with `embed: …` names what went wrong; the sync itself still succeeded. `kb embed` fixes most states: it
+installs what is missing, starts the server and embeds what is new.
