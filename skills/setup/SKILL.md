@@ -51,10 +51,11 @@ Rules:
    the user's messages, every page and memory, and turns it on: `kb find` then also matches paraphrases and other
    languages. Everything runs on this machine; the model uses about 500 MB of RAM while loaded and stops when idle.
    `kb embed --off` turns it off.
-10. **Cloud sessions.** Only when semantic search is on and the user runs Claude Code cloud sessions or routines:
-    `kb setup cloud` prints the network allowlist and the setup script of a cloud environment. Only the user can apply
-    them, in the environment settings at claude.ai/code; show the output and say so. Machines commit their vectors on
-    sync, so cloud sessions import them instead of embedding everything.
+10. **Cloud sessions.** Only when the user runs Claude Code cloud sessions or routines: `kb setup cloud` prints the
+    network allowlist and the setup script of a cloud environment. Only the user can apply them, in the environment
+    settings at claude.ai/code; show the output and say so. The script puts `kb` and semantic search in the cloud and
+    a hook that pushes each cloud session to an inbox. Ask which one machine imports them (as host `cloud`), and run
+    `kb cloud import --on` there only.
 11. **Codex.** When `codex` is installed: tell the user to open Codex once and trust the retroagent hook with `/hooks`.
 12. **Pages routine.** Before you offer it, read `references/pages-routine.md` in this skill's folder: how to
     explain it, then `kb setup routine` and the routine itself.

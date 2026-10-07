@@ -40,6 +40,9 @@ Reading needs no write access, except to build a missing or outdated index. If `
 - `pages/projects/<project>.md`, `pages/retro/<YYYY-Www>.md` — written by the cloud routine; `pages/config.json` its
   settings, `pages/.state.json` its watermark.
 - `raw/<host>/<agent>/<YYYY>/<MM>/<id>.jsonl.gz` — slim, redacted raw transcript.
+- Host `cloud`: Claude Code cloud sessions, written by the one machine with `cloud_import` on. A cloud session pushes
+  its slim transcript to `inbox/claude/…` on its own branch (never `main`); that machine's sync imports it and deletes
+  the branch.
 - `vectors/<host>/sessions/…/<file>.vec`, `vectors/<host>/memories/…/<file>.vec` — semantic search vectors of a
   session (summary and the user's messages) or a memory, binary; only when semantic search is on (`kb embed`).
   `kb sync` imports other machines' files, so nothing needs embedding twice.

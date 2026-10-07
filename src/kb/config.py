@@ -51,6 +51,8 @@ class Config:
     embed: bool = False                         # semantic search: kb runs a local embedding model (`kb embed`)
     embed_url: str = ""                         # optional: an embedding server kb uses instead of its own
     embed_sync_seconds: int = 60                # longest a sync spends embedding new items
+    cloud_import: bool = False                  # this machine imports the cloud sessions' inbox (`kb cloud import`)
+    cloud_host: str = "cloud"                   # the host the imported cloud sessions are written under
 
     @property
     def kb_dir(self) -> Path:
@@ -167,4 +169,6 @@ def load(path: str | None = None) -> Config:
     cfg.embed = _bool(raw, "embed", False, bad=False)
     cfg.embed_url = _text(raw, "embed_url").rstrip("/")
     cfg.embed_sync_seconds = _int(raw, "embed_sync_seconds", cfg.embed_sync_seconds)
+    cfg.cloud_import = _bool(raw, "cloud_import", False, bad=False)
+    cfg.cloud_host = slug(_text(raw, "cloud_host") or cfg.cloud_host)
     return cfg
