@@ -55,7 +55,9 @@ Set up retroagent on this machine for me: https://github.com/gabe4coding/retroag
    not on my PATH yet.
 3. Ask me one question at a time, and show me each command before it creates a repo, pushes or changes anything
    outside this machine. My data repo must be private.
-4. Never ask me for a token or a secret: I type those in my own terminal.
+4. install.sh also installs the Claude Code and Codex plugins: tell me if it prints a WARNING, and at the end
+   remind me to start a new session (and, in Codex, to trust the retroagent hook with /hooks).
+5. Never ask me for a token or a secret: I type those in my own terminal.
 ```
 
 The agent creates or picks your private data repo, installs the plugins and the `kb` CLI, runs the first sync and
