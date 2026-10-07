@@ -215,7 +215,8 @@ def _blob(root, blob: str) -> bytes:
 
 def import_inbox(cfg, ccfg) -> tuple:
     """Fetch, then copy every branch's inbox files into ccfg.claude_dir (the largest copy of a file wins: transcripts
-    only grow). Returns (files written, errors, branches to delete after a clean push: [(name, tip)])."""
+    only grow). A copy smaller than the one imported before is older: it never replaces it, even when the branch of
+    the newer copy is gone. Returns (files written, errors, branches to delete after a clean push: [(name, tip)])."""
     root = cfg.root
     gitops.git(root, "fetch", "--quiet", "--prune", "origin", timeout=gitops.PULL_TIMEOUT)
     seen_file = cfg.kb_dir / "cloud-inbox.json"
@@ -232,8 +233,10 @@ def import_inbox(cfg, ccfg) -> tuple:
             if path not in best or size > best[path][1]:
                 best[path] = (blob, size, tip)
     written, errors, failed = 0, [], set()
-    for path, (blob, _, tip) in sorted(best.items()):
-        if seen.get(path) == blob:
+    for path, (blob, size, tip) in sorted(best.items()):
+        last = seen.get(path)           # [blob, size] of the copy imported last (a bare blob before sizes were kept)
+        last_blob, last_size = (last[0], last[1]) if isinstance(last, list) and len(last) == 2 else (last, 0)
+        if last_blob == blob or (isinstance(last_size, int) and size < last_size):
             continue
         try:
             target = ccfg.claude_dir / path[len(INBOX) + 1:-len(".gz")]
@@ -247,7 +250,7 @@ def import_inbox(cfg, ccfg) -> tuple:
             errors.append(f"cloud: {path}: {type(e).__name__}: {' '.join(str(e).split())[:200]}")
             failed.add(path)
             continue
-        seen[path] = blob
+        seen[path] = [blob, size]
     atomic_write(seen_file, (json.dumps(seen, indent=1, sort_keys=True) + "\n").encode("utf-8"))
     done = [(name, tip) for name, tip, blobs in per_branch
             if not failed.intersection(blobs) and _only_inbox(root, tip, cfg.branch)]

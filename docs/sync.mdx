@@ -61,8 +61,10 @@ its own records name first; the others link to that file.
 - The sync works in its own data clone. Nobody edits it by hand.
 - It only touches git on the configured `branch` (`main`).
 - It never pushes commits that touch anything outside this machine's folders.
-- Secrets are redacted, and every commit is scanned with gitleaks. gitleaks uses the data repo's own `.gitleaks.toml`
-  when it has one, else the one shipped with retroagent (it needs gitleaks 8.25 or newer).
+- Secrets are redacted, and every commit the sync makes is scanned with gitleaks. gitleaks uses the data repo's own
+  `.gitleaks.toml` when it has one, else the one shipped with retroagent (it needs gitleaks 8.25 or newer).
+- A cloud session's push to its inbox branch is redacted but not scanned: the cloud container has no gitleaks. The
+  machine that imports it scans the session before it reaches `main`.
 - Search is local: `kb` builds a SQLite FTS5 index in `.kb/` of the data clone.
 
 ## One writer per host

@@ -199,6 +199,22 @@ def test_duplicate_ids_found_in_one_run_pick_the_first_sorted_path(empty):
     assert idx.db.execute("SELECT COUNT(*) FROM dups").fetchone()[0] == 0
 
 
+def test_the_most_complete_copy_of_a_session_wins(empty):
+    root, idx = empty
+    put(root, "cloud/a.md", "dup-1", turns=("ask", "answer"), host="cloud", ended="2026-10-06T10:00:00Z")
+    put(root, "laptop/b.md", "dup-1", turns=("ask", "answer", "ask on", "done"), host="laptop",
+        ended="2026-10-06T12:00:00Z")                         # the same session, continued on another host
+    idx.update(root)
+    assert idx.get("dup-1")["host"] == "laptop"
+    put(root, "cloud/a.md", "dup-1", turns=("ask", "answer", "ask on", "done", "more", "end"), host="cloud",
+        ended="2026-10-06T13:00:00Z")                         # the loser grows past the winner: it takes over
+    idx.update(root)
+    assert idx.get("dup-1")["host"] == "cloud"
+    (root / "sessions/cloud/a.md").unlink()
+    idx.update(root)
+    assert idx.get("dup-1")["host"] == "laptop"
+
+
 def test_bad_files_are_skipped_and_reported_not_fatal(empty):
     root, idx = empty
     put(root, "h/good.md", "good-1", turns=("fine session about retries",))

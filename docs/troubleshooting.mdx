@@ -33,7 +33,9 @@ This usually happens after someone wrote this host's files from another machine.
 ## `host '<host>' belongs to another machine`
 
 Another machine already uses this `host` name. Give this machine its own name with
-`install.sh --host <unique-name>`. See [One host name per machine](./installation.mdx#one-host-name-per-machine).
+`install.sh --host <unique-name>`. If this machine is the owner and only lost its id (a new clone, a deleted
+`.kb/machine-id`), run `install.sh --host <host> --force-host` instead. See
+[One host name per machine](./installation.mdx#one-host-name-per-machine).
 
 ## `index not built yet; run: kb reindex`
 

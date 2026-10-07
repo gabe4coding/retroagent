@@ -81,6 +81,9 @@ on a machine with another id stops with `host '<host>' belongs to another machin
 
 - Never delete `.kb/machine-id`.
 - A machine that wrote `sessions/<host>` before these markers existed claims it once with `install.sh --force-host`.
+- After a new clone or a lost `.kb/machine-id`, the machine that owns the host takes its id back with
+  `install.sh --host <host> --force-host`: it copies the committed marker into `.kb/machine-id`. Run it only on that
+  machine; two machines with one id write the same folders.
 
 ## Update
 

@@ -63,9 +63,9 @@ class Config:
 
 
 def _read(p: Path) -> dict:
-    """The config object, or {} (unreadable, not JSON, not an object). A syntax error warns once on stderr.
+    """The config object, or {} (unreadable). A file that is not JSON or not a JSON object warns once on stderr.
 
-    A syntax error also switches automatic syncs off: a broken file is no approval to sync with default settings.
+    Such a broken file also switches automatic syncs off: it is no approval to sync with default settings.
     """
     try:
         raw = json.loads(p.read_text(encoding="utf-8"))
@@ -74,7 +74,10 @@ def _read(p: Path) -> dict:
     except ValueError as e:
         sys.stderr.write(f"retroagent: bad config {p}: {e}; using defaults\n")
         return {"auto_sync": False}
-    return raw if isinstance(raw, dict) else {}
+    if not isinstance(raw, dict):
+        sys.stderr.write(f"retroagent: bad config {p}: not a JSON object; using defaults\n")
+        return {"auto_sync": False}
+    return raw
 
 
 def _bool(raw: dict, key: str, default: bool, bad: bool) -> bool:

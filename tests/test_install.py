@@ -476,8 +476,18 @@ def test_a_marker_that_differs_from_the_local_id_is_refused(tmp_path):
     (m.root / ".kb").mkdir()
     (m.root / ".kb/machine-id").write_text("a" * 32 + "\n")
     p = m.install("--host", "laptop-1")
-    assert p.returncode == 1 and "another machine" in _out(p) and not (m.home / ".config").exists()
+    assert p.returncode == 1 and "another machine" in _out(p) and "--force-host" in _out(p)
+    assert not (m.home / ".config").exists()
     assert m.install("--host", "laptop-1", "--force-host").returncode == 0
+    assert (m.root / ".kb/machine-id").read_text().strip() == "b" * 32          # the owner takes its id back
+    assert m.install("--host", "laptop-1").returncode == 0
+
+
+def test_force_host_on_a_new_clone_takes_the_committed_id(tmp_path):
+    m = Machine(tmp_path)
+    _seed_host_folder(m, marker="d" * 32)
+    assert m.install("--host", "laptop-1", "--force-host").returncode == 0
+    assert (m.root / ".kb/machine-id").read_text().strip() == "d" * 32
 
 
 def test_a_marker_that_matches_the_local_id_and_a_missing_marker_pass(tmp_path):

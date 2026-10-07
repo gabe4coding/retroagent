@@ -36,7 +36,8 @@ Rules:
    `~/.local/bin/kb`. Relay its WARNING lines:
    - gitleaks missing: ask the user to `brew install gitleaks` (or their package manager) and run install.sh again.
      Every commit of sessions is scanned with it.
-   - `host '<host>' belongs to another machine`: ask for another name and run it again.
+   - `host '<host>' belongs to another machine`: ask whether this machine wrote those sessions (a new clone, a lost
+     `.kb/machine-id`). If yes, run it again with `--force-host`; else ask for another name and run it again.
 5. **First sync.** Ask now or later. `kb backfill` processes every session and makes the first push (minutes; a long
    history can be hundreds of MB).
 6. **Summaries.** Ask now or later. `kb backfill --summaries` writes a 3-line summary per session with Haiku (slow;

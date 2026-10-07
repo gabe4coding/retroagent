@@ -328,12 +328,13 @@ def make_plan(root, idx: Index, settings, now=None) -> dict:
             memories[path] = _removed_memory(root, head, path)
         return memories[path]
 
-    projects, left_projects = _plan_projects(root, top, ready, st, settings, changed_memories, memory)
+    projects, left_projects, todo = _plan_projects(root, top, ready, st, settings, changed_memories, memory)
     retros, left_weeks = _plan_retros(root, top, ready, st, settings, tz, now)
     plan = {"version": 1, "mode": mode, "base": base, "head": head, "branch": gitops.current_branch(root),
             "created": _iso(now), "projects": projects, "retros": retros,
             "pending": {"projects": left_projects, "weeks": left_weeks}, "waiting": sorted(waiting)}
-    atomic_write(root / ".kb" / PLAN_FILE, (json.dumps(plan, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    saved = {**plan, "todo": todo}       # what each planned project was for: finish keeps it pending if not written
+    atomic_write(root / ".kb" / PLAN_FILE, (json.dumps(saved, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
     return plan
 
 
@@ -350,9 +351,9 @@ def _eligible(project: str, counts: dict, settings) -> bool:
 
 
 def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, changed_memories=(), memory=None):
-    """Project items and what stays pending. What changed in a project is a set of session short ids and memory
-    paths (they start with "memories/"); pending keeps both in one list. A memory whose file and old version are both
-    gone is dropped."""
+    """Project items, what stays pending, and what changed in each planned project. What changed in a project is a set
+    of session short ids and memory paths (they start with "memories/"); pending keeps both in one list. A memory whose
+    file and old version are both gone is dropped."""
     memory = memory or (lambda path: None)
     counts, latest, members = {}, {}, {}
     for r in top:
@@ -393,7 +394,7 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
         else:                            # a new page is written from the whole history of the project
             items.append({"name": p, "page": rel, "action": "create",
                           "sessions": [r["short"] for r in sorted(members[p], key=lambda r: (r["started"] or "", r["id"]))]})
-    return items, {p: sorted(todo[p]) for p in order[len(batch):]}
+    return items, {p: sorted(todo[p]) for p in order[len(batch):]}, {p: sorted(todo[p]) for p in batch}
 
 
 def _removed(m) -> bool:
@@ -596,7 +597,7 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
 
     index_path: the index `kb pages plan` updated (default <root>/.kb/index.sqlite). Without it no bullet gets a date.
 
-    A planned page that was to be created but was not written goes back to pending (unless named in skip)."""
+    A planned page that was not written goes back to pending with what it was planned for (unless named in skip)."""
     root = Path(root)
     now = now or dt.datetime.now(_UTC)
     try:
@@ -650,9 +651,11 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
             idx.close()
     pending = {"projects": dict(plan["pending"]["projects"]), "weeks": list(plan["pending"]["weeks"])}
     returned = []
+    todo = plan.get("todo") if isinstance(plan.get("todo"), dict) else {}
     for item in plan["projects"]:
-        if item["action"] == "create" and item["page"] not in written and item["name"] not in skip:
-            pending["projects"][item["name"]] = []
+        if item["page"] not in written and item["name"] not in skip:
+            back = set(_strings(todo.get(item["name"]))) or set(item["sessions"]) or set(item.get("memories", []))
+            pending["projects"][item["name"]] = sorted(back | set(pending["projects"].get(item["name"], [])))
             returned.append(item["name"])
     for item in plan["retros"]:
         if item["action"] == "create" and item["page"] not in written and item["week"] not in skip:

@@ -30,8 +30,8 @@
 
 ---
 
-- **Sync** — each session becomes a short markdown file in your data repo. Secrets are redacted, and every commit is
-  scanned with gitleaks.
+- **Sync** — each session becomes a short markdown file in your data repo. Secrets are redacted, and every commit the
+  sync makes is scanned with gitleaks.
 - **Search** — `kb find "how did I fix the flaky test"` on a local SQLite index, at a tiny token cost. Skills teach
   Claude Code and Codex to look there first. Optional [semantic search](docs/commands.mdx#semantic-search) also
   matches paraphrases and other languages with a local model, in cloud sessions too. Claude Code

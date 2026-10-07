@@ -340,10 +340,13 @@ def _is_ours(pid: int, binary: str) -> bool:
     if not binary or not _exists(pid):
         return False
     try:
-        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5)
+        # -ww: no width limit; without it ps cuts the line to $COLUMNS, and the path is then not found
+        out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True, text=True,
+                             timeout=5)
     except (OSError, subprocess.SubprocessError):
         return False
-    return binary in out.stdout.split()            # first word for the real binary, after the interpreter for a script
+    cmd = f" {out.stdout.strip()} "
+    return f" {binary} " in cmd                    # first word for the real binary, after the interpreter for a script
 
 
 def ensure(cfg, wait: bool, progress=None):
