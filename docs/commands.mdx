@@ -11,7 +11,7 @@ Run `kb --help` for the full list, and add `--help` to any command for its flags
 
 | Command | What it does |
 | --- | --- |
-| `kb find <words…>` | Ranked pages, memories and sessions, one line each, with a snippet and the best turn. Pages come first. Sessions with the exact phrase rank first, then those with every word, then any word; a `"quoted"` part must match as a phrase. `--role user` (or `assistant`) matches only turns by that role and hides pages and memories. With [semantic search](#semantic-search) on, it also matches paraphrases and other languages; `--no-embed` turns that off for one query, `-v` says on stderr when it was not used. |
+| `kb find <words…>` | Ranked pages, memories and sessions, one line each, with a snippet and the best turn. Pages come first. Sessions with the exact phrase rank first, then those with every word, then any word; a `"quoted"` part must match as a phrase. `--role user` (or `assistant`) matches only turns by that role, by keywords only, and hides pages and memories. With [semantic search](#semantic-search) on, it also matches paraphrases and other languages; `--no-embed` turns that off for one query, `-v` says on stderr when it was not used. |
 | `kb page [name]` | A project page or weekly retro written by the [pages routine](./pages-routine.mdx). `--section NAME` for one part. |
 | `kb memory [name]` | A memory file Claude Code or Codex keeps between sessions. No name: list them. |
 | `kb recent` | Latest sessions. |
@@ -30,7 +30,7 @@ Ids are the 8-character short id shown in lists, or any unique prefix of it or o
 | `kb sync --now` | Sync local sessions now, commit, push. Add `--no-summaries` to go fast. |
 | `kb backfill` | Process every pending session now. `--summaries` writes every missing summary. |
 | `kb status` | Last sync, pending sessions, summary backlog, gitleaks, the cloud import (when on) and the pages routine's last run. |
-| `kb reindex` | Build the local index again. |
+| `kb reindex` | Build the local index again. While a sync runs, it only brings the index up to date. |
 | `kb embed` | Turn on [semantic search](#semantic-search) and embed what is new. `--status`, `--stop`, `--off`, `--remove`, `--rebuild`; `--install` only downloads and turns it on (a cloud setup script); `--quiet` imports and embeds what is missing, without output, only when it is on. |
 | `kb enable [updates]` | Turn automatic syncs (or daily code updates) on. |
 | `kb disable [updates]` | Turn them off. |

@@ -35,13 +35,6 @@ def _load(tmp_path, monkeypatch, content, name="c.json"):
     return config.load(), p
 
 
-@pytest.mark.parametrize("content", ["[1, 2]", '"text"', "42", "null", "true"])
-def test_non_object_json_gives_defaults_silently(tmp_path, monkeypatch, capsys, content):
-    cfg, _ = _load(tmp_path, monkeypatch, content)
-    assert cfg.quiet_minutes == 15 and cfg.root.name == ".retroagent-data"
-    assert capsys.readouterr().err == ""
-
-
 def test_unreadable_file_gives_defaults(tmp_path, monkeypatch):
     d = tmp_path / "dir.json"
     d.mkdir()  # reading a directory raises OSError
@@ -55,6 +48,13 @@ def test_syntax_error_gives_defaults_and_one_warning(tmp_path, monkeypatch, caps
     err = capsys.readouterr().err
     assert err.count("\n") == 1
     assert err.startswith(f"retroagent: bad config {p}: ") and err.endswith("; using defaults\n")
+
+
+@pytest.mark.parametrize("text", ['[{"auto_sync": true}]', '"text"', "42", "null", "true"])
+def test_a_root_that_is_not_an_object_gives_defaults_without_auto_sync(tmp_path, monkeypatch, capsys, text):
+    cfg, p = _load(tmp_path, monkeypatch, text)
+    assert cfg.quiet_minutes == 15 and cfg.root.name == ".retroagent-data" and cfg.auto_sync is False
+    assert capsys.readouterr().err == f"retroagent: bad config {p}: not a JSON object; using defaults\n"
 
 
 @pytest.mark.parametrize("bad", ["abc", None, -5, True, False, [], {}, 1e999])
