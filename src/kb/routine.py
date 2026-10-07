@@ -41,10 +41,13 @@ DEFAULTS = {
     "retro_weeks_back": 4,               # closed weeks that get a retro when they have none
     "retro_late_days": 14,               # a retro is rewritten when new sessions of its week arrive this late
     "max_page_chars": 40000,
+    "stale_days": freshness.STALE_DAYS,  # an aging bullet this much older than the page's newest moves to History
+    "stale_days_current": freshness.STALE_DAYS_CURRENT,   # the same for "Current state"
     "min_hours_between_fires": 3,        # the trigger workflow fires the routine at most this often
     "branch": "main",
     "bootstrap_branch": "claude/pages-bootstrap",
 }
+_AT_LEAST_ONE = ("stale_days", "stale_days_current")
 SINCE_MARGIN = dt.timedelta(days=2)      # time fallback: a commit made before the last run but pushed after it counts
 DIGEST_CHARS = 150_000
 MEMORY_CHARS = 2_500                     # text of one memory in a digest; longer ones are cut (kb memory reads it all)
@@ -77,11 +80,13 @@ def load_settings(root) -> dict:
         if want is list:
             ok = isinstance(value, list) and all(isinstance(v, str) for v in value)
         elif want is int:
-            ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            ok = isinstance(value, int) and not isinstance(value, bool) and value >= (1 if key in _AT_LEAST_ONE else 0)
         else:
             ok = isinstance(value, want) and bool(value)
         if not ok:
-            raise PagesError(f"{CONFIG_REL}: {key} must be {'a list of text' if want is list else want.__name__}")
+            what = "a list of text" if want is list else "a whole number of at least 1" if key in _AT_LEAST_ONE \
+                else want.__name__
+            raise PagesError(f"{CONFIG_REL}: {key} must be {what}")
         out[key] = value
     return out
 
@@ -586,8 +591,8 @@ def check_page(root, rel: str, settings) -> list:
 
 
 def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None) -> dict:
-    """Check the written pages, date the bullets of the project pages (kb.freshness), set their updated time and
-    session count, record the new state, commit, push. Raises PagesError when something is wrong.
+    """Check the written pages, date the bullets of the project pages and move the stale ones to History
+    (kb.freshness), set their updated time and session count, record the new state, commit, push. Raises PagesError when something is wrong.
 
     index_path: the index `kb pages plan` updated (default <root>/.kb/index.sqlite). Without it no bullet gets a date.
 
@@ -625,7 +630,7 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
         raise PagesError("refusing to commit:\n  " + "\n  ".join(problems))
 
     written = {rel for _, rel in changes}
-    undated = []
+    undated, moved = [], []
     index_path = Path(index_path) if index_path else root / ".kb" / "index.sqlite"
     idx = Index(index_path) if index_path.is_file() else None
     try:
@@ -636,6 +641,8 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
             if meta["kind"] == "project":
                 body, missing = freshness.stamp(body, freshness.index_lookup(idx) if idx else lambda ref: "")
                 undated += [f"{rel}: {line[:120]}" for line in missing]
+                body, gone = freshness.sweep(body, settings["stale_days"], settings["stale_days_current"])
+                moved += [f"{rel}: {line[2:122]}" for line in gone]
             fields = {"updated": _iso(now), "sessions": len(set(meta["sources"]))}
             atomic_write(path, set_fields(text, fields, body).encode("utf-8"))
     finally:
@@ -656,7 +663,7 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
     old = load_state(root) or {}
     result = {"branch": branch, "projects": sorted(r for r in written if r.startswith("pages/projects/")),
               "retros": sorted(r for r in written if r.startswith("pages/retro/")), "returned": returned,
-              "undated": undated, "committed": False, "push": ""}
+              "undated": undated, "moved": moved, "committed": False, "push": ""}
     planned = plan["projects"] or plan["retros"]
     if not (written or planned or pending != old.get("pending") or plan["waiting"] != old.get("waiting")
             or not old):

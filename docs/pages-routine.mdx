@@ -37,7 +37,26 @@ follows [`scripts/pages-routine.md`](../scripts/pages-routine.md). Code does the
 | `kb pages start` | Branch and index. |
 | `kb pages plan` | What to write, from the sessions and memories changed since the watermark in `pages/.state.json`. |
 | `kb pages digest` | Compact input for the model. |
-| `kb pages finish` | Refuses files outside `pages/`, bad front matter, oversized pages and anything that looks like a secret; records the watermark; commits; pushes, rebasing over session pushes. |
+| `kb pages finish` | Refuses files outside `pages/`, bad front matter, oversized pages and anything that looks like a secret; dates the bullets and moves stale ones to History (see below); records the watermark; commits; pushes, rebasing over session pushes. |
+
+## Old and conflicting facts
+
+What was true last month can be wrong this month. So every bullet of a project page shows the date a session last
+confirmed it, at the end of its sources: `(a1b2c3d4, memory demo/some-fact · 2026-10-07)`. `kb pages finish` computes
+the date from the index (a session's start, a memory's modified time); the model never writes it.
+
+- **Confirmed:** when a new session states the same fact, the routine adds its short id, and the date moves forward.
+- **Contradicted:** when a new session says otherwise, the routine writes the new bullet and moves the old one to
+  History as `superseded <date> by <short>`. When two memories disagree, the newer wins and an open thread asks you to
+  delete the old one.
+- **Not confirmed for a long time:** in "Current state", "Errors seen → fixes" and "Open threads", a bullet whose date
+  is more than `stale_days` (90; `stale_days_current`, 30, for "Current state") older than the newest bullet on the
+  same page moves to History as `unconfirmed since <date>`. Age counts from the page, not from today: a project you
+  stopped working on keeps its page. "Key decisions" and "Important files" never age out; only a contradiction
+  replaces them.
+
+Nothing is deleted: History bullets are still found by `kb find`. A bullet whose sources are not in the index gets no
+date and never moves; `finish` lists those in `undated` and the moved ones in `moved`.
 
 ## When it fires
 
@@ -57,5 +76,6 @@ merge it to start the normal runs on `main`.
 
 ## Settings
 
-`pages/config.json` in the data repo: projects to skip, minimum sessions for a page, batch sizes, retro time zone.
+`pages/config.json` in the data repo: projects to skip, minimum sessions for a page, batch sizes, retro time zone,
+and `stale_days` / `stale_days_current` (see [Old and conflicting facts](#old-and-conflicting-facts)).
 Local `kb sync` never touches `pages/`.
