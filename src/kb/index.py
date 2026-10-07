@@ -424,7 +424,7 @@ class Index:
             self._delete_memory(rel)
             changed += rel in known                 # a broken file is tried again each time, but counted once
             try:
-                meta, body = _memory(rel, files[rel][0].read_bytes().decode("utf-8", errors="replace"))
+                meta, body = parse_memory(rel, files[rel][0].read_bytes().decode("utf-8", errors="replace"))
             except Exception as e:
                 self.errors.append((rel, _why(e)))
                 continue
@@ -659,7 +659,7 @@ class Index:
         return {r["id"]: r["md_path"] for r in self.db.execute("SELECT id, md_path FROM sessions WHERE host=?", (host,))}
 
 
-def _memory(rel: str, text: str):
+def parse_memory(rel: str, text: str):
     """(meta, body) of a KB memory file, meta with every _MEMORY_TEXT field as text and its ref. Raises ValueError.
 
     The path must be memories/<host>/<agent>/… with the host and agent of the front matter. The ref is

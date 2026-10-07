@@ -3,9 +3,13 @@
   kb pages start    pick the branch (main, or the bootstrap branch until the first build is merged), build the index
   kb pages plan     what to write this run: project pages and weekly retros, from the sessions changed since the
                     watermark in pages/.state.json (printed as JSON and kept in .kb/pages-plan.json for finish)
-  kb pages digest   compact input for one page: one block per session (summary, decisions, outcome, files, PRs)
+  kb pages digest   compact input for one page: the memories agents kept, then one block per session (summary,
+                    decisions, outcome, files, PRs)
   kb pages finish   check the pages, move the watermark, commit with [skip ci], push
   kb pages due      for the trigger workflow: is there anything to write? (no LLM, about a second)
+
+A memory file (memories/<host>/…, copied by kb sync) that is added, changed or removed counts as a change of its
+project, like a session. Claude Code's MEMORY.md files are only indexes of the other memories and are left out.
 
 Everything that needs no judgement is decided here; Claude only writes the pages. The routine's commits change only
 pages/ and carry [skip ci], so they never start the trigger workflow (.github/workflows/pages-trigger.yml), which fires
@@ -19,10 +23,10 @@ import json
 from pathlib import Path
 
 from kb import gitops
-from kb.index import Index
+from kb.index import Index, parse_memory
 from kb.pages import WEEK_RE, page_rel, parse_page, set_fields
 from kb.redact import redact
-from kb.util import atomic_write
+from kb.util import atomic_write, short_id
 
 CONFIG_REL = "pages/config.json"
 STATE_REL = "pages/.state.json"
@@ -43,6 +47,8 @@ DEFAULTS = {
 }
 SINCE_MARGIN = dt.timedelta(days=2)      # time fallback: a commit made before the last run but pushed after it counts
 DIGEST_CHARS = 150_000
+MEMORY_CHARS = 2_500                     # text of one memory in a digest; longer ones are cut (kb memory reads it all)
+MEMORY_DIGEST_CHARS = 40_000             # memories in one digest; past this the rest is listed one line each
 _UTC = dt.timezone.utc
 
 
@@ -169,6 +175,43 @@ def _md_paths(out: str) -> set:
     return {line for line in out.splitlines() if line.startswith("sessions/") and line.endswith(".md")}
 
 
+def _is_index(path: str) -> bool:
+    """Claude Code's memories/<host>/claude/<folder>/MEMORY.md: an index of the folder's other memories, no facts."""
+    parts = path.split("/")
+    return len(parts) == 5 and parts[2] == "claude" and parts[4] == "MEMORY.md"
+
+
+def _memory_paths(out: str) -> set:
+    return {line for line in out.splitlines()
+            if line.startswith("memories/") and line.endswith(".md") and not _is_index(line)}
+
+
+def _memory_changes(root, mode: str, base: str, head: str):
+    """The memory files added, changed or removed since the watermark (see _changes); None means every memory."""
+    if mode == "incremental":
+        return _memory_paths(_git(root, "diff", "--name-only", "--no-renames", base, head, "--", "memories/").stdout)
+    if mode == "since":
+        return _memory_paths(_git(root, "log", f"--since={base}", "--name-only", "--format=", head, "--",
+                                  "memories/").stdout)
+    return None
+
+
+def _removed_memory(root, head: str, path: str):
+    """{ref, project, removed} of a memory file that HEAD no longer holds, from its last version. None when HEAD still
+    holds it (a file the index could not read) or no old version can be read."""
+    if _ok(root, "cat-file", "-e", f"{head}:{path}"):
+        return None
+    last = _git(root, "rev-list", "-1", head, "--", path, check=False).stdout.strip()
+    old = _git(root, "show", f"{last}^:{path}", check=False) if last else None
+    if old is None or old.returncode != 0:
+        return None
+    try:
+        meta, _ = parse_memory(path, old.stdout)
+    except ValueError:
+        return None
+    return {"ref": meta["ref"], "project": meta["project"], "removed": True}
+
+
 def _changes(root, state, head: str):
     """(mode, base, paths): the session files changed since the watermark; paths None means every session."""
     if state is None:
@@ -222,9 +265,10 @@ def start(root, index_path, settings) -> dict:
         idx.update(root)
         sessions = idx.db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         pages = idx.db.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+        memories = idx.db.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
     finally:
         idx.close()
-    return {"branch": target, "bootstrap": target == boot, "sessions": sessions, "pages": pages}
+    return {"branch": target, "bootstrap": target == boot, "sessions": sessions, "memories": memories, "pages": pages}
 
 
 # ---- plan
@@ -267,7 +311,19 @@ def make_plan(root, idx: Index, settings, now=None) -> dict:
         else:
             ready[r["id"]] = r
 
-    projects, left_projects = _plan_projects(root, top, ready, st, settings)
+    # memories: {path: {ref, project}} of those in the index; removed ones are read from git
+    memories = {r["path"]: {"ref": r["ref"], "project": r["project"]}
+                for r in idx.db.execute("SELECT path, ref, project FROM memories")}
+    changed_memories = _memory_changes(root, mode, base, head)
+    if changed_memories is None:
+        changed_memories = {p for p in memories if not _is_index(p)}
+
+    def memory(path):
+        if path not in memories:
+            memories[path] = _removed_memory(root, head, path)
+        return memories[path]
+
+    projects, left_projects = _plan_projects(root, top, ready, st, settings, changed_memories, memory)
     retros, left_weeks = _plan_retros(root, top, ready, st, settings, tz, now)
     plan = {"version": 1, "mode": mode, "base": base, "head": head, "branch": gitops.current_branch(root),
             "created": _iso(now), "projects": projects, "retros": retros,
@@ -288,7 +344,11 @@ def _eligible(project: str, counts: dict, settings) -> bool:
     return True
 
 
-def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings):
+def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, changed_memories=(), memory=None):
+    """Project items and what stays pending. What changed in a project is a set of session short ids and memory
+    paths (they start with "memories/"); pending keeps both in one list. A memory whose file and old version are both
+    gone is dropped."""
+    memory = memory or (lambda path: None)
     counts, latest, members = {}, {}, {}
     for r in top:
         p = r["project"]
@@ -300,7 +360,13 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings):
     todo = {p: set(_strings(v)) for p, v in old.items()}
     for r in ready.values():
         todo.setdefault(r["project"], set()).add(r["short"])
-    todo = {p: s for p, s in todo.items() if _eligible(p, counts, settings)}      # the config may have changed
+    for path in changed_memories:
+        m = memory(path)
+        if m:
+            todo.setdefault(m["project"], set()).add(path)
+    for p in todo:
+        todo[p] = {e for e in todo[p] if not e.startswith("memories/") or memory(e)}
+    todo = {p: s for p, s in todo.items() if s and _eligible(p, counts, settings)}  # the config may have changed
     order = sorted(todo, key=lambda p: (latest.get(p, ""), p), reverse=True)        # most recent activity first
     batch = order[: settings["batch_projects"]]
     started = {r["short"]: r["started"] or "" for r in top}
@@ -308,12 +374,25 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings):
     for p in batch:
         rel = page_rel("project", p)
         if (root / rel).is_file():
-            items.append({"name": p, "page": rel, "action": "update",
-                          "sessions": sorted(todo[p], key=lambda s: (started.get(s, ""), s))})
+            shorts = [e for e in todo[p] if not e.startswith("memories/")]
+            item = {"name": p, "page": rel, "action": "update",
+                    "sessions": sorted(shorts, key=lambda s: (started.get(s, ""), s))}
+            paths = sorted(e for e in todo[p] if e.startswith("memories/"))
+            kept = [e for e in paths if not _removed(memory(e))]
+            if kept:
+                item["memories"] = kept
+            gone = sorted({memory(e)["ref"] for e in paths if _removed(memory(e))})
+            if gone:
+                item["memories_removed"] = gone
+            items.append(item)
         else:                            # a new page is written from the whole history of the project
             items.append({"name": p, "page": rel, "action": "create",
                           "sessions": [r["short"] for r in sorted(members[p], key=lambda r: (r["started"] or "", r["id"]))]})
     return items, {p: sorted(todo[p]) for p in order[len(batch):]}
+
+
+def _removed(m) -> bool:
+    return bool(m) and m.get("removed", False)
 
 
 def _sources(path: Path) -> set:
@@ -385,9 +464,69 @@ def _block(r: dict, subagents: int) -> str:
     return "\n".join(out)
 
 
+def _memory_rows(idx: Index, paths=(), project: str = "", since: str = "", until: str = "") -> list:
+    """Memories by path, or all of a project, or those made in a time range (modified in it, or written by a session
+    that started in it). Newest first; Claude Code's MEMORY.md index files are left out."""
+    cols = ("m.path, m.ref, m.host, m.project, m.description, m.type, m.origin_session, m.modified, "
+            "f.body AS body")
+    sql = f"SELECT {cols} FROM memories m JOIN memories_fts f ON f.rowid = m.rowid"
+    if paths:
+        sql += f" WHERE m.path IN ({','.join('?' * len(paths))})"
+        params = list(paths)
+    elif project:
+        sql += " WHERE m.project = ? COLLATE NOCASE"
+        params = [project]
+    else:
+        lo, hi = since or "", until or "~"
+        sql += (" LEFT JOIN sessions s ON s.id = m.origin_session AND s.parent = '' "
+                "WHERE (m.modified >= ? AND m.modified < ?) OR (s.started >= ? AND s.started < ?)")
+        params = [lo, hi, lo, hi]
+    rows = idx.db.execute(sql + " ORDER BY m.modified DESC, m.path", params).fetchall()
+    return [dict(r) for r in rows if not _is_index(r["path"])]
+
+
+def _memory_block(m: dict) -> str:
+    """A memory for the writer. Its text is quoted ("> "), so a heading inside it cannot pass for a digest block."""
+    text = (m["body"] or "").strip()
+    cut = [f"[… cut; the rest: kb memory {m['path']}]"] if len(text) > MEMORY_CHARS else []
+    origin = short_id(m["origin_session"]) if m["origin_session"] else "-"
+    return "\n".join([f"### memory {m['ref']} · {m['type'] or '-'} · {m['host']} · modified "
+                      f"{(m['modified'] or '')[:10] or '?'} · from session {origin}",
+                      "description: " + " ".join((m["description"] or "").split())]
+                     + ["> " + line if line else ">" for line in text[:MEMORY_CHARS].splitlines()] + cut)
+
+
+def _memory_section(mems: list) -> list:
+    """Memory blocks up to MEMORY_DIGEST_CHARS; the rest as one line each."""
+    out, used = [], 0
+    for i, m in enumerate(mems):
+        block = _memory_block(m)
+        if used + len(block) > MEMORY_DIGEST_CHARS:
+            out.append(f"{len(mems) - i} more memories (read one with kb memory <path>):\n" + "\n".join(
+                f"- {x['ref']} · {x['type'] or '-'} · {' '.join((x['description'] or '').split())[:200]} "
+                f"[{x['path']}]" for x in mems[i:]))
+            break
+        out.append(block)
+        used += len(block)
+    return out
+
+
 def digest(idx: Index, shorts=(), project: str = "", since: str = "", until: str = "",
-           limit_chars: int = DIGEST_CHARS) -> str:
-    """One block per top-level session, oldest first. Subagents are counted, not listed."""
+           limit_chars: int = DIGEST_CHARS, memories=()) -> str:
+    """The memories first, then one block per top-level session, oldest first. Subagents are counted, not listed.
+
+    Memories: the given paths; else every memory of `project`; else, for a time range without shorts, the memories
+    made in it. The memories count against limit_chars before the sessions do."""
+    if memories:
+        mems = _memory_rows(idx, paths=memories)
+    elif project:
+        mems = _memory_rows(idx, project=project)
+    elif (since or until) and not shorts:
+        mems = _memory_rows(idx, since=since, until=until)
+    else:
+        mems = []
+    if not (shorts or project or since or until):          # memories only
+        return "\n\n".join([f"0 sessions, {len(mems)} memories"] + _memory_section(mems))
     clauses, params = ["parent = ''"], []
     if shorts:
         clauses.append(f"short IN ({','.join('?' * len(shorts))})")
@@ -405,7 +544,8 @@ def digest(idx: Index, shorts=(), project: str = "", since: str = "", until: str
         f"SELECT * FROM sessions WHERE {' AND '.join(clauses)} ORDER BY started, id", params)]
     kids = {r[0]: r[1] for r in idx.db.execute(
         "SELECT parent, COUNT(*) FROM sessions WHERE parent != '' GROUP BY parent")}
-    out, used = [f"{len(rows)} sessions"], 0
+    out = [f"{len(rows)} sessions" + (f", {len(mems)} memories" if mems else "")] + _memory_section(mems)
+    used = sum(len(x) for x in out[1:])
     for i, r in enumerate(rows):
         block = _block(r, kids.get(r["id"], 0))
         if used + len(block) > limit_chars:

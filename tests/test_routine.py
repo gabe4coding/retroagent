@@ -8,6 +8,7 @@ from test_index import put
 from test_pages import write_page
 
 from kb import routine
+from kb.distill import dump_front_matter
 from kb.index import Index
 from kb.pages import parse_page
 from kb.routine import PagesError
@@ -423,3 +424,136 @@ def test_due(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("KB_CONFIG", str(cfg))
     from kb.cli import main
     assert main(["pages", "due"]) == 1 and json.loads(capsys.readouterr().out)["due"] is False
+
+
+# ---- memories
+
+def memory(root, project, file, body="A fact worth keeping.\n", folder=None, host="h", **meta):
+    """A memory file as kb sync writes it, under memories/<host>/claude/<folder>/<file>."""
+    folder = folder or f"-Users-me-{project}"
+    m = {"kind": "memory", "agent": "claude", "host": host, "project": project, "cwd": f"/Users/me/{project}",
+         "folder": folder, "file": file, "name": file[:-3], "description": f"about {file[:-3]}", "type": "project",
+         "origin_session": "", "modified": "", **meta}
+    path = root / "memories" / host / "claude" / folder / file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(dump_front_matter(m) + "\n" + body, encoding="utf-8")
+    return path
+
+
+def built(root):
+    """demo, with the alpha page and both retros written and finished: the next plan is incremental."""
+    demo(root)
+    plan(root)
+    write_alpha(root)
+    for week, shorts in (("2026-W40", ["a0000002"]), ("2026-W39", ["a0000001"])):
+        write_retro(root, week, shorts)
+    routine.finish(root, settings(), now=NOW, push=False)
+
+
+def test_a_new_or_changed_memory_updates_its_project_page(tmp_path):
+    root = repo(tmp_path / "kb")
+    built(root)
+    note = memory(root, "alpha", "deploy-gotcha.md")
+    memory(root, "alpha", "MEMORY.md", "- [Deploy gotcha](deploy-gotcha.md)\n")       # an index: never a change
+    memory(root, "beta", "beta-fact.md")                                                 # beta has 2 sessions: no page
+    commit(root)
+    p = plan(root, retro_weeks_back=0)
+    rel = "memories/h/claude/-Users-me-alpha/deploy-gotcha.md"
+    assert p["projects"] == [{"name": "alpha", "page": "pages/projects/alpha.md", "action": "update",
+                              "sessions": [], "memories": [rel]}]
+    routine.finish(root, settings(), now=NOW, push=False)
+    note.write_text(note.read_text() + "More.\n")
+    session(root, "a0000004", "alpha", "2026-10-07T08:00:00Z")
+    commit(root)
+    item = plan(root, retro_weeks_back=0)["projects"][0]
+    assert item["sessions"] == ["a0000004"] and item["memories"] == [rel] and "memories_removed" not in item
+
+
+def test_a_removed_memory_is_named_by_its_ref(tmp_path):
+    root = repo(tmp_path / "kb")
+    built(root)
+    note = memory(root, "alpha", "deploy-gotcha.md")
+    commit(root)
+    plan(root, retro_weeks_back=0)
+    routine.finish(root, settings(), now=NOW, push=False)
+    note.unlink()
+    commit(root)
+    item = plan(root, retro_weeks_back=0)["projects"][0]
+    assert item["name"] == "alpha" and item["memories_removed"] == ["alpha/deploy-gotcha"]
+    assert item["sessions"] == [] and "memories" not in item
+
+
+def test_memory_changes_wait_in_pending_with_the_sessions(tmp_path):
+    root = repo(tmp_path / "kb")
+    built(root)
+    for i in range(1, 4):
+        session(root, f"d000000{i}", "gamma", f"2026-10-0{i + 4}T09:00:00Z")
+    memory(root, "alpha", "deploy-gotcha.md")
+    commit(root)
+    p = plan(root, retro_weeks_back=0, batch_projects=1)
+    rel = "memories/h/claude/-Users-me-alpha/deploy-gotcha.md"
+    assert [i["name"] for i in p["projects"]] == ["gamma"] and p["pending"]["projects"] == {"alpha": [rel]}
+    write_page(root, "project", "gamma", sources=p["projects"][0]["sessions"])
+    routine.finish(root, settings(), now=NOW, push=False)
+    item = plan(root, retro_weeks_back=0)["projects"][0]
+    assert item["name"] == "alpha" and item["memories"] == [rel]
+
+
+def test_a_lost_watermark_finds_memory_changes_by_time(tmp_path):
+    root = repo(tmp_path / "kb")
+    built(root)
+    state = json.loads((root / routine.STATE_REL).read_text())
+    (root / routine.STATE_REL).write_text(json.dumps({**state, "sha": "0" * 40}))
+    memory(root, "alpha", "deploy-gotcha.md")
+    commit(root)
+    p = plan(root, now=NOW + dt.timedelta(hours=1), retro_weeks_back=0)
+    assert p["mode"] == "since"
+    item = next(i for i in p["projects"] if i["name"] == "alpha")
+    assert item["memories"] == ["memories/h/claude/-Users-me-alpha/deploy-gotcha.md"]
+
+
+def test_digest_puts_the_memories_first(tmp_path, monkeypatch):
+    root = repo(tmp_path / "kb")
+    demo(root)
+    memory(root, "alpha", "old.md", "## Heading inside\nold fact\n", modified="2026-09-01T10:00:00Z")
+    memory(root, "alpha", "new.md", "new fact\n", modified="2026-10-02T10:00:00Z", type="feedback",
+           origin_session="a0000002")
+    memory(root, "alpha", "MEMORY.md", "- [New](new.md)\n")
+    memory(root, "beta", "from-w40.md", "beta fact\n", origin_session="b0000001")   # no date: its session's
+    idx = Index(root / ".kb" / "index.sqlite")
+    try:
+        idx.update(root)
+        out = routine.digest(idx, project="alpha")
+        assert out.startswith("3 sessions, 2 memories\n\n### memory alpha/new · feedback · h · modified 2026-10-02 · "
+                              "from session a0000002\ndescription: about new\n> new fact\n\n### memory alpha/old")
+        assert "> ## Heading inside" in out and "MEMORY" not in out
+        assert out.index("### memory alpha/old") < out.index("### a0000001")
+        only = routine.digest(idx, shorts=["a0000003"], memories=["memories/h/claude/-Users-me-alpha/old.md"])
+        assert only.startswith("1 sessions, 1 memories\n\n### memory alpha/old")
+        assert routine.digest(idx, shorts=["a0000003"]).startswith("1 sessions\n\n### a0000003")
+        alone = routine.digest(idx, memories=["memories/h/claude/-Users-me-alpha/new.md"])
+        assert alone.startswith("0 sessions, 1 memories\n\n### memory alpha/new")
+        week = routine.digest(idx, since="2026-09-27T22:00:00Z", until="2026-10-04T22:00:00Z")
+        assert week.startswith("3 sessions, 2 memories") and "alpha/new" in week and "beta/from-w40" in week
+        monkeypatch.setattr(routine, "MEMORY_CHARS", 5)
+        assert "> new f\n[… cut; the rest: kb memory memories/h/claude/-Users-me-alpha/new.md]" in \
+            routine.digest(idx, project="alpha")
+        monkeypatch.setattr(routine, "MEMORY_DIGEST_CHARS", 200)
+        listed = routine.digest(idx, project="alpha")
+        assert "1 more memories (read one with kb memory <path>):\n- alpha/old · project · about old " \
+               "[memories/h/claude/-Users-me-alpha/old.md]" in listed
+    finally:
+        idx.close()
+
+
+def test_cli_digest_takes_memory_paths(tmp_path, monkeypatch, capsys):
+    root = repo(tmp_path / "kb")
+    demo(root)
+    memory(root, "alpha", "note.md")
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"root": str(root), "host": "h"}))
+    monkeypatch.setenv("KB_CONFIG", str(cfg))
+    from kb.cli import main
+    assert main(["pages", "digest", "--memories", "memories/h/claude/-Users-me-alpha/note.md"]) == 0
+    assert capsys.readouterr().out.startswith("0 sessions, 1 memories\n\n### memory alpha/note")
+    assert main(["pages", "digest"]) == 2 and "--memories" in capsys.readouterr().out
