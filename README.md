@@ -19,7 +19,7 @@ gh repo clone gabe4coding/sessions-kb ~/Repositories/sessions-kb      # your dev
 
 Then, in this order:
 1. `kb backfill` processes every session and makes the first data push.
-2. `kb backfill --summaries` writes the summaries (slow, uses your Claude quota).
+2. `kb backfill --summaries` writes the summaries (slow, uses your Claude quota). Run it on this machine: see "One writer per host".
 3. `kb enable` lets the SessionStart hook sync automatically (`kb disable` stops it).
 
 Open Codex once and trust the `sessions-kb` hook with `/hooks`.
@@ -28,8 +28,29 @@ Each machine needs its own `host` (default: the short hostname). Two machines wi
 
 If the machine has `~/claude-tools`, also register `kb` in the local-tools plugin (symlink `~/claude-tools/plugins/local-tools/bin/kb` → `plugin/bin/kb`, README row, version bump, commit, `claude plugin update local-tools@local`).
 
+## One writer per host
+Only the machine that owns a host writes `sessions/<host>`, `raw/<host>` and `catalog/<host>`. That includes the summaries: make them on that machine with `kb backfill --summaries`.
+
+Do not make them on another machine (a cloud session, a second laptop) and merge them by PR. The owner's sync writes the same files from its local transcripts. After the merge its pull conflicts, and every later sync fails the same way. This happened once: PR #1 added 169 summaries for `laptop-1` from a cloud session (host `vm`).
+
+- `kb backfill --summaries --host <other host>` refuses. The library refuses too: `summarize_pending` raises `ForeignHost` when the host is not the configured host, or when another machine's `.machine-id` marker claims it.
+- `--force-host` overrides this. `kb backfill --summaries --host <other host> --force-host` writes only the summary fields and the catalog of that host. It syncs, commits and pushes nothing. Use it only when the owner cannot run the summaries itself. Review the changes, send them as a PR, and expect to run `kb repair` on the owner after the merge.
+- A script that calls `summarize()`, `update_front_matter()` or `write_catalog()` itself skips every check. Do not write one; call `kb backfill --summaries` on the owner.
+
+## Repair
+If every sync fails with `pull: the remote changed this host's files too; run: kb repair`, run on that machine:
+```bash
+kb repair
+kb sync --now --no-summaries
+```
+`kb repair` fetches, resets the data clone to its upstream (`origin/main`) and clears the fingerprints (`files` in `.kb/sync-state.json`). The next sync renders every session again on top of the remote files. It keeps the summaries it finds in them, commits only real changes and pushes.
+
+Only this host's own work is dropped, and the sync makes it again from the local transcripts. Dropped commits stay in the clone as `refs/kb/repair/<time>`: a session whose transcript is gone from this machine can be taken back from there. The quarantine is kept.
+
+`kb repair` refuses, and changes nothing, when a sync runs, the clone is not on the configured branch, has no upstream or cannot fetch, or when a local-only commit or an uncommitted change touches a file outside this host's folders.
+
 ## Use
-`kb find`, `kb page`, `kb recent`, `kb summary`, `kb show`, `kb stats`, `kb sql`, `kb status`, `kb sync --now`, `kb enable`, `kb disable`. Run `kb --help`.
+`kb find`, `kb page`, `kb recent`, `kb summary`, `kb show`, `kb stats`, `kb sql`, `kb status`, `kb sync --now`, `kb enable`, `kb disable`, `kb repair`. Run `kb --help`.
 
 Those read commands open the local index read-only: they work in a sandbox where `.kb/` cannot be written and never wait for a running sync. Only a missing or outdated index must be built, which needs write access. If it cannot be built, they print `index not built yet; run: kb reindex` and exit 2. Other errors print one line, `kb: <message>`, and exit 2.
 

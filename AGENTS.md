@@ -22,6 +22,8 @@ Reading needs no write access, except to build a missing or outdated index. If `
 - `pages/` is written by the cloud routine (`scripts/pages-routine.md`) through `kb pages finish`. Only
   `pages/config.json` is edited by hand.
 - The sync works in its own data clone (`~/.sessions-kb`). Do not edit or commit there by hand; change code in a separate checkout.
+- Only the machine that owns a host writes `sessions/<host>`, `raw/<host>` and `catalog/<host>`, summaries included. Summaries are made on that machine with `kb backfill --summaries`. Never make them from another machine or a cloud session, never with `--force-host` unless the owner asks, and never with a script that calls kb's functions (`summarize`, `update_front_matter`, `write_catalog`) directly: the owner's next sync then conflicts.
+- If every sync fails with `run: kb repair`, run `kb repair` on that machine, then `kb sync --now --no-summaries`. See README, "Repair".
 
 ## Layout
 - `sessions/<host>/<agent>/<YYYY>/<MM>/<date>_<project>_<short>.md` — distilled session: JSON front matter, then `## [N] role · HH:MM` turns.

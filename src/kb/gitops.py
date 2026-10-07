@@ -29,6 +29,10 @@ class GitError(Exception):
     pass
 
 
+class PullConflict(GitError):
+    """The pull fetched, but rebasing our commits on the upstream conflicted (the rebase was aborted)."""
+
+
 @dataclass
 class SecretsResult:
     ran: bool = False                              # False if gitleaks is not installed
@@ -128,7 +132,7 @@ def upstream_text(root, path: str) -> str:
     return p.stdout if p.returncode == 0 else ""
 
 
-def _dirty_tracked(root) -> set:
+def dirty_tracked(root) -> set:
     """Paths of tracked files with local changes (staged or not). Untracked files are not listed."""
     entries = git(root, "status", "--porcelain", "-z", "--untracked-files=no").stdout.split("\0")
     paths, i = set(), 0
@@ -168,7 +172,7 @@ def pull(root, keep=()) -> None:
     back from a commit. If they are the only tracked files with changes, they are stashed for the pull and restored
     after it, whether or not it worked. If the stash cannot be restored, GitError says so and the stash is left.
     """
-    dirty = _dirty_tracked(root)
+    dirty = dirty_tracked(root)
     blocking = sorted(dirty - set(keep))
     if blocking:
         more = f" (+{len(blocking) - 3} more)" if len(blocking) > 3 else ""
@@ -183,11 +187,14 @@ def pull(root, keep=()) -> None:
     try:
         p = git(root, "pull", "--rebase", "--quiet", check=False, timeout=PULL_TIMEOUT)
         if p.returncode != 0:
+            conflict = _rebasing(root)          # stopped mid-rebase: a conflict, not a fetch error
+            where = _unmerged(root) if conflict else ""
             try:
                 git(root, "rebase", "--abort", check=False)
             except GitError:
                 pass
-            error = GitError(f"git pull --rebase: {(p.stderr or p.stdout).strip()}")
+            text = f"git pull --rebase: {where}{(p.stderr or p.stdout).strip()}"
+            error = PullConflict(text) if conflict else GitError(text)
     except GitError as e:                  # a timeout
         error = e
     if stashed:
@@ -209,6 +216,28 @@ def _stale_index_lock(root) -> str:
             f"if no git is running, remove it by hand")
 
 
+def _rebase_dirs(root) -> list:
+    return [Path(root) / git(root, "rev-parse", "--git-path", name).stdout.strip()
+            for name in ("rebase-merge", "rebase-apply")]
+
+
+def _rebasing(root) -> bool:
+    try:
+        return any(p.exists() for p in _rebase_dirs(root))
+    except GitError:
+        return False
+
+
+def _unmerged(root) -> str:
+    """"conflict in a, b, c (+N more): " for the files a stopped rebase left unmerged, or ""."""
+    p = git(root, "diff", "--name-only", "-z", "--diff-filter=U", check=False)
+    files = sorted({x for x in p.stdout.split("\0") if x}) if p.returncode == 0 else []
+    if not files:
+        return ""
+    more = f" (+{len(files) - 3} more)" if len(files) > 3 else ""
+    return f"conflict in {', '.join(files[:3])}{more}: "
+
+
 def repair(root) -> str:
     """Abort a rebase left half-done by an earlier run. Returns an error text if the repo is still unfit to sync.
 
@@ -218,8 +247,7 @@ def repair(root) -> str:
     problems = []
     try:
         lock = _stale_index_lock(root)
-        stuck = [Path(root) / git(root, "rev-parse", "--git-path", name).stdout.strip()
-                 for name in ("rebase-merge", "rebase-apply")]
+        stuck = _rebase_dirs(root)
         if any(p.exists() for p in stuck):
             git(root, "rebase", "--abort", check=False)
             if any(p.exists() for p in stuck):
@@ -405,10 +433,11 @@ _RETRYABLE = ("[rejected]", "fetch first", "non-fast-forward")
 
 def push(root, tries: int = 3, keep=()) -> None:
     """Push without hooks. Sets the upstream on first use. Rebases and retries only when the remote moved;
-    any other failure (auth, server hook, network) raises at once with every message collected."""
+    any other failure (auth, server hook, network) raises at once with every message collected. PullConflict if the
+    retry's pull conflicted."""
     has_upstream = git(root, "rev-parse", "--abbrev-ref", "@{u}", check=False).returncode == 0
     args = ["push", "--quiet", "--no-verify"] + ([] if has_upstream else ["-u", "origin", "HEAD"])
-    notes = []
+    notes, kind = [], GitError
     for _ in range(tries):
         p = git(root, *args, check=False, timeout=PUSH_TIMEOUT)
         if p.returncode == 0:
@@ -421,5 +450,6 @@ def push(root, tries: int = 3, keep=()) -> None:
             pull(root, keep=keep)
         except GitError as e:
             notes.append(str(e))
+            kind = PullConflict if isinstance(e, PullConflict) else GitError
             break
-    raise GitError("push failed: " + " | ".join(notes))
+    raise kind("push failed: " + " | ".join(notes))

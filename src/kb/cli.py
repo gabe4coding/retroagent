@@ -7,6 +7,8 @@
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
   kb stats [report]    ready-made analytics; kb sql "<SELECT …>" for custom ones
   kb sync | backfill | status | reindex   maintenance
+  kb repair            when every sync fails to pull: reset the data clone to the remote; the next sync makes this
+                       host's work again
   kb pages start | plan | digest | finish   steps of the cloud routine that writes pages/ (scripts/pages-routine.md)
   kb enable | disable  switch automatic syncs (the SessionStart hook) on or off
 
@@ -350,13 +352,42 @@ def cmd_sync(args, cfg) -> int:
 
 
 def cmd_backfill(args, cfg) -> int:
-    from kb.sync import now_iso, run_sync
-    rep = run_sync(cfg, now=True, summary_cap=None if args.summaries else 0)
+    from kb.sync import foreign_host, now_iso, run_sync, summarize_other_host
+    host = args.host or cfg.host
+    if (args.host or args.force_host) and not args.summaries:
+        print("kb: --host and --force-host work only with --summaries")
+        return 2
+    if host == cfg.host:
+        if args.force_host:
+            print(f"kb: --force-host needs --host with another machine's host (this machine's host is '{cfg.host}')")
+            return 2
+        rep = run_sync(cfg, now=True, summary_cap=None if args.summaries else 0)
+    elif not args.force_host:              # only the owner writes sessions/<host>: see README, "One writer per host"
+        print(f"kb: {foreign_host(cfg, host)} (--force-host overrides this; read the README first)")
+        return 2
+    else:
+        rep = summarize_other_host(cfg, host)
     if rep.locked_out:
         print("another sync is running; try again later")
         return 1
-    print(f"{now_iso()} {cfg.host}: {rep.line()}")
+    print(f"{now_iso()} {host}: {rep.line()}")
+    if host != cfg.host:
+        print(f"forced from host '{cfg.host}': not committed; review the changes under sessions/{host} and "
+              f"catalog/{host}, send them as a PR, and if the next sync of '{host}' then fails to pull, run kb repair "
+              f"on that machine")
     return 1 if rep.errors else 0
+
+
+def cmd_repair(args, cfg) -> int:
+    from kb.repair import RepairRefused, repair
+    try:
+        lines = repair(cfg)
+    except RepairRefused as e:
+        print(f"kb repair: {e}")
+        return 2
+    for line in lines:
+        print(line)
+    return 0
 
 
 def _set_auto_sync(on: bool) -> int:
@@ -511,12 +542,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     b = sub.add_parser("backfill", help="process every pending session now")
     b.add_argument("--summaries", action="store_true", help="also summarize everything (no per-run cap, no time limit)")
+    b.add_argument("--host", help="with --summaries: the host to summarize; another machine's host is refused "
+                                  "unless --force-host")
+    b.add_argument("--force-host", action="store_true",
+                   help="with --summaries --host: write another machine's summaries here (summaries only, nothing "
+                        "committed; its owner may then need kb repair)")
     b.set_defaults(func=cmd_backfill)
 
     sub.add_parser("enable", help="turn automatic syncs on (auto_sync in the config)").set_defaults(func=cmd_enable)
     sub.add_parser("disable", help="turn automatic syncs off").set_defaults(func=cmd_disable)
     sub.add_parser("status", help="last sync, pending sessions, summary backlog").set_defaults(func=cmd_status)
     sub.add_parser("reindex", help="rebuild the local index from markdown").set_defaults(func=cmd_reindex)
+    sub.add_parser("repair", help="reset the data clone to the remote when every sync fails to pull (refuses when "
+                                  "that could lose anything but this host's own work)").set_defaults(func=cmd_repair)
     return p
 
 

@@ -5,6 +5,9 @@ files never block a pull): lock, host check (another machine's marker: stop), gi
 stale index.lock: otherwise skip git, keep processing), index, process sessions (headless one-prompt runs are
 skipped), summaries, catalog, host marker, stage + secrets check + commit, pull, index again (other machines'
 sessions), push (never commits that touch anything outside this host's folders).
+
+Only the machine that owns a host writes sessions/<host>, summaries included: summarize_pending refuses any other
+host (ForeignHost). A pull that conflicts because the remote changed this host's files anyway points to `kb repair`.
 """
 from __future__ import annotations
 
@@ -36,6 +39,11 @@ SUMMARY_REGROWTH = 4              # re-summarize a session that has this many mo
 SUMMARY_MAX_ATTEMPTS = 3          # unusable answers tolerated per session and turn count
 SUMMARY_MAX_UNAVAILABLE = 3       # failed claude calls in a row that stop the summary pass
 CHECKPOINT_EVERY = 50             # processed units between two saves of the state
+REPAIR_HINT = "the remote changed this host's files too; run: kb repair"
+
+
+class ForeignHost(Exception):
+    """Summaries were asked for a host that this machine does not own."""
 
 
 def one_line(text, limit: int) -> str:
@@ -234,14 +242,29 @@ def needs_summary(idx, host: str) -> list:
         (host, SUMMARY_REGROWTH)).fetchall()
 
 
-def summarize_pending(cfg, idx, state, cap, runner, report, lock, clock=time.time):
-    """One summary pass. Returns (summaries written, months touched).
+def foreign_host(cfg, host: str) -> str:
+    """Why this machine must not write the summaries of `host`, or "". Only the machine that owns sessions/<host>
+    writes them: `host` must be the configured host, and no other machine's marker may claim it (see kb.machine)."""
+    if host != cfg.host:
+        return (f"host '{host}' is not this machine's host ('{cfg.host}'); only the machine that owns "
+                f"sessions/{host} writes its summaries: run kb backfill --summaries there")
+    return host_is_taken(cfg, machine.local_id(cfg.kb_dir))
 
+
+def summarize_pending(cfg, idx, state, cap, runner, report, lock, clock=time.time, host=None, force_host=False):
+    """One summary pass over `host` (default: the configured host). Returns (summaries written, months touched).
+
+    Raises ForeignHost, before any call, when this machine does not own `host` (see foreign_host), unless
+    `force_host`. A script that calls summarize() and update_front_matter() itself skips this check: do not.
     The cap counts every call. A capped run also stops after SUMMARY_BUDGET_S; without a cap there is no time limit.
     Unusable answers are counted per session and turn count (SUMMARY_MAX_ATTEMPTS);
     failed calls are not (claude itself is down): SUMMARY_MAX_UNAVAILABLE in a row end the pass.
     """
-    rows = needs_summary(idx, cfg.host)
+    host = host or cfg.host
+    problem = "" if force_host else foreign_host(cfg, host)
+    if problem:
+        raise ForeignHost(problem)
+    rows = needs_summary(idx, host)
     keys = {r["id"]: f"{r['id']}:{r['turns']}" for r in rows}
     # Attempts matter only for what still waits for a summary at its current size. This also drops old plain-id keys.
     waiting = set(keys.values())
@@ -291,6 +314,38 @@ def summarize_pending(cfg, idx, state, cap, runner, report, lock, clock=time.tim
         months.add(month_of(r["md_path"]))
         done += 1
     return done, months
+
+
+def summarize_other_host(cfg, host: str, runner=subprocess.run, clock=time.time) -> Report:
+    """`kb backfill --summaries --host H --force-host`: write the summaries of another machine's host H in this clone.
+
+    Only summary fields under sessions/H and the catalog of H change. Nothing is ingested, staged, committed or
+    pushed: the changes stay in the working tree for a person to review and send. The owner's next sync may then
+    conflict on those files; `kb repair` on the owner fixes that. The owner's summary retry counts are not touched.
+    """
+    report = Report()
+    lock = Lock(cfg.kb_dir / "lock")
+    if not lock.acquire():
+        report.locked_out = True
+        return report
+    idx = None
+    try:
+        idx = Index(cfg.kb_dir / "index.sqlite")
+        idx.update(cfg.root)
+        scratch = State(path=cfg.kb_dir / "forced-summaries-state.json")      # never saved
+        report.summarized, months = summarize_pending(cfg, idx, scratch, None, runner, report, lock, clock,
+                                                      host=host, force_host=True)
+        for path, why in write_catalog(cfg.root, host, months):
+            report.errors.append(f"catalog: {path}: {why}")
+        if report.summarized:
+            idx.update(cfg.root)
+    except Exception as e:  # noqa: BLE001 - one line in the report, like a sync
+        report.errors.append(f"summaries: {type(e).__name__}: {e}")
+    finally:
+        if idx is not None:
+            idx.close()
+        lock.release()
+    return report
 
 
 # ---------------------------------------------------------------- git
@@ -404,8 +459,10 @@ def publish(cfg, idx, state, report) -> None:
         except gitops.GitError as e:
             note = f" ({len(state.quarantine)} quarantined file(s) stay in the working tree; see kb status)" \
                 if state.quarantine and "local changes" in str(e) else ""
-            report.errors.append(f"pull: {e}{note}")
             taken = host_is_taken(cfg, machine.local_id(cfg.kb_dir))      # a clone that had not seen the other marker
+            # first in the text, as the log line is cut; a host name clash needs a unique host, not kb repair
+            hint = f"{REPAIR_HINT}; " if isinstance(e, gitops.PullConflict) and not taken else ""
+            report.errors.append(f"pull: {hint}{e}{note}")
             if taken:
                 report.errors.append(taken)
             return
@@ -423,7 +480,7 @@ def publish(cfg, idx, state, report) -> None:
             gitops.push(root, keep=tuple(state.quarantine))
             report.pushed = True
         except gitops.GitError as e:
-            report.errors.append(str(e))
+            report.errors.append(f"{REPAIR_HINT}; {e}" if isinstance(e, gitops.PullConflict) else str(e))
 
 
 # ---------------------------------------------------------------- the run
