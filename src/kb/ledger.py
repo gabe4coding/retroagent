@@ -7,10 +7,15 @@ A retro's "## Suggested changes" bullets start with an id in brackets:
 pages/suggestions.json, which only finish writes. The signature is optional: it is the `kb stats errors` signature of
 the error the change should remove, and finish refuses one that no session has.
 
-The owner records decisions by hand in pages/decisions.json, like pages/config.json:
-  {"s-1a2b3c": {"state": "applied", "date": "2026-10-09", "note": "hook patterns fixed in PR 12"}}
-with state accepted, applied or rejected. `kb suggestions` joins the two with the index: a suggestion with a signature
-is measured by the sessions that still have its error. Nothing here writes outside pages/suggestions.json.
+Decisions are in pages/decisions.json. The pages routine writes them from the evidence in the sessions, and
+`kb pages finish` checks and commits them:
+  {"s-1a2b3c": {"state": "applied", "source": "a1b2c3d4", "note": "hook patterns fixed in PR 12",
+                "date": "2026-10-09", "by": "routine"}}
+state is accepted, applied or rejected; source is the session short id or `memory <ref>` that shows it. finish sets
+date from the source in the index (never from the writer) and by to "routine". An entry the owner writes by hand
+(any entry whose by is not "routine") is the owner's: the routine never changes or removes it. `kb suggestions` joins
+the ledger and the decisions with the index: a suggestion with a signature is measured by the sessions that still have
+its error, from the decision's date. Nothing here writes a file except save() and save_decisions().
 """
 from __future__ import annotations
 
@@ -140,16 +145,73 @@ def save(root, ledger: dict) -> None:
 
 
 def decisions(root) -> dict:
-    """The owner's decisions {id: {state, date, note}}; entries with an unknown state are left out."""
+    """The decisions {id: {state, date, note, source, by}}; entries with an unknown state are left out."""
     data = _read(Path(root) / DECISIONS_REL)
     out = {}
     for sid, d in (data.items() if isinstance(data, dict) else ()):
         if not isinstance(d, dict) or d.get("state") not in STATES:
             continue
         date = d.get("date") if isinstance(d.get("date"), str) and _DATE.match(d.get("date")) else ""
-        note = d.get("note") if isinstance(d.get("note"), str) else ""
-        out[sid] = {"state": d["state"], "date": date, "note": note}
+        out[sid] = {"state": d["state"], "date": date, "note": _text(d.get("note")), "source": _text(d.get("source")),
+                    "by": "routine" if d.get("by") == "routine" else "owner"}
     return out
+
+
+def _text(v) -> str:
+    return v if isinstance(v, str) else ""
+
+
+def check_decisions(old, new, known: dict, lookup):
+    """(problems, the decisions to write) when the routine changed pages/decisions.json from `old` (the committed
+    JSON, None when there was none) to `new`. lookup(Ref) -> date of a source in the index, or "" (kb.freshness)."""
+    old = old if isinstance(old, dict) else {}
+    if not isinstance(new, dict):
+        return [f"{DECISIONS_REL}: must be a JSON object of suggestion ids"], old
+    problems, out = [], {}
+    for sid in sorted(set(old) | set(new)):
+        where = f"{DECISIONS_REL}: {sid}"
+        before, d = old.get(sid), new.get(sid)
+        if d is None:
+            problems.append(f"{where}: removed; change its state instead")
+            continue
+        if d == before:
+            out[sid] = d
+            continue
+        if isinstance(before, dict) and before.get("by") != "routine":
+            problems.append(f"{where}: the owner wrote it; the routine never changes it")
+            continue
+        if not isinstance(d, dict):
+            problems.append(f"{where}: must be an object with state, source and note")
+            continue
+        if sid not in known:
+            problems.append(f"{where}: no such suggestion; `kb suggestions --all` lists them")
+            continue
+        state, source = d.get("state"), _text(d.get("source")).strip()
+        if state not in STATES:
+            problems.append(f"{where}: state must be one of {', '.join(STATES)}")
+            continue
+        ref = freshness.parse_tail(f"- x ({source})")[1] if source else None
+        if ref is None:
+            problems.append(f"{where}: give its source: the short id of the session or `memory <ref>` that shows it")
+            continue
+        date = lookup(ref)
+        if not date:
+            problems.append(f"{where}: source {source!r} is not in the index")
+            continue
+        first = known[sid]["weeks"][0]
+        monday = dt.date.fromisocalendar(int(first[:4]), int(first[6:]), 1).isoformat()
+        if state == "applied" and date < monday:
+            problems.append(f"{where}: applied on {date}, before it was suggested ({first}); cite the session that "
+                            "made the change")
+            continue
+        out[sid] = {"state": state, "source": source, "note": _text(d.get("note")).strip(), "date": date,
+                    "by": "routine"}
+    return problems, out
+
+
+def save_decisions(root, data: dict) -> None:
+    text = json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    atomic_write(Path(root) / DECISIONS_REL, text.encode("utf-8"))
 
 
 def _read(path: Path):
@@ -192,6 +254,7 @@ def report(ledger: dict, decided: dict, seen: dict, today: dt.date) -> list:
             verdict += "; give the decision a date to measure it"
         out.append({"id": sid, "state": state, "weeks": e["weeks"], "category": e.get("category", ""),
                     "text": e.get("text", ""), "signature": sig, "verdict": verdict, "note": d.get("note", ""),
+                    "source": d.get("source", ""), "by": d.get("by", ""),
                     "sources": e.get("sources", []), "_rank": rank})
     out.sort(key=lambda r: (r["weeks"][-1], r["id"]), reverse=True)        # newest first within a rank
     out.sort(key=lambda r: (r["_rank"], -len(r["weeks"])))

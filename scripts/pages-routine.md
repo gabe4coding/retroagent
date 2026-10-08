@@ -16,9 +16,9 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
 
 - In every step, `kb` stands for `KB_ROOT=<data> <code>/bin/kb` with the two absolute paths from step 0 written out
   (the shell does not keep variables between commands).
-- Write only files under `pages/projects/` and `pages/retro/` of the data repo. Never edit anything else (the code
-  checkout included), never delete a page, never touch `pages/config.json`, `pages/.state.json`,
-  `pages/suggestions.json` or `pages/decisions.json`.
+- Write only files under `pages/projects/` and `pages/retro/` of the data repo, and `pages/decisions.json` as step 4b
+  says. Never edit anything else (the code checkout included), never delete a page, never touch `pages/config.json`,
+  `pages/.state.json` or `pages/suggestions.json`.
 - Never run `git commit`, `git push`, `git reset`, `git checkout` or `git rebase` yourself. `kb pages finish` checks,
   commits and pushes.
 - Read sessions and memories only through `kb` (`kb pages digest`, `kb summary`, `kb show`, `kb memory`, `kb sql`).
@@ -54,7 +54,7 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
    again; `finish` uses the saved plan). It prints JSON: `projects` and `retros` to write in this run (each with
    `page`, `action` create or update, and the `sessions` short ids; a project `update` can also have `memories`, the
    paths of memory files added or changed, and `memories_removed`, the refs of memory files deleted), plus what stays
-   `pending` for later runs. If both lists are empty, go to step 5.
+   `pending` for later runs. If both lists are empty, go to step 4b.
 3. **Project pages.** For each item in `projects`:
    - `create`: `kb pages digest --project <name>`. It starts with every memory of the
      project, then the sessions.
@@ -104,10 +104,22 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
        refuses a signature that no session has.
    - Write the retro in the format below. `update` means sessions of that week arrived late: rewrite the page with
      all of them.
+4b. **Decisions.** Once per run, after the retros: `kb suggestions --all --json`. For each suggestion whose `state`
+   is `proposed` or `accepted`, look for evidence in the sessions since it was first suggested (`kb find "<words of
+   the change>" --since <its first week's Monday>`, at most 3 sessions looked at closer with `kb summary` or
+   `kb show`):
+   - `applied`: a session made the change (a commit, a merged PR or an edit of the named file, check or hook).
+   - `accepted`: the owner asked for the change in their own words (`--role user --no-subagents`).
+   - `rejected`: the owner said no to it in their own words, or a `feedback` memory says not to do it.
+   Write each decision you found into `pages/decisions.json` (a JSON object; create it if missing):
+   `"<id>": {"state": "applied", "source": "<short>", "note": "<what was done, one line>"}`. `source` is the short
+   id of the session that shows it, or `memory <ref>`. `finish` writes `date` (from the source) and `by`. Change only
+   entries whose `by` is `"routine"` or new ones: the others are the owner's. Never remove an entry. No evidence: no
+   entry. An agent's own claim that it "will do" a change is not evidence.
 5. **Finish.** `kb pages finish`. Add `--skip <name,…>` for planned items you decided not
    to write (for example a project with nothing worth a page), and say why in your final message; without `--skip`,
    an unwritten page is planned again next run.
-   - If it prints `refusing to commit`, fix the listed pages and run it again. Never work around it.
+   - If it prints `refusing to commit`, fix the listed pages or decisions and run it again. Never work around it.
    - `"push": "lost"` means another run pushed first. Stop: the next run catches up.
 6. **Report.** End with a short message: branch, pages written, items still pending, push result. In bootstrap, if
    your tools allow it, keep one pull request from `claude/pages-bootstrap` to `main`: open it as a draft if none is
@@ -194,4 +206,4 @@ sources: ["<short>", "<short>"]
 1 to 3 bullets, most severe first. The signature part is optional.
 
 `finish` replaces each `[new]` with an id and records the bullets in `pages/suggestions.json` (never edit it). The
-owner records decisions in `pages/decisions.json` (never edit it either).
+decisions on them go in `pages/decisions.json` (step 4b).

@@ -66,8 +66,9 @@ def test_load_save_and_decisions(tmp_path):
     (tmp_path / ledger.DECISIONS_REL).write_text(json.dumps({
         "s-abc123": {"state": "applied", "date": "2026-10-01", "note": "done"},
         "s-bad000": {"state": "maybe"}, "s-0ff000": {"state": "rejected", "date": "yesterday"}}))
-    assert ledger.decisions(tmp_path) == {"s-abc123": {"state": "applied", "date": "2026-10-01", "note": "done"},
-                                          "s-0ff000": {"state": "rejected", "date": "", "note": ""}}
+    assert ledger.decisions(tmp_path) == {
+        "s-abc123": {"state": "applied", "date": "2026-10-01", "note": "done", "source": "", "by": "owner"},
+        "s-0ff000": {"state": "rejected", "date": "", "note": "", "source": "", "by": "owner"}}
 
 
 def test_report_verdicts():
@@ -95,3 +96,39 @@ def test_report_verdicts():
     assert rows["s-000007"]["verdict"] == "not seen in 14 days (last 2026-09-01)"
     order = [r["id"] for r in ledger.report(led, decided, seen, today)]
     assert order[:2] == ["s-000001", "s-000004"] and order[-1] == "s-000006"
+
+
+def test_check_decisions():
+    known = {"s-000001": {"weeks": ["2026-W40"]}, "s-000002": {"weeks": ["2026-W40"]},
+             "s-000003": {"weeks": ["2026-W40"]}}
+    dates = {"a0000005": "2026-10-06", "a0000001": "2026-09-22"}
+
+    def lookup(ref):
+        return max([dates.get(s, "") for s in ref.shorts] + (["2026-10-02"] if ref.memories else []))
+
+    owner = {"state": "rejected", "note": "not worth it"}
+    old = {"s-000002": owner}
+    new = {"s-000001": {"state": "applied", "source": "a0000005", "note": "hook fixed", "date": "1999-01-01"},
+           "s-000002": owner,
+           "s-000003": {"state": "rejected", "source": "memory alpha/no-more-checks"}}
+    problems, out = ledger.check_decisions(old, new, known, lookup)
+    assert problems == []
+    assert out["s-000001"] == {"state": "applied", "source": "a0000005", "note": "hook fixed", "date": "2026-10-06",
+                               "by": "routine"}                          # the date comes from the source, not the writer
+    assert out["s-000002"] is owner and out["s-000003"]["date"] == "2026-10-02"
+
+    bad = {"s-000002": {"state": "applied", "source": "a0000005"},          # the owner's entry
+           "s-000001": {"state": "applied", "source": "a0000001"},          # before W40 was suggested
+           "s-000003": {"state": "done", "source": "a0000005"},
+           "s-0000ff": {"state": "applied", "source": "a0000005"}}
+    problems, _ = ledger.check_decisions(old, bad, known, lookup)
+    text = "\n".join(problems)
+    for want in ("s-000001: applied on 2026-09-22, before it was suggested", "s-000002: the owner wrote it",
+                 "s-000003: state must be one of", "s-0000ff: no such suggestion"):
+        assert want in text
+    problems, _ = ledger.check_decisions({"s-000001": {"by": "routine"}}, {}, known, lookup)
+    assert problems == ["pages/decisions.json: s-000001: removed; change its state instead"]
+    problems, _ = ledger.check_decisions(None, {"s-000001": {"state": "applied"}}, known, lookup)
+    assert "give its source" in problems[0]
+    problems, _ = ledger.check_decisions(None, {"s-000001": {"state": "applied", "source": "a0000009"}}, known, lookup)
+    assert "is not in the index" in problems[0]
