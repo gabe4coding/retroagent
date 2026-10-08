@@ -68,6 +68,9 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
      one-prompt run has no summary): read what happened after the page was written with `kb show <short> --grep
      "<regex>" --around 1` or `kb show <short>`, and update the page with it. Never treat a session as covered
      because the page already cites it.
+   - `review_threads: true`: the page's open threads were never all checked. Do the open thread check below even when
+     the item has no sessions. If it closes or changes a thread, write the page; if not, name the project in
+     `--skip`. Either way the page is not planned for this review again.
    - `related`: these sessions also belong to another project (or to none with a page). Write only what they did in
      this project's repo, and cite them.
    - `memories_removed`: the owner or an agent deleted these memories, so their facts no longer hold. Remove or

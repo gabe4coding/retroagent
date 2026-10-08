@@ -58,7 +58,8 @@ the date from the index (a session's start, a memory's modified time); the model
   checks every page and retro for cited sessions that ended after the page was written, and plans the page again with
   them as `grown`. `kb pages finish` refuses to skip such a page, or one with a planned session it does not cite.
 - **Finished:** each time a page is updated, the routine checks every open thread against all sessions since the
-  thread's date (not only the new ones). When a session finished it (its PR merged, the task done), the routine moves
+  thread's date (not only the new ones). A page whose threads were never checked this way is planned once for that
+  review, even with no new sessions (`threads_reviewed` in `pages/.state.json` lists the pages done). When a session finished it (its PR merged, the task done), the routine moves
   it to History as `closed <date> by <short>`.
 - **State now, not a log:** "Current state" has one bullet per area as it is now, without details that change at
   almost every session (version numbers, test counts, timings). Such a bullet stays true longer: new sessions confirm
