@@ -43,10 +43,11 @@
 retroagent uses two repos. This public repo holds the code and no data. Your private **data repo** holds the data,
 and you own it.
 
-https://github.com/user-attachments/assets/c4393042-e8bf-405b-bb41-e45f9df83a7c
+https://github.com/user-attachments/assets/9d586f2c-7839-443a-b75b-120dd6eeacd0
 
-<p align="center"><sub>A 3.5-minute video explains the sync, the two repos, search with <code>kb</code>, project
-pages and weekly retros. The retros propose changes to the environment of your agent.</sub></p>
+<p align="center"><sub>A 4.5-minute video explains retroagent: the sync, the two repos, cloud sessions, search
+with <code>kb</code> by words or by meaning, project pages, hints when a command fails, and weekly retros. The retros
+propose changes to the environment of your agent.</sub></p>
 
 ## Quick start
 
