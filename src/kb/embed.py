@@ -146,13 +146,22 @@ class Vectors:
 
     @classmethod
     def open_readonly(cls, path):
-        """The store for a search, or None when it does not exist or cannot be read."""
+        """The store for a search, or None when it does not exist, cannot be read, or is still being created (the
+        first fill makes the file before its tables)."""
         if not Path(path).is_file():
             return None
         try:
-            return cls(path, readonly=True)
+            st = cls(path, readonly=True)
         except sqlite3.Error:
             return None
+        try:
+            ready = st.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors'").fetchone()
+        except sqlite3.Error:
+            ready = None
+        if not ready:
+            st.close()
+            return None
+        return st
 
     def close(self) -> None:
         self.db.close()
