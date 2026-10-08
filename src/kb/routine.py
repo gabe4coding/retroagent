@@ -46,13 +46,14 @@ DEFAULTS = {
     "max_page_chars": 40000,
     "stale_days": freshness.STALE_DAYS,  # an aging bullet this much older than the page's newest moves to History
     "stale_days_current": freshness.STALE_DAYS_CURRENT,   # the same for "Current state"
+    "stale_days_threads": freshness.STALE_DAYS_THREADS,   # the same for "Open threads"
     "max_current_bullets": 10,           # "Current state" of a written page: past this, finish asks to compact it
     "max_open_threads": 8,               # the same for "Open threads"
     "min_hours_between_fires": 3,        # the trigger workflow fires the routine at most this often
     "branch": "main",
     "bootstrap_branch": "claude/pages-bootstrap",
 }
-_AT_LEAST_ONE = ("stale_days", "stale_days_current", "max_current_bullets", "max_open_threads")
+_AT_LEAST_ONE = ("stale_days", "stale_days_current", "stale_days_threads", "max_current_bullets", "max_open_threads")
 SINCE_MARGIN = dt.timedelta(days=2)      # time fallback: a commit made before the last run but pushed after it counts
 DIGEST_CHARS = 150_000
 MEMORY_CHARS = 2_500                     # text of one memory in a digest; longer ones are cut (kb memory reads it all)
@@ -799,7 +800,8 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
             if meta["kind"] == "project":
                 body, missing = freshness.stamp(body, freshness.index_lookup(idx) if idx else lambda ref: "")
                 undated += [f"{rel}: {line[:120]}" for line in missing]
-                body, gone = freshness.sweep(body, settings["stale_days"], settings["stale_days_current"])
+                body, gone = freshness.sweep(body, settings["stale_days"], settings["stale_days_current"],
+                                             settings["stale_days_threads"])
                 moved += [f"{rel}: {line[2:122]}" for line in gone]
             else:
                 body, found = ledger.assign(body, meta["name"], suggestions)

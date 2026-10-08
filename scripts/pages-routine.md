@@ -95,10 +95,13 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
      - Leave out details that change at almost every session: version numbers, test counts, timings, PR numbers of
        past work. Name one only when it is the point of the bullet, and then only the newest. A bullet without them
        stays true longer, so later sessions confirm it instead of contradicting it.
-     - Check every "Open threads" bullet against the new sessions, their summaries and PRs: a thread a session
-       finished (the PR merged, the task done) moves to History as `- closed <date of that session> by <short>:
-       <text>`. A thread only the owner can do (an upload, a setting in a web page) stays until a session says it is
-       done. `finish` refuses more than `max_open_threads` (8).
+     - Check every "Open threads" bullet, not only those the new sessions touch, against all sessions since its
+       date: one `kb find "<2-5 distinctive words of the thread: a PR number, a file, a tool>" --since <its date>`
+       per thread, then `kb summary` of a hit that may have finished it. A thread a session finished (the PR merged,
+       the task done) moves to History as `- closed <date of that session> by <short>: <text>`. A thread only the
+       owner can do (an upload, a setting in a web page) stays until a session says it is done. A thread no session
+       confirms moves to History by itself after `stale_days_threads` (30). `finish` refuses more than
+       `max_open_threads` (8).
    - If the digest says it was cut, run the `kb pages digest --only …` command it prints for the rest.
 4. **Retros.** For each item in `retros` (a closed week, Monday to Sunday, Europe/Rome time):
    - `kb pages digest --since <since> --until <until>`
