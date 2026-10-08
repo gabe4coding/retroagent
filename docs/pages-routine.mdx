@@ -81,17 +81,24 @@ bullet starts with an id, like `[s-1a2b3c]`. `kb pages finish` records them in `
 same problem comes back in a later week, the retro cites the same id, so a suggestion that keeps coming back is easy
 to see.
 
-You record what you did in `pages/decisions.json` in the data repo, by hand, like `pages/config.json`:
+The routine also records the decisions on them in `pages/decisions.json`, from evidence in the sessions: `applied`
+when a session made the change, `accepted` or `rejected` when you asked for it or said no in your own words (or a
+`feedback` memory says no). Each decision cites its source, and `kb pages finish` takes its date from that source, so
+the routine cannot invent one:
 
 ```json
 {
-  "s-1a2b3c": {"state": "applied", "date": "2026-10-09", "note": "guard hook patterns fixed"},
+  "s-1a2b3c": {"state": "applied", "source": "a1b2c3d4", "note": "guard hook patterns fixed",
+               "date": "2026-10-09", "by": "routine"},
   "s-4d5e6f": {"state": "rejected", "note": "not worth a check"}
 }
 ```
 
-`state` is `accepted`, `applied` or `rejected`. `kb suggestions` shows each open suggestion with a verdict. A
-suggestion that names an error signature (from `kb stats errors`) is measured:
+You can add or change entries by hand too. An entry whose `by` is not `"routine"` is yours: the routine never changes
+or removes it, and `finish` refuses a run that tries.
+
+`kb suggestions` shows each open suggestion with a verdict. A suggestion that names an error signature (from
+`kb stats errors`) is measured:
 
 - not applied: `still happening` (the error was seen in the last 14 days) or `not seen in 14 days`;
 - applied on a date: `came back` (sessions after that date still have the error), `fixed` (not seen for 7 days or

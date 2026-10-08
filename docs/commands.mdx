@@ -18,7 +18,7 @@ Run `kb --help` for the full list, and add `--help` to any command for its flags
 | `kb summary <id>` | Summary, decisions, outcome, files, PRs and subagents of one session. |
 | `kb show <id>` | Only the part of a session you need (`--turn N --around K`, `--grep PATTERN`). |
 | `kb stats [report]` | Ready-made analytics: overview, projects, agents, outcomes, tags, daily, subagents, errors. `kb stats errors [--since 7d] [--project P]` lists the tool errors that came back in two or more sessions. |
-| `kb suggestions [--all] [--json]` | The changes weekly retros suggested, your decisions on them, and whether the error each one should remove still happens. See [Suggested changes and whether they worked](./pages-routine.mdx#suggested-changes-and-whether-they-worked). |
+| `kb suggestions [--all] [--json]` | The changes weekly retros suggested, the decisions on them, and whether the error each one should remove still happens. See [Suggested changes and whether they worked](./pages-routine.mdx#suggested-changes-and-whether-they-worked). |
 | `kb hint --event error [--hook]` | A past fix for a failed tool call: reads the hook event JSON on stdin, prints one line or nothing. `--hook` prints the hook output JSON. See [Hints when a command fails](#hints-when-a-command-fails). |
 | `kb sql "<SELECT …>" [--width N]` | Read-only SQL on the index (tables: `sessions`, `turns`, `pages`, `memories`). Cells longer than `N` chars (default 80) are cut and end with `…`; `--width 0` never cuts. |
 

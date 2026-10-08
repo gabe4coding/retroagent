@@ -663,10 +663,29 @@ def test_finish_records_the_suggestions_of_a_retro(tmp_path):
     text = (root / "pages" / "retro" / "2026-W40.md").read_text()
     assert "[new]" not in text and all(f"[{sid}]" in text for sid in led)
 
-    # the writer may not touch the ledger or the owner's decisions
-    for rel in (ledger.SUGGESTIONS_REL, ledger.DECISIONS_REL):
-        plan(root)
-        (root / rel).write_text("{}")
-        with pytest.raises(PagesError, match="only"):
-            routine.finish(root, settings(), now=NOW, push=False)
-        git(root, "checkout", "--", ".") if rel == ledger.SUGGESTIONS_REL else (root / rel).unlink()
+    # the writer may not touch the ledger
+    plan(root)
+    (root / ledger.SUGGESTIONS_REL).write_text("{}")
+    with pytest.raises(PagesError, match="only `kb pages finish` writes it"):
+        routine.finish(root, settings(), now=NOW, push=False)
+    git(root, "checkout", "--", ".")
+
+    # the routine records decisions with a source; finish dates them from the index; the owner's entries stay
+    rules, economy = sorted(led, key=lambda sid: led[sid]["category"])
+    (root / ledger.DECISIONS_REL).write_text(json.dumps({economy: {"state": "rejected", "note": "mine"}}))
+    commit(root, "owner: decisions")
+    plan(root)
+    (root / ledger.DECISIONS_REL).write_text(json.dumps({
+        economy: {"state": "rejected", "note": "mine"},
+        rules: {"state": "applied", "source": "a0000003", "note": "watch command in the steering file",
+                "date": "2020-01-01"}}))
+    res = routine.finish(root, settings(), now=NOW, push=False)
+    assert res["decisions"] and git(root, "log", "-1", "--format=%s").endswith(", decisions [skip ci]")
+    got = ledger.decisions(root)
+    assert (got[rules]["date"], got[rules]["by"], got[economy]["by"]) == ("2026-10-06", "routine", "owner")
+    plan(root)
+    (root / ledger.DECISIONS_REL).write_text(json.dumps({economy: {"state": "accepted", "source": "a0000003"},
+                                                         rules: json.loads((root / ledger.DECISIONS_REL)
+                                                                           .read_text())[rules]}))
+    with pytest.raises(PagesError, match="the owner wrote it"):
+        routine.finish(root, settings(), now=NOW, push=False)
