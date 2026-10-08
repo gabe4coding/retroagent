@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from pathlib import Path
 
 from kb import freshness, gitops, ledger
@@ -195,13 +196,38 @@ def _memory_paths(out: str) -> set:
 
 
 def _memory_changes(root, mode: str, base: str, head: str):
-    """The memory files added, changed or removed since the watermark (see _changes); None means every memory."""
+    """The memory files added, changed or removed since the watermark (see _changes); None means every memory. A file
+    whose only change is its `modified` line (a sync that dates old memories) is no change: its facts are the same."""
     if mode == "incremental":
-        return _memory_paths(_git(root, "diff", "--name-only", "--no-renames", base, head, "--", "memories/").stdout)
+        paths = _memory_paths(_git(root, "diff", "--name-only", "--no-renames", base, head, "--", "memories/").stdout)
+        return paths - _date_only(root, base, head)
     if mode == "since":
-        return _memory_paths(_git(root, "log", f"--since={base}", "--name-only", "--format=", head, "--",
-                                  "memories/").stdout)
+        paths = _memory_paths(_git(root, "log", f"--since={base}", "--name-only", "--format=", head, "--",
+                                   "memories/").stdout)
+        before = _git(root, "rev-list", "-1", f"--before={base}", head, check=False).stdout.strip()
+        return paths - _date_only(root, before, head) if before else paths
     return None
+
+
+_DATE_LINE = re.compile(r"^[+-]modified: ")
+
+
+def _date_only(root, base: str, head: str) -> set:
+    """The memory files whose every changed line between base and head is their `modified` front matter line."""
+    out = _git(root, "diff", "-U0", "--no-renames", "--no-color", base, head, "--", "memories/").stdout
+    files, path, ok = set(), None, False
+    for line in out.splitlines() + ["diff --git end"]:
+        if line.startswith("diff --git "):
+            if path and ok:
+                files.add(path)
+            path, ok = None, True
+        elif line.startswith("+++ b/"):
+            path = line[6:]
+        elif line.startswith(("+++ ", "--- ")):
+            continue
+        elif line.startswith(("+", "-")) and not _DATE_LINE.match(line):
+            ok = False
+    return files
 
 
 def _removed_memory(root, head: str, path: str):
