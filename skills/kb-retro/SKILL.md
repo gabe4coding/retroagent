@@ -38,6 +38,8 @@ ranked by severity. Every claim points to evidence (`short [turn N]`). A diary o
      to read it, read-only.
 6. **Check before you propose.** Read the file you want to change (`CLAUDE.md`, `AGENTS.md`, lint config, CI
    workflow, skill). Do not propose a rule that already exists: then the finding is why it did not work.
+   `kb suggestions --all` lists what earlier retros suggested and whether its error still happens: cite its id
+   (`s-1a2b3c`) instead of proposing it again. An applied one that "came back" is a finding: why did it not work?
 7. **Write the retro** (under one page):
    - Findings ranked by severity (time or rework lost, how often it came back). Each: category, what happened with
      evidence, root cause (not the symptom), and the concrete change: which file, which check, which command.

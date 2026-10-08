@@ -74,6 +74,32 @@ with the `force` input to fire at once.
 Until `main` holds `pages/.state.json`, runs write to the `claude/pages-bootstrap` branch only. Review that branch and
 merge it to start the normal runs on `main`.
 
+## Suggested changes and whether they worked
+
+Each retro ends with "Suggested changes": changes to your agents' environment (a rule, a check, a hook, a tool). Each
+bullet starts with an id, like `[s-1a2b3c]`. `kb pages finish` records them in `pages/suggestions.json`. When the
+same problem comes back in a later week, the retro cites the same id, so a suggestion that keeps coming back is easy
+to see.
+
+You record what you did in `pages/decisions.json` in the data repo, by hand, like `pages/config.json`:
+
+```json
+{
+  "s-1a2b3c": {"state": "applied", "date": "2026-10-09", "note": "guard hook patterns fixed"},
+  "s-4d5e6f": {"state": "rejected", "note": "not worth a check"}
+}
+```
+
+`state` is `accepted`, `applied` or `rejected`. `kb suggestions` shows each open suggestion with a verdict. A
+suggestion that names an error signature (from `kb stats errors`) is measured:
+
+- not applied: `still happening` (the error was seen in the last 14 days) or `not seen in 14 days`;
+- applied on a date: `came back` (sessions after that date still have the error), `fixed` (not seen for 7 days or
+  more since then), or `too early to tell`.
+
+`kb suggestions --all` also lists the fixed and rejected ones. The next retros read this list: they do not suggest a
+rejected change again, and they rank a change that came back higher.
+
 ## Settings
 
 `pages/config.json` in the data repo: projects to skip, minimum sessions for a page, batch sizes, retro time zone,
