@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 from embed_fakes import FakeEmbedServer, fake_vector
 from test_index import put
@@ -113,6 +115,9 @@ def test_store_round_trip_and_readonly(kbx, server, tmp_path):
     assert list(vecs["a-1"]) == pytest.approx(fake_vector(embed.documents(idx.db)[0][2]), abs=1e-6)
     ro.close()
     assert embed.Vectors.open_readonly(tmp_path / "missing.sqlite") is None
+    half = tmp_path / "half.sqlite"                     # the first fill made the file but not its tables yet
+    sqlite3.connect(str(half)).execute("PRAGMA user_version = 1").connection.commit()
+    assert embed.Vectors.open_readonly(half) is None
 
 
 def test_a_session_ranks_by_its_best_turn(kbx, server):
