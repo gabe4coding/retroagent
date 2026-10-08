@@ -5,127 +5,138 @@ description: The kb CLI — search, read, sync and maintenance commands.
 
 # Commands
 
-Run `kb --help` for the full list, and add `--help` to any command for its flags.
+Run `kb --help` to see all the commands. To see the flags of a command, add `--help` to it.
 
 ## Search and read
 
 | Command | What it does |
 | --- | --- |
-| `kb find <words…>` | Ranked pages, memories and sessions, one line each, with a snippet and the best turn. Pages come first. Sessions with the exact phrase rank first, then those with every word, then any word; a `"quoted"` part must match as a phrase. `--role user` (or `assistant`) matches only turns by that role, by keywords only, and hides pages and memories. With [semantic search](#semantic-search) on, it also matches paraphrases and other languages; `--no-embed` turns that off for one query, `-v` says on stderr when it was not used. |
-| `kb page [name]` | A project page or weekly retro written by the [pages routine](./pages-routine.mdx). `--section NAME` for one part. |
-| `kb memory [name]` | A memory file Claude Code or Codex keeps between sessions. No name: list them. |
-| `kb recent` | Latest sessions. |
-| `kb summary <id>` | Summary, decisions, outcome, files, PRs and subagents of one session. |
-| `kb show <id>` | Only the part of a session you need (`--turn N --around K`, `--grep PATTERN`). |
-| `kb stats [report]` | Ready-made analytics: overview, projects, agents, outcomes, tags, daily, subagents, errors. `kb stats errors [--since 7d] [--project P]` lists the tool errors that came back in two or more sessions. |
-| `kb suggestions [--all] [--json]` | The changes weekly retros suggested, the decisions on them, and whether the error each one should remove still happens. See [Suggested changes and whether they worked](./pages-routine.mdx#suggested-changes-and-whether-they-worked). |
-| `kb brief [--project P] [--hook]` | What a new session in this project sees at start: a pointer to the project page and the suggestions accepted for its repo, or nothing. See [Brief at session start](#brief-at-session-start). |
-| `kb hint --event error [--hook]` | A past fix for a failed tool call: reads the hook event JSON on stdin, prints one line or nothing. `--hook` prints the hook output JSON. See [Hints when a command fails](#hints-when-a-command-fails). |
-| `kb sql "<SELECT …>" [--width N]` | Read-only SQL on the index (tables: `sessions`, `turns`, `pages`, `memories`). Cells longer than `N` chars (default 80) are cut and end with `…`; `--width 0` never cuts. |
+| `kb find <words…>` | Ranked pages, memory files and sessions, one line each, with a snippet and the best turn. Pages come first. Sessions with the exact phrase rank first, then sessions with every word, then sessions with any word. A `"quoted"` part must match as a phrase. `--role user` (or `assistant`) matches only the turns of that role. It uses keywords only and hides pages and memory files. With [semantic search](#semantic-search) on, `kb find` also matches paraphrases and other languages. `--no-embed` disables semantic search for one query. `-v` writes a line to stderr when `kb find` did not use semantic search. |
+| `kb page [name]` | A project page or a weekly retro that the [pages routine](./pages-routine.mdx) writes. Add `--section NAME` to show one section. |
+| `kb memory [name]` | A memory file that Claude Code or Codex keeps between sessions. With no name, it lists the memory files. |
+| `kb recent` | The latest sessions. |
+| `kb summary <id>` | The summary, decisions, outcome, files, PRs and subagents of one session. |
+| `kb show <id>` | Only the part of a session that you need (`--turn N --around K`, `--grep PATTERN`). |
+| `kb stats [report]` | Ready-made analytics: overview, projects, agents, outcomes, tags, daily, subagents, errors. `kb stats errors [--since 7d] [--project P]` lists the tool errors that occur in two or more sessions. |
+| `kb suggestions [--all] [--json]` | The changes that weekly retros suggested, the decisions on them, and if the error that each change targets still occurs. See [Suggested changes and whether they worked](./pages-routine.mdx#suggested-changes-and-whether-they-worked). |
+| `kb brief [--project P] [--hook]` | What a new session in this project gets at the start: a pointer to the project page and the accepted suggestions for its repo, or nothing. See [Brief at session start](#brief-at-session-start). |
+| `kb hint --event error [--hook]` | A past fix for a failed tool call. It reads the hook event JSON on stdin and prints one line or nothing. `--hook` prints the hook output JSON. See [Hints when a command fails](#hints-when-a-command-fails). |
+| `kb sql "<SELECT …>" [--width N]` | Read-only SQL on the index (tables: `sessions`, `turns`, `pages`, `memories`). If a cell is longer than `N` characters (default 80), `kb sql` cuts it and adds `…` at the end. `--width 0` never cuts a cell. |
 
-Ids are the 8-character short id shown in lists, or any unique prefix of it or of the full id (4 characters at least).
+An id is the 8-character short id that the lists show. You can also use any unique prefix of the short id or of the full
+id. A prefix must have 4 characters at least.
 
 ## Sync and maintenance
 
 | Command | What it does |
 | --- | --- |
-| `kb sync --now` | Sync local sessions now, commit, push. Add `--no-summaries` to go fast. |
-| `kb backfill` | Process every pending session now. `--summaries` writes every missing summary. |
-| `kb status` | Last sync, pending sessions, summary backlog, gitleaks, the cloud import (when on) and the pages routine's last run. |
-| `kb reindex` | Build the local index again. While a sync runs, it only brings the index up to date. |
-| `kb embed` | Turn on [semantic search](#semantic-search) and embed what is new. `--status`, `--stop`, `--off`, `--remove`, `--rebuild`; `--install` only downloads and turns it on (a cloud setup script); `--quiet` imports and embeds what is missing, without output, only when it is on. |
-| `kb enable [updates]` | Turn automatic syncs (or daily code updates) on. |
-| `kb disable [updates]` | Turn them off. |
-| `kb repair` | When every sync fails to pull. See [Troubleshooting](./troubleshooting.mdx). |
+| `kb sync --now` | Sync the local sessions now, then commit and push. For a faster sync, add `--no-summaries`. |
+| `kb backfill` | Process every pending session now. `--summaries` also writes every missing summary. |
+| `kb status` | The last sync, the pending sessions, the summary backlog, gitleaks, the cloud import (when it is on) and the last run of the pages routine. |
+| `kb reindex` | Build the local index again. While a sync runs, `kb reindex` only updates the index. |
+| `kb embed` | Enable [semantic search](#semantic-search) and embed the new items. Other flags: `--status`, `--stop`, `--off`, `--remove`, `--rebuild`. `--install` only downloads the files and enables the feature (for a cloud setup script). `--quiet` imports and embeds the missing items without output, and only when the feature is on. |
+| `kb enable [updates]` | Enable automatic syncs (or daily code updates). |
+| `kb disable [updates]` | Disable automatic syncs (or daily code updates). |
+| `kb repair` | Use it when every sync fails to pull. See [Troubleshooting](./troubleshooting.mdx). |
 | `kb update` | Pull the retroagent code and refresh the plugins. |
-| `kb cloud import [--on \| --off]` | Show or switch the import of [cloud sessions](#capture-cloud-sessions) on this machine (one machine only). `kb cloud push \| hook \| install` run in the cloud. |
-| `kb setup init \| routine \| cloud \| check` | Set up the data repo, the cloud routine and [cloud environments](#in-cloud-sessions-and-routines) (the `setup` skill drives these). |
-| `kb pages start \| plan \| digest \| finish \| due` | Steps of the cloud routine. See [Pages routine](./pages-routine.mdx). |
+| `kb cloud import [--on \| --off]` | Show or change the import of [cloud sessions](#capture-cloud-sessions) on this machine (one machine only). `kb cloud push \| hook \| install` run in the cloud. |
+| `kb setup init \| routine \| cloud \| check` | Prepare the data repo, the pages routine and [cloud environments](#in-cloud-sessions-and-routines). The `setup` skill runs these steps. |
+| `kb pages start \| plan \| digest \| finish \| due` | The steps of the pages routine. See [Pages routine](./pages-routine.mdx). |
 
 ## Semantic search
 
-Optional. `kb find` matches words with BM25. With semantic search on, it also ranks pages, memories and sessions by
-meaning with a local embedding model ([EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2)) and merges
-both rankings. Then "make the CI cheaper" finds a session about "cutting token spend", and an Italian query finds an
-English session. A session counts as a match when its summary or one of your own messages in it (40 characters or
-more) is close to the query, so a detail you said in the middle of a session can be found too.
+Semantic search is optional. `kb find` matches words with BM25. With semantic search on, it also ranks pages, memory
+files and sessions by meaning. It uses a local embedding model
+([EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2)) and merges the two rankings.
 
-`kb embed` sets it up, once:
+Then the query "make the CI cheaper" finds a session about "cutting token spend". An Italian query finds an English
+session. A session matches when its summary is close to the query in meaning. A session also matches when one of your
+own messages in it is close. Only messages of 40 characters or more count. Thus `kb find` also finds a detail that you
+wrote in the middle of a session.
 
-- It downloads a pinned [llama.cpp](https://github.com/ggml-org/llama.cpp) build for your platform and the model
-  (about 330 MB together) into `~/.cache/retroagent/embed/`, and checks both against a pinned sha256. macOS
-  (Apple Silicon and Intel) and Linux (x86-64 and arm64) are supported.
-- It starts a `llama-server` on `127.0.0.1` (a free port, an API key only `kb` reads, no network access), embeds
-  every session, your messages, every page and memory, and turns the feature on.
+Run `kb embed` one time to install semantic search. It does these steps:
 
-You manage nothing after that:
+1. It downloads a pinned [llama.cpp](https://github.com/ggml-org/llama.cpp) build for your platform and the model
+   into `~/.cache/retroagent/embed/`. Together, the two downloads are about 330 MB. It checks both against a pinned
+   sha256. It supports macOS (Apple Silicon and Intel) and Linux (x86-64 and arm64).
+2. It starts a `llama-server` on `127.0.0.1`. The server uses a free port and an API key that only `kb` reads. It has
+   no network access.
+3. It embeds every session, your messages, every page and every memory file.
+4. It enables the feature.
 
-- Each sync embeds what it added or changed, for at most `embed_sync_seconds`. If anything goes wrong it adds a note
-  to its log line and still succeeds.
-- `kb find` waits at most 150 ms for the model. If the server is not running yet, the query uses BM25 alone and the
-  server starts in the background for the next one. `kb find` is never slower than without the feature, and never
-  fails because of it.
-- The server unloads the model after 5 minutes idle (it uses about 500 MB of RAM while loaded), and any `kb` command
-  stops the process after an hour without use.
-- Vectors live in `<data clone>/.kb/embeddings.sqlite` (a few MB: each keeps 256 of the model's 768 numbers). Each
-  sync also commits this machine's vectors to `vectors/<host>/` in the data repo (about 2 KB per session, in half
-  precision), and imports the files other machines committed. So another machine, or a cloud session, gets them
-  without running the model. Pages are not committed; every machine embeds them, in seconds.
-- Searches stay fast as the KB grows. From 5,000 session and message vectors on, a small sign-bit index
-  (`.kb/embeddings.bits`, rebuilt when the vectors change) picks the 3,000 closest candidates first, and only those
-  are compared exactly. Measured: about 30 ms at 30,000 vectors and 55 ms at 95,000, where comparing every vector takes
-  165 ms and 500 ms.
-- `kb update` brings new pinned versions; the next sync downloads them.
+After that, the feature needs no work from you:
 
-`kb embed --status` shows what is installed, running and embedded. `kb embed --off` turns the feature off and keeps
-the files; `kb embed --remove` also deletes them. To use an embedding server you run yourself, set `embed_url` (see
-[Configuration](./configuration.mdx)).
+- Each sync embeds the items that it added or changed, for at most `embed_sync_seconds`. If an error occurs, the sync
+  adds a note to its sync line and still succeeds.
+- `kb find` waits at most 150 ms for the model. If the server does not run yet, the query uses BM25 alone. The server
+  then starts in the background for the next query. `kb find` is never slower than without the feature. It never fails
+  because of the feature.
+- After 5 minutes without use, the server unloads the model. While loaded, the model uses about 500 MB of RAM. After
+  an hour without use, any `kb` command stops the server process.
+- The vectors are in `<data clone>/.kb/embeddings.sqlite`. This file is a few MB, because each vector keeps 256 of the
+  768 numbers of the model.
+- Each sync also commits the vectors of this machine to `vectors/<host>/` in the data repo. In half precision, they
+  use about 2 KB per session. The sync also imports the files that other machines committed. Thus another machine,
+  or a cloud session, gets the vectors and does not run the model. The sync does not commit the vectors of pages.
+  Every machine embeds the pages itself, in seconds.
+- Searches stay fast when the data repo grows. From 5,000 session and message vectors on, a small sign-bit index
+  (`.kb/embeddings.bits`) first picks the 3,000 closest candidates. `kb find` then compares only those candidates
+  exactly. The index is built again when the vectors change. Measurements show about 30 ms at 30,000 vectors and 55 ms
+  at 95,000. A comparison with every vector takes 165 ms and 500 ms.
+- `kb update` brings new pinned versions, and the next sync downloads them.
+
+`kb embed --status` shows what is installed, what runs and what is embedded. `kb embed --off` disables the feature and
+keeps the files. `kb embed --remove` also deletes the files. To use an embedding server that you run yourself, set
+`embed_url` (see [Configuration](./configuration.mdx)).
 
 ### In cloud sessions and routines
 
-Claude Code cloud sessions and routines can use semantic search too. The vectors come from git, so a session does not
-have to embed your whole history: on a cloud CPU that would take about 17 minutes.
+Claude Code cloud sessions and routines can use semantic search too. The vectors come from git. Thus a cloud session
+does not embed your full history, which takes about 17 minutes on a cloud CPU.
 
-- Your machines need semantic search on (`kb embed`). Each sync then commits their vectors.
-- `kb setup cloud` prints what to set on a cloud environment at claude.ai/code:
-  - the network: **Custom**, the default list included, plus Hugging Face (the model) and the GitHub release hosts
-    (the runtime);
-  - a setup script that puts `kb` on the PATH and runs `kb embed --install`. Its files are cached for about 7 days,
-    and the downloads take about 10 seconds.
-- Start sessions and routines in that environment with both repositories: the retroagent code and your data repo.
-- The first `kb find` in a session starts a background `kb embed --quiet`. It imports the committed vectors and
-  starts the model. Until it is done, `kb find` uses BM25 alone, usually for a few seconds. The pages routine runs
-  `kb embed --quiet` itself at the start.
-- A session only reads vectors: it never commits any, because it owns no host.
+- Enable semantic search on your machines (`kb embed`). Each sync then commits their vectors.
+- `kb setup cloud` prints the settings for a cloud environment at claude.ai/code:
+  - The network: **Custom**, with the default list, plus Hugging Face (for the model) and the GitHub release hosts
+    (for the runtime).
+  - A setup script that puts `kb` on the PATH and runs `kb embed --install`. The environment caches its files for
+    about 7 days. The downloads take about 10 seconds.
+- Start sessions and routines in that environment with the two repositories: the retroagent code and your data repo.
+- The first `kb find` in a session starts `kb embed --quiet` in the background. This command imports the committed
+  vectors and starts the model. Until it is done, `kb find` uses BM25 alone, usually for a few seconds. The pages
+  routine runs `kb embed --quiet` itself when it starts.
+- A cloud session only reads vectors. It never commits vectors, because it owns no host.
 
 ### Capture cloud sessions
 
-A cloud container is deleted after its session, with its transcript. The setup script from `kb setup cloud` also
-runs `kb cloud install`: it adds a `Stop` and a `SessionEnd` hook to `~/.claude/settings.json` in the container.
+Claude Code deletes the container of a cloud session after the session, with its transcript. The setup script from
+`kb setup cloud` also runs `kb cloud install`. This command adds a `Stop` hook and a `SessionEnd` hook to
+`~/.claude/settings.json` in the container.
 
-- After each answer, the hook starts `kb cloud push` in the background. It slims and redacts the transcript and its
-  subagents, like a raw copy, and commits them as `inbox/claude/<encoded cwd>/<id>.jsonl.gz` on a branch of the data
-  repo: the data clone's `claude/…` branch when the session made one, else `claude/inbox-<short id>` (a cloud session
-  starts every repo on a detached HEAD). It never pushes to `main`, and it does not touch the working tree.
-- On one machine, run `kb cloud import --on`. Each sync of that machine then fetches every branch, copies the inbox
-  files into `.kb/cloud/`, and processes them as the sessions of host `cloud`: markdown, raw copy, summary, catalog
-  and vectors, as for its own sessions. `kb find`, `kb page` and the pages routine see them like any other session.
-- A copy replaces the imported file only when it extends it, so an older copy on a kept branch never wins. A shorter
-  copy with another history is reported in the sync line, and its branches stay.
-- That machine owns `sessions/cloud` (the host marker, see [Sync](./sync.mdx#one-writer-per-host)). A second machine
-  with the import on writes nothing for it and says so in its sync line.
+- After each answer, the hook starts `kb cloud push` in the background. This command slims and redacts the transcript
+  and its subagents, as for a raw copy. It commits them as `inbox/claude/<encoded cwd>/<id>.jsonl.gz` on a branch of
+  the data repo. If the session made a `claude/…` branch in the data clone, it uses that branch. Else, it uses
+  `claude/inbox-<short id>` (a cloud session starts every repo on a detached HEAD). It never pushes to `main`, and it
+  does not change the working tree.
+- On one machine, run `kb cloud import --on`. Each sync of that machine then fetches every branch and copies the inbox
+  files into `.kb/cloud/`. It processes them as the sessions of host `cloud`: markdown, raw copy, summary, catalog and
+  vectors, as for its own sessions. `kb find`, `kb page` and the pages routine see them as any other session.
+- A copy replaces the imported file only when it extends that file. Thus an older copy on a kept branch never wins.
+  If a shorter copy has another history, the sync line reports it, and its branches stay.
+- That machine owns `sessions/cloud` (the host marker, see [Sync](./sync.mdx#one-writer-per-host)). If a second
+  machine has the import on, it writes nothing for that host and says so in its sync line.
 - After a clean push, the sync deletes each branch whose only change from `main` is `inbox/`. A branch with other
-  commits stays; do not merge it as it is, or `inbox/` reaches `main`. If the session goes on, its next push starts
-  the branch again from `main`.
-- One-prompt headless runs, such as the pages routine, are not pushed (the sync skips them too), and nothing is pushed
-  on `main` or on the routine's bootstrap branch. Errors go to `.kb/cloud.log` in the cloud data clone.
-- A session's project comes from its working directory. A cloud session that starts with more than one repository
-  works in `/home/user`, so its project is `user`.
+  commits stays. Do not merge such a branch as it is, because `inbox/` then reaches `main`. If the session continues,
+  its next push starts the branch again from `main`.
+- `kb cloud push` does not push one-prompt headless runs, such as the pages routine. The sync skips them too. It pushes
+  nothing on `main` or on the bootstrap branch of the routine. Errors go to `.kb/cloud.log` in the cloud data clone.
+- The project of a session comes from its working directory. A cloud session that starts with more than one
+  repository works in `/home/user`. Thus its project is `user`.
 
 ## Brief at session start
 
-On by default; turn it off with `"brief": false` in the [config](./configuration.mdx). The
-`SessionStart` hook (`bin/kb-hook`) runs `kb brief --hook` before it starts the sync, and the session gets at most:
+The brief is on by default. To disable it, set `"brief": false` in the [config](./configuration.mdx). The
+`SessionStart` hook (`bin/kb-hook`) runs `kb brief --hook` before it starts the sync. The session gets at most this
+text:
 
 ```text
 Project page of demo: `kb page demo` (2 open threads, 1 error → fix). Read it when the task needs it.
@@ -133,54 +144,62 @@ Changes the owner accepted for the demo repo (`kb suggestions`):
 - [s-1a2b3c] Rules · wait for CI with a watch command, not sleep
 ```
 
-On purpose, it holds no facts from the page: they can be out of date, and the agent reads the page with `kb page`
-when the task needs it. The second part lists only suggestions with an `accepted` decision whose `repo` is this
-project (see [Suggested changes](./pages-routine.mdx#suggested-changes-and-whether-they-worked)). With no page and
-nothing accepted, it prints nothing. The whole brief stays under 1,200 characters. It reads three files of the data
-clone and never the index, so it adds no wait. Run `kb brief` (or `kb brief --project P`) to see what a session in
-that project gets.
+On purpose, the brief holds no facts from the page. These facts can be out of date. The agent reads the page with
+`kb page` when the task needs it.
+
+The second part lists only the suggestions with an `accepted` decision whose `repo` is this project (see
+[Suggested changes](./pages-routine.mdx#suggested-changes-and-whether-they-worked)). With no page and no accepted
+suggestion, the brief is empty. The full brief stays under 1,200 characters. It reads three files of the data clone
+and never the index. Thus it adds no wait.
+
+To see what a session in a project gets, run `kb brief` (or `kb brief --project P`).
 
 ## Hints when a command fails
 
-On by default; turn it off with `"hints": false` in the [config](./configuration.mdx). When a tool call
-fails in Claude Code, the `PostToolUseFailure` hook (`bin/kb-hint`) runs `kb hint --event error`. It can add one line
-to the agent's context:
+Hints are on by default. To disable them, set `"hints": false` in the [config](./configuration.mdx). When a tool call
+fails in Claude Code, the `PostToolUseFailure` hook (`bin/kb-hint`) runs `kb hint --event error`. This command can add
+one line to the context of the agent:
 
 ```
 retroagent: seen before → <problem → fix> (kb summary <short> · <date>)
 ```
 
-The line is a bullet from the "Errors seen → fixes" section of the current project's page, with the session it came
-from and the date a session last confirmed it (see
-[Old and conflicting facts](./pages-routine.mdx#old-and-conflicting-facts)). A bullet that the page's age rule calls
-stale (`stale_days` in `pages/config.json`) is never shown. The project comes from the working directory, as for sessions. Most failures get no hint, because a wrong hint
-costs more than a missing one:
+The line is a bullet from the "Errors seen → fixes" section of the page of the current project. The line also shows
+the session that the bullet came from. It also shows the date that a session last confirmed the bullet (see
+[Old and conflicting facts](./pages-routine.mdx#old-and-conflicting-facts)). If the age rule of the page calls a
+bullet stale (`stale_days` in `pages/config.json`), the hint never shows it. The project comes from the working
+directory, as for sessions.
+
+Most failures get no hint, because a wrong hint costs more than no hint. The rules are:
 
 1. The first 200 characters of the error must contain an error word (`error`, `failed`, `not found`, `denied`, …). An
-   error with no message, such as `grep` exit 1, or plain command output with exit code 1, gets no hint.
-2. A permission, auto mode classifier, sandbox or safety denial never gets a hint, and a bullet about one is never
-   shown.
-3. When the embedding server of [semantic search](#semantic-search) already runs, the bullet closest in meaning, at
-   least `hint_semantic_min` (cosine). The hint never starts the server. The bullet vectors are kept in
-   `.kb/hints/vectors/`, so a hint embeds only the error.
-4. Else, the bullet whose problem side (the text before `→`) shares at least `hint_keyword_min` words with the error.
-   Paths, numbers, ids, quoted values and common words do not count.
+   error with no message, such as `grep` exit 1, gets no hint. Plain command output with exit code 1 also gets no
+   hint.
+2. A permission, auto mode classifier, sandbox or safety denial never gets a hint. The hint also never shows a bullet
+   about such a denial.
+3. When the embedding server of [semantic search](#semantic-search) already runs, the hint is the bullet closest in
+   meaning. Its cosine must be at least `hint_semantic_min`. The hint never starts the server. The bullet vectors stay
+   in `.kb/hints/vectors/`, so a hint embeds only the error.
+4. Else, the hint is the bullet whose problem side (the text before `→`) shares at least `hint_keyword_min` words with
+   the error. Paths, numbers, ids, quoted values and common words do not count.
 
-A session gets each bullet once. When its best bullet was shown already, it gets nothing. The hook exits 0 on every
-problem and prints nothing; when hints are off it exits before Python starts. Each hint shown is logged to
-`.kb/hints/log.jsonl` in the data clone (local, never committed) with the session, the bullet, its date, the score
-and the rule.
+A session gets each bullet one time. If the session already got its best bullet, it gets nothing. The hook exits 0 on
+every problem and prints nothing. When hints are off, it exits before Python starts.
 
-Codex has no event for a failed tool call, and its `PostToolUse` shell response has no exit code, so Codex gets no
+`kb hint` logs each hint that it shows to `.kb/hints/log.jsonl` in the data clone. This file stays local, and the sync
+never commits it. Each entry has the session, the bullet, its date, the score and the rule.
+
+Codex has no event for a failed tool call. Its `PostToolUse` shell response also has no exit code. Thus Codex gets no
 hints yet. `kb hint` still reads a Codex `PostToolUse` event whose response starts with `Exit code: N`.
 
-`scripts/hint-replay` replays the hint rules on the tool errors of your data clone (read-only) and prints how many
-hints each rule would show. `--semantic --start` also runs the semantic rule, `--show N` prints examples.
+`scripts/hint-replay` replays the hint rules on the tool errors of your data clone (read-only). It prints the number of
+hints that each rule gives. `--semantic --start` also runs the semantic rule. `--show N` prints examples.
 
 ## Read-only by design
 
-The read commands open the local index read-only. They work in a sandbox where `.kb/` cannot be written, and they
-never wait for a running sync.
+The read commands open the local index read-only. They work in a sandbox that blocks writes to `.kb/`. They never wait
+for a sync that runs at the same time.
 
-Only a missing or outdated index must be built, which needs write access. If it cannot be built, they print
-`index not built yet; run: kb reindex` and exit 2. Other errors print one line, `kb: <message>`, and exit 2.
+They build the index only when it is missing or out of date. This step needs write access. If the build fails, they
+print `index not built yet; run: kb reindex` and exit 2. For other errors, they print one line, `kb: <message>`, and
+exit 2.
