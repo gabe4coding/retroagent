@@ -10,8 +10,10 @@ enforce; the others rely on discipline.
 
 ## Tests and commits
 - Run `scripts/test --all` before every commit; plain `scripts/test` (the fast tests, under 5 s) while you work. Both
-  run in parallel on `/usr/bin/python3`, the runtime target, with pytest from `uv`. There is no CI:
-  `scripts/test --all` is the only check. It already passes `-q`; adding another `-q` hides the summary line.
+  run in parallel on `/usr/bin/python3`, the runtime target, with pytest from `uv`. It already passes `-q`; adding
+  another `-q` hides the summary line. CI (`.github/workflows/test.yml`) runs `scripts/test --all` on every push to
+  `main` and every PR: macOS `/usr/bin/python3`, and Linux Python 3.9 and 3.13 (`KB_TEST_PYTHON` picks the
+  interpreter).
 - A test that starts a process (git, gitleaks, sh, python) must be marked `@pytest.mark.slow` (or its module
   `pytestmark = pytest.mark.slow`). Keep the fast run under 5 s. `[test: tests/conftest.py fails an unmarked one]`
 - Build test data with the shared builders in `tests/fixtures.py`: fake Claude/Codex transcripts
