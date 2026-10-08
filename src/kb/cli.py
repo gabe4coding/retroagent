@@ -6,8 +6,8 @@
   kb recent            latest sessions
   kb summary <id>      summary, decisions, outcome, files, PRs, subagents of one session
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
-  kb hint --event error  a past fix for a failed tool call (the PostToolUseFailure hook runs it; "hints": true)
-  kb brief             what a new session in this project sees (the SessionStart hook runs it; "brief": true)
+  kb hint --event error  a past fix for a failed tool call (the PostToolUseFailure hook runs it; off: "hints": false)
+  kb brief             what a new session in this project sees (the SessionStart hook runs it; off: "brief": false)
   kb suggestions       the changes weekly retros suggested, the decisions on them (pages/decisions.json), and
                        whether the error each one should remove still happens
   kb stats [report]    ready-made analytics (errors: tool errors that came back); kb sql "<SELECT …>" for custom ones
@@ -514,7 +514,7 @@ def cmd_suggestions(args, cfg) -> int:
 
 
 def cmd_brief(args, cfg) -> int:
-    """What a new session sees (kb.brief). --hook: the SessionStart hook output, only with "brief": true; never fails."""
+    """What a new session sees (kb.brief). --hook: the SessionStart hook output, nothing with "brief": false; never fails."""
     from kb import brief
     try:
         cwd = os.getcwd()
@@ -1020,7 +1020,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "suggestions for its repo")
     br.add_argument("--project", help="this project instead of the working directory's")
     br.add_argument("--hook", action="store_true", help="SessionStart hook: event JSON on stdin, hook output JSON; "
-                    "only with \"brief\": true in the config")
+                    "nothing with \"brief\": false in the config")
     br.set_defaults(func=cmd_brief)
 
     sg = sub.add_parser("suggestions", help="the changes weekly retros suggested, the decisions on them, and whether the "

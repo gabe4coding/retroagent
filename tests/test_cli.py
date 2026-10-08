@@ -591,13 +591,13 @@ def test_brief(kb_env, capsys, monkeypatch, tmp_path):
     code, out = run(capsys, "brief")
     assert code == 0 and out.startswith("(nothing")
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO('{"cwd": "/w/demo"}'))
+    cfg = json.loads(open(os.environ["KB_CONFIG"]).read())
+    open(os.environ["KB_CONFIG"], "w").write(json.dumps({**cfg, "brief": False}))
     assert run(capsys, "brief", "--hook") == (0, "")                  # off in the config: silent
 
 
 def test_brief_hook_output(kb_env, capsys, monkeypatch):
     import io
-    cfg = json.loads(open(os.environ["KB_CONFIG"]).read())
-    open(os.environ["KB_CONFIG"], "w").write(json.dumps({**cfg, "brief": True}))
     (kb_env / "pages" / "projects").mkdir(parents=True, exist_ok=True)
     (kb_env / "pages" / "projects" / "demo.md").write_text(
         '---\nkind: "project"\nname: "demo"\n---\n# demo\n\n## Open threads\n- one (a0000001)\n')
