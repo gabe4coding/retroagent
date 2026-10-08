@@ -6,7 +6,8 @@
 
 <p align="center">
   <b>Your agents forget. retroagent remembers.</b><br>
-  Every Claude Code and Codex session, from every machine, in a private Git repo you own — searchable in one command.
+  It keeps every Claude Code and Codex session from every machine in a private Git repo that you own.
+  One command searches them all.
 </p>
 
 <p align="center">
@@ -30,30 +31,35 @@
 
 ---
 
-- **Sync** — each session becomes a short markdown file in your data repo. Secrets are redacted, and every commit the
-  sync makes is scanned with gitleaks.
-- **Search** — `kb find "how did I fix the flaky test"` on a local SQLite index, at a tiny token cost. Skills teach
-  Claude Code and Codex to look there first. Optional [semantic search](docs/commands.mdx#semantic-search) also
-  matches paraphrases and other languages with a local model, in cloud sessions too. Claude Code
-  [cloud sessions](docs/commands.mdx#capture-cloud-sessions) are captured as well.
-- **Pages and retros** *(optional)* — a cloud routine keeps one page per project and one retrospective per week, every
-  bullet linked to its source session.
+- **Sync**: the sync writes each session as a short Markdown file in your data repo. It redacts secrets, and gitleaks
+  scans every commit that the sync makes.
+- **Search**: `kb find "how did I fix the flaky test"` searches a local SQLite index at a very low token cost. Skills
+  tell Claude Code and Codex to search there first. Optional [semantic search](docs/commands.mdx#semantic-search) uses
+  a local model to also find paraphrases and other languages. It works in cloud sessions too. retroagent also
+  collects Claude Code [cloud sessions](docs/commands.mdx#capture-cloud-sessions).
+- **Pages and retros** *(optional)*: the pages routine runs in the cloud. It keeps one project page for each project
+  and one retro for each week. Each bullet links to its source session.
 
-Two repos are involved: this one (the code, public) and your **data repo** (private, yours). The code never holds data.
+retroagent uses two repos. This public repo holds the code and no data. Your private **data repo** holds the data,
+and you own it.
 
 https://github.com/user-attachments/assets/c4393042-e8bf-405b-bb41-e45f9df83a7c
 
-<p align="center"><sub>retroagent, explained in 3.5 minutes: the sync, the two repos, search with <code>kb</code>,
-project pages, and weekly retros that propose changes to your agent's environment.</sub></p>
+<p align="center"><sub>A 3.5-minute video explains the sync, the two repos, search with <code>kb</code>, project
+pages and weekly retros. The retros propose changes to the environment of your agent.</sub></p>
 
 ## Quick start
 
-You need git, Python 3.9+, [gitleaks](https://github.com/gitleaks/gitleaks) (`brew install gitleaks`) and the GitHub
-CLI `gh`.
+You need these tools:
+
+- git
+- Python 3.9+
+- [gitleaks](https://github.com/gitleaks/gitleaks) (`brew install gitleaks`)
+- the GitHub CLI `gh`
 
 ### Let your agent do it
 
-Paste this into Claude Code or Codex:
+Paste this prompt into Claude Code or Codex:
 
 ```text
 Set up retroagent on this machine for me: https://github.com/gabe4coding/retroagent
@@ -67,8 +73,12 @@ Set up retroagent on this machine for me: https://github.com/gabe4coding/retroag
 5. Never ask me for a token or a secret: I type those in my own terminal.
 ```
 
-The agent creates or picks your private data repo, installs the plugins and the `kb` CLI, runs the first sync and
-turns automatic syncs on, asking you before each step.
+The agent asks you before each step. It does these steps:
+
+1. It creates or picks your private data repo.
+2. It installs the plugins and the `kb` CLI.
+3. It runs the first sync.
+4. It enables automatic syncs.
 
 ### Or with the Claude Code plugin
 
@@ -78,7 +88,7 @@ turns automatic syncs on, asking you before each step.
 /retroagent:setup
 ```
 
-For a manual install, see [Installation](docs/installation.mdx).
+To install by hand, read [Installation](docs/installation.mdx).
 
 ## Use it
 
@@ -89,7 +99,7 @@ kb show 9a1be7d2 --grep error  # only the part you need
 kb stats                       # how you use your agents
 ```
 
-Or just ask your agent: *"how did I fix this last time?"*, *"retro of last week"*.
+You can also ask your agent: *"how did I fix this last time?"* or *"retro of last week"*.
 
 ## Documentation
 
@@ -97,7 +107,7 @@ Or just ask your agent: *"how did I fix this last time?"*, *"retro of last week"
 | --- | --- |
 | [Installation](docs/installation.mdx) | Requirements, plugin and manual install, host names, updates |
 | [Commands](docs/commands.mdx) | Every `kb` command |
-| [How the sync works](docs/sync.mdx) | What gets written, when, and the one-writer-per-host rule |
+| [How the sync works](docs/sync.mdx) | What the sync writes and when, and the one-writer-per-host rule |
 | [Pages routine](docs/pages-routine.mdx) | The optional cloud routine for project pages and weekly retros |
 | [Configuration](docs/configuration.mdx) | Every key of `config.json` |
 | [Troubleshooting](docs/troubleshooting.mdx) | `kb repair` and common errors |
