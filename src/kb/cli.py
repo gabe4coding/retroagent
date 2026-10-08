@@ -7,6 +7,7 @@
   kb summary <id>      summary, decisions, outcome, files, PRs, subagents of one session
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
   kb hint --event error  a past fix for a failed tool call (the PostToolUseFailure hook runs it; "hints": true)
+  kb brief             what a new session in this project sees (the SessionStart hook runs it; "brief": true)
   kb suggestions       the changes weekly retros suggested, the decisions on them (pages/decisions.json), and
                        whether the error each one should remove still happens
   kb stats [report]    ready-made analytics (errors: tool errors that came back); kb sql "<SELECT …>" for custom ones
@@ -512,6 +513,32 @@ def cmd_suggestions(args, cfg) -> int:
     return 0
 
 
+def cmd_brief(args, cfg) -> int:
+    """What a new session sees (kb.brief). --hook: the SessionStart hook output, only with "brief": true; never fails."""
+    from kb import brief
+    try:
+        cwd = os.getcwd()
+        if args.hook:
+            if not cfg.brief:
+                return 0
+            event = json.loads(sys.stdin.read() or "{}")
+            cwd = event.get("cwd") if isinstance(event, dict) and isinstance(event.get("cwd"), str) else cwd
+        text = brief.build(cfg.root, cwd, args.project or "")
+    except Exception:  # noqa: BLE001 - a brief is never worth breaking the start of a session
+        if not args.hook:
+            raise
+        return 0
+    if not text:
+        if not args.hook:
+            print("(nothing: no project page and no accepted suggestion for this project)")
+        return 0
+    if args.hook:
+        text = json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}},
+                          ensure_ascii=False)
+    print(text)
+    return 0
+
+
 def cmd_hint(args, cfg) -> int:
     """One past fix for a failed tool call (the hook event JSON on stdin), or nothing. Never fails: a hook calls it."""
     from kb import hint
@@ -988,6 +1015,13 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--skip", help="finish: planned names (projects or weeks) not to retry, comma-separated")
     ps.add_argument("--no-push", action="store_true", help="finish: commit but do not push")
     ps.set_defaults(func=cmd_pages)
+
+    br = sub.add_parser("brief", help="what a new session in this project sees: the page pointer and the accepted "
+                        "suggestions for its repo")
+    br.add_argument("--project", help="this project instead of the working directory's")
+    br.add_argument("--hook", action="store_true", help="SessionStart hook: event JSON on stdin, hook output JSON; "
+                    "only with \"brief\": true in the config")
+    br.set_defaults(func=cmd_brief)
 
     sg = sub.add_parser("suggestions", help="the changes weekly retros suggested, the decisions on them, and whether the "
                         "error each one should remove still happens")

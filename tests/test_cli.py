@@ -584,3 +584,27 @@ def test_suggestions(kb_env, capsys):
     assert "s-000002" not in out
     code, out = run(capsys, "suggestions", "--all", "--json")
     assert [r["id"] for r in json.loads(out)] == ["s-000001", "s-000002"]
+
+
+def test_brief(kb_env, capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    code, out = run(capsys, "brief")
+    assert code == 0 and out.startswith("(nothing")
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO('{"cwd": "/w/demo"}'))
+    assert run(capsys, "brief", "--hook") == (0, "")                  # off in the config: silent
+
+
+def test_brief_hook_output(kb_env, capsys, monkeypatch):
+    import io
+    cfg = json.loads(open(os.environ["KB_CONFIG"]).read())
+    open(os.environ["KB_CONFIG"], "w").write(json.dumps({**cfg, "brief": True}))
+    (kb_env / "pages" / "projects").mkdir(parents=True, exist_ok=True)
+    (kb_env / "pages" / "projects" / "demo.md").write_text(
+        '---\nkind: "project"\nname: "demo"\n---\n# demo\n\n## Open threads\n- one (a0000001)\n')
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"cwd": "/w/demo"}'))
+    code, out = run(capsys, "brief", "--hook")
+    ctx = json.loads(out)["hookSpecificOutput"]
+    assert code == 0 and ctx["hookEventName"] == "SessionStart"
+    assert ctx["additionalContext"] == "Project page of demo: `kb page demo` (1 open thread). Read it when the task needs it."
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+    assert run(capsys, "brief", "--hook") == (0, "")                  # never fails
