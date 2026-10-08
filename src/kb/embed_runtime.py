@@ -1,10 +1,18 @@
-"""The embedding runtime kb manages for semantic search: a pinned llama.cpp build and model, downloaded once into
-~/.cache/retroagent/embed/ and checked against sha256, and a llama-server started on demand and stopped when idle.
+"""The embedding runtime that kb manages for semantic search.
 
-The server listens on 127.0.0.1 only, on a free port, and answers only with the API key in the cache folder. After
-SLEEP_IDLE seconds without work it unloads the model (the process stays, small); `reap_if_idle`, which every kb
-command calls, stops the process after IDLE_STOP seconds without use. Every failure is an EmbedUnavailable with a
-one-line reason: the caller then searches with BM25 alone.
+It has two parts:
+- A pinned llama.cpp build and model. They are downloaded once into ~/.cache/retroagent/embed/ and checked against
+  their sha256.
+- A llama-server process. kb starts it when a search or a sync needs it and stops it when it is idle.
+
+The server listens on 127.0.0.1 only, on a free port. It answers only requests with the API key in the cache folder.
+
+Two timers stop an idle server:
+- After SLEEP_IDLE seconds without work, the server unloads the model. The process stays, and it is small.
+- After IDLE_STOP seconds without use, `reap_if_idle` stops the process. Every kb command calls it.
+
+Every failure is an EmbedUnavailable with a one-line reason. The caller then searches with BM25 alone. BM25 is the
+keyword ranking of the full-text index (kb.index).
 """
 from __future__ import annotations
 
@@ -168,6 +176,8 @@ def install(cache: Path = None, progress=None) -> None:
         m = ASSETS["model"]
         _download(m["url"], model, m["size"], m["sha256"], progress)
         marker.write_text(m["sha256"])
+    # Remove older pins: every runtime folder but the current one, and every model file not named after MODEL
+    # (keep is None for the models folder: there the name prefix decides).
     for folder, keep in ((cache / "runtime", run.name), (cache / "models", None)):
         for p in folder.iterdir() if folder.is_dir() else ():
             if keep is not None and p.name != keep:
@@ -246,6 +256,13 @@ class Server:
             port = _free_port()
             self.key()
             log = open(self.log_path, "ab")
+            # llama-server flags:
+            #   --embeddings          serve /v1/embeddings
+            #   -c 8192               the context size, in tokens
+            #   -ub 8192, -b 8192     the physical and the logical batch size, in tokens
+            #   -np 2                 the number of parallel slots (requests served at the same time)
+            #   --sleep-idle-seconds  unload the model after this many idle seconds
+            #   --offline             no network access
             try:
                 proc = subprocess.Popen(
                     [str(binary), "-m", str(_model_path(self.cache)), "--embeddings", "--host", "127.0.0.1",

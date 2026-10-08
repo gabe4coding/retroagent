@@ -1,14 +1,31 @@
-"""Semantic search data: embed the text of sessions, their user turns, pages and memories, keep the vectors, rank
-by similarity.
+"""Semantic search data: turn text into vectors (embed it), keep the vectors, and rank items by similarity.
 
-Vectors live in <root>/.kb/embeddings.sqlite, beside the index but in their own file: `kb reindex` and index schema
-changes keep them, and .kb/ never syncs. A row is valid for one model key and one text (sha1); anything else is
-embedded again. Vectors keep their first DIM numbers (EmbeddingGemma 2 is trained for such cuts): a third of the
-storage and the comparison time for about the same ranking. A session ranks by its best match among its summary
-document and its user turns, so a detail said only in the middle of a session can be found. The prompts follow the
-EmbeddingGemma 2 model card. Stdlib only: comparing a query with a few thousand vectors takes tens of milliseconds;
-from EXACT_BELOW session and turn vectors on, a sign-bit index (BitIndex) picks PREFILTER candidates first, so the
-cost of a search grows slowly with the KB.
+What gets embedded (one vector per item):
+- each session: its summary document (summary, tags, decisions and first prompt),
+- the longer user turns of each session (TURN_MIN characters or more),
+- each page and each memory file.
+
+The store:
+- The vectors live in <root>/.kb/embeddings.sqlite. This file is beside the search index, but separate from it. So
+  `kb reindex` and a new index schema keep the vectors. The .kb/ folder never syncs.
+- A stored vector is reused only for the same model key and the same text (the same sha1 of the text). Anything
+  else is embedded again.
+- A vector keeps only its first DIM of the model's 768 numbers. EmbeddingGemma 2 is trained for such cuts: about the
+  same ranking for a third of the storage and the comparison time. The model key names the cut.
+
+The search:
+- A session scores its best match among its summary document and its user turns. So a detail said only in the
+  middle of a session can be found.
+- With fewer than EXACT_BELOW session and turn vectors, the query is compared with every vector.
+- With more, the search has two steps. The sign-bit index (BitIndex) first picks the PREFILTER closest vectors. Then
+  the exact comparison runs on those only. So the cost of a search grows slowly with the number of sessions.
+
+Terms:
+- unit vector: a vector of length 1. For two unit vectors, the dot product is the similarity (1 = same direction).
+- sign-bit index: one bit per number of each vector, 1 when the number is above zero. The count of different bits
+  (Hamming distance) is a fast, rough measure of how far apart two vectors are.
+
+The prompts (query_text, doc_text) follow the EmbeddingGemma 2 model card. Standard library only.
 """
 from __future__ import annotations
 
@@ -37,6 +54,10 @@ BATCH = 32
 POOL = 50                   # items each ranking gives to the fusion
 EXACT_BELOW = 5000          # fewer session + turn vectors than this: compare the query with every vector
 PREFILTER = 3000            # else: the vectors closest by sign bits, then the exact comparison on those
+# Rowids per SQL query in by_rowid. SQLite builds older than 3.32 allow at most 999 "?" variables in one statement.
+_ROWIDS_PER_QUERY = 900
+# Lower than any score: the dot product of two unit vectors is never below -1.
+_NO_SCORE = -2.0
 
 
 class EmbedError(Exception):
@@ -220,8 +241,8 @@ class Vectors:
     def by_rowid(self, rowids) -> dict:
         """rowid -> vector, for the given rowids."""
         out, rowids = {}, list(rowids)
-        for i in range(0, len(rowids), 900):
-            chunk = rowids[i:i + 900]
+        for i in range(0, len(rowids), _ROWIDS_PER_QUERY):
+            chunk = rowids[i:i + _ROWIDS_PER_QUERY]
             for rid, blob in self.db.execute(
                     f"SELECT rowid, vec FROM vectors WHERE rowid IN ({','.join('?' * len(chunk))})", chunk):
                 v = array("f")
@@ -253,12 +274,17 @@ def _repeat(pattern: bytes, n: int) -> int:
 
 
 class BitIndex:
-    """Sign bits of every session and turn vector of one model key, in one local file (.kb/embeddings.bits): a JSON
-    header line, then DIM/8 bytes of bits per vector, 8 bytes of store rowid per vector, and the groups (the session
-    id; a turn's group is its session) as a newline-joined text block.
+    """The sign bits of every session and turn vector of one model key. It is the first step of a search in a large
+    store: it finds the PREFILTER vectors closest to the query, cheaply, before the exact comparison.
 
-    The bits of all vectors are held as one large integer, so the Hamming distance of the query to every vector takes
-    a fixed number of big-integer operations (XOR, then a shift-and-mask bit count), not one Python step per vector."""
+    The file .kb/embeddings.bits holds these blocks, in this order:
+    1. Header: one JSON line with format, model, dim, generation and count (the number of vectors).
+    2. Bits: _WIDTH (DIM/8) bytes of sign bits per vector, for all vectors.
+    3. Rowids: the store rowid of each vector, 8 bytes each (array "q", machine byte order).
+    4. Groups: the session id of each vector (a turn's group is its session), joined with newlines, UTF-8.
+
+    In memory, the bits of all vectors are one large integer. So the distance from the query to every vector takes a
+    fixed number of big-integer operations, not one Python step per vector."""
 
     def __init__(self, model: str, generation: int, block: bytes, rowids: list, groups: list):
         self.model, self.generation, self.rowids, self.groups = model, generation, rowids, groups
@@ -307,18 +333,25 @@ class BitIndex:
         return cls(model, generation, block, list(rowids), groups)
 
     def distances(self, qvec) -> list:
-        """Hamming distance from the sign bits of qvec to every vector, in index order."""
+        """Hamming distance from the sign bits of qvec to every vector, in index order.
+
+        The bit count is a SWAR popcount ("SIMD within a register"): each step works on all fields of the large
+        integer at once, with shifts and masks.
+        1. XOR with the query bits, repeated once per vector: a 1 bit where the vector and the query differ.
+        2. Count the 1 bits of each 2-bit field, then of each 4-bit field, then of each byte.
+        3. Add neighbour fields together: 2 bytes, 4, 8, 16, then 32 bytes (one vector slot of _WIDTH bytes).
+        4. Read each vector's count from the last 2 bytes of its slot."""
         n = self.n
-        x = self.block ^ int.from_bytes(_signs(qvec).to_bytes(_WIDTH, "big") * n, "big")
-        x = x - ((x >> 1) & _repeat(b"\x55", n))                              # bits per 2-bit field
-        m = _repeat(b"\x33", n)
-        x = (x & m) + ((x >> 2) & m)                                          # per 4-bit field
-        x = (x + (x >> 4)) & _repeat(b"\x0f", n)                              # per byte
+        counts = self.block ^ int.from_bytes(_signs(qvec).to_bytes(_WIDTH, "big") * n, "big")
+        counts = counts - ((counts >> 1) & _repeat(b"\x55", n))               # count per 2-bit field
+        mask_4bit = _repeat(b"\x33", n)
+        counts = (counts & mask_4bit) + ((counts >> 2) & mask_4bit)           # per 4-bit field
+        counts = (counts + (counts >> 4)) & _repeat(b"\x0f", n)               # per byte
         for shift in (8, 16, 32, 64, 128):                                    # add up the bytes of each vector
             half = shift // 8
-            x = (x + (x >> shift)) & _repeat(b"\x00" * half + b"\xff" * half, n)
-        b = x.to_bytes(n * _WIDTH, "big")                                     # each count: last 2 bytes of its slot
-        return [hi * 256 + lo for hi, lo in zip(b[_WIDTH - 2::_WIDTH], b[_WIDTH - 1::_WIDTH])]
+            counts = (counts + (counts >> shift)) & _repeat(b"\x00" * half + b"\xff" * half, n)
+        slots = counts.to_bytes(n * _WIDTH, "big")                            # each count: last 2 bytes of its slot
+        return [hi * 256 + lo for hi, lo in zip(slots[_WIDTH - 2::_WIDTH], slots[_WIDTH - 1::_WIDTH])]
 
     def candidates(self, qvec, allowed=None, k: int = PREFILTER) -> list:
         """Positions of the k vectors closest to qvec by Hamming distance, among those whose group is allowed."""
@@ -412,33 +445,46 @@ def export_own(root, db, store: Vectors, model: str, host: str):
     from kb import vecfile
     root = Path(root)
     key = model_key(model)
-    rows = store.rows(key)
+    wanted = _wanted_vec_files(db, store.rows(key), host)
+    written = 0
+    for rel, items in wanted.items():
+        vectors = [v for _, _, (_, v) in items]
+        data = vecfile.dumps(key, len(vectors[0]), [(kind, item_key, sha) for kind, item_key, (sha, _) in items],
+                             vectors)
+        written += atomic_write(root / rel, data)
+    return written, _remove_stale_vec_files(root, host, wanted)
+
+
+def _wanted_vec_files(db, rows: dict, host: str) -> dict:
+    """{vector file path: [(kind, item key, (sha, vector))]} for this host's sessions and memories that have vectors.
+
+    A session file lists its summary document first, then its user turns in turn order."""
     turns = {}
-    for (kind, k), (sha, v) in rows.items():
+    for (kind, item_key), (sha, v) in rows.items():
         if kind == "turn":
-            sid, _, n = k.rpartition("#")
-            turns.setdefault(sid, []).append((int(n) if n.isdigit() else 0, k, sha, v))
+            sid, _, n = item_key.rpartition("#")
+            turns.setdefault(sid, []).append((int(n) if n.isdigit() else 0, item_key, sha, v))
     wanted = {}
     for sid, md_path in db.execute("SELECT id, md_path FROM sessions WHERE host = ?", (host,)):
         items = [("session", sid, rows[("session", sid)])] if ("session", sid) in rows else []
-        items += [("turn", k, (sha, v)) for _, k, sha, v in sorted(turns.get(sid, []))]
+        items += [("turn", item_key, (sha, v)) for _, item_key, sha, v in sorted(turns.get(sid, []))]
         if items and md_path:
             wanted[vec_rel(md_path)] = items
     for (path,) in db.execute("SELECT path FROM memories WHERE host = ?", (host,)):
         if ("memory", path) in rows:
             wanted[vec_rel(path)] = [("memory", path, rows[("memory", path)])]
-    written = 0
-    for rel, items in wanted.items():
-        vectors = [v for _, _, (_, v) in items]
-        data = vecfile.dumps(key, len(vectors[0]), [(kind, k, sha) for kind, k, (sha, _) in items], vectors)
-        written += atomic_write(root / rel, data)
+    return wanted
+
+
+def _remove_stale_vec_files(root: Path, host: str, wanted: dict) -> int:
+    """Delete this host's vector files that are not in wanted. Returns how many."""
     removed = 0
     base = root / "vectors" / host
     for f in base.rglob("*.vec") if base.is_dir() else []:
         if f.relative_to(root).as_posix() not in wanted:
             f.unlink()
             removed += 1
-    return written, removed
+    return removed
 
 
 def import_files(root, db, store: Vectors, model: str, own_host: str) -> int:
@@ -500,7 +546,7 @@ def rank(store: Vectors, model: str, kind: str, qvec, allowed=None, n: int = POO
             sid = sid_of(k)
             if allowed is None or sid in allowed:
                 score = sum(map(mul, qvec, v))
-                if score > best.get(sid, -2.0):
+                if score > best.get(sid, _NO_SCORE):
                     best[sid] = score
     return sorted(best, key=lambda sid: (-best[sid], sid))[:n]
 
@@ -516,7 +562,7 @@ def _rank_two_step(store: Vectors, bits: BitIndex, qvec, allowed, n: int) -> lis
         if v is None:                       # the store changed after the index was read
             continue
         score, sid = sum(map(mul, qvec, v)), bits.groups[i]
-        if score > best.get(sid, -2.0):
+        if score > best.get(sid, _NO_SCORE):
             best[sid] = score
     return sorted(best, key=lambda sid: (-best[sid], sid))[:n]
 
