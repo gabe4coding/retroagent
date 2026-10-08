@@ -14,6 +14,7 @@ The config is in `~/.config/retroagent/config.json`. If this file does not exist
 | `code` | written by `install.sh` | The code clone that the plugin caches run. |
 | `host` | short hostname | The name of this machine. It must be unique per machine. See [Installation](./installation.mdx#one-host-name-per-machine). |
 | `auto_sync` | `true` when missing, `install.sh` writes `false` | If `true`, the SessionStart hook syncs. Set it with `kb enable` / `kb disable`. |
+| `auto_sync_pending` | `false`, `install.sh` writes `true` on a new config | If `true`, the first full `kb backfill` sets `auto_sync` to `true`. Until then, the SessionStart hook runs `kb backfill`. `kb enable` and `kb disable` remove the key. |
 | `auto_update` | `false` | If `true`, `kb sync --auto` pulls the code clone one time each day. Set it with `kb enable updates`. |
 | `embed` | `false` | Turns on [semantic search](./commands.mdx#semantic-search). Set it with `kb embed` / `kb embed --off`. |
 | `embed_url` | empty | An OpenAI-compatible `/v1/embeddings` server that `kb` uses instead of its own server. Keep it on localhost, because it gets the text of your sessions. |
@@ -27,7 +28,7 @@ The config is in `~/.config/retroagent/config.json`. If this file does not exist
 | `branch` | `main` | On all other branches, the sync does not use git. |
 | `raw_settle_hours` | `24` | See below. |
 | `skip_headless_single_prompt` | `true` | If `true`, the sync skips `claude -p` / `codex exec` sessions. |
-| `gitleaks_path` | found on `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin` | The path of gitleaks. |
+| `gitleaks_path` | found on `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin`, then `~/.cache/retroagent/gitleaks` | The path of gitleaks. |
 | `require_gitleaks` | `false`, `install.sh` sets `true` when it finds gitleaks | If `true` and there is no scanner, the sync commits nothing. |
 | `quiet_minutes` | `15` | The time with no change before the sync takes a session. |
 | `debounce_minutes` | `10` | `kb` reads this key but does not use it. |

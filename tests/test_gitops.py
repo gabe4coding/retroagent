@@ -670,6 +670,9 @@ def test_find_gitleaks_order_is_given_path_then_path_then_fallbacks(tmp_path, mo
     assert gitops.find_gitleaks(None) == str(fallback)
     monkeypatch.setattr(gitops, "GITLEAKS_FALLBACKS", ())
     assert gitops.find_gitleaks(None) is None
+    from kb.gitleaks_fetch import binary_path
+    downloaded = _gitleaks_script(binary_path().parent)       # last: the one `kb setup gitleaks` downloaded
+    assert gitops.find_gitleaks(None) == str(downloaded)
 
 
 def test_a_given_path_that_is_not_usable_falls_through(tmp_path, monkeypatch):

@@ -450,4 +450,4 @@ def test_cli_backfill_host_that_is_the_configured_one_is_a_plain_backfill(hosts,
     monkeypatch.setattr(sync_mod, "run_sync", lambda cfg, **kw: calls.append(kw) or Report())
     _write_config(tmp_path, monkeypatch, a)
     assert main(["backfill", "--summaries", "--host", "host-a"]) == 0
-    assert calls == [{"now": True, "summary_cap": None}]
+    assert calls == [{"now": True, "summary_cap": None, "max_age_days": None, "push": True}]

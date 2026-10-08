@@ -9,8 +9,13 @@ description: Set up retroagent on a machine, give it a unique host name, and kee
 
 - git
 - Python 3.9+ with SQLite FTS5 (`/usr/bin/python3` on macOS works)
-- [gitleaks](https://github.com/gitleaks/gitleaks) 8.25 or newer, strongly recommended (`brew install gitleaks`)
-- The GitHub CLI `gh`, to create the data repo and the secrets of the pages routine
+
+These tools are optional:
+
+- [gitleaks](https://github.com/gitleaks/gitleaks) 8.25 or newer. If `install.sh` does not find it, it downloads a
+  pinned version into `~/.cache/retroagent/gitleaks` and checks its sha256.
+- The GitHub CLI `gh`. The setup uses it to create the data repo, and the pages routine uses it for its secrets.
+  Without `gh`, create a private repo on github.com and give its URL to the setup.
 
 ## Let your agent do it
 
@@ -37,13 +42,23 @@ Set up retroagent on this machine for me: https://github.com/gabe4coding/retroag
 /retroagent:setup
 ```
 
-The `setup` skill asks you about these items. Then it does the manual steps below for you.
+The `setup` skill asks one question first: **Recommended** or **Customize**.
 
-- a new data repo or an existing one
-- the name of this machine (its `host`)
-- the first sync now or later
-- automatic syncs and updates
-- the [pages routine](./pages-routine.mdx) now or later
+- **Recommended** shows one list of commands. After you approve it, the skill creates a private
+  `retroagent-data` repo, installs retroagent and starts the first sync. It also writes the summaries in the
+  background.
+- **Customize** asks one question for each item:
+  - the data repo and the name of this machine (its `host`)
+  - the first sync and the summaries
+  - automatic syncs and updates
+  - semantic search, cloud sessions and the [pages routine](./pages-routine.mdx)
+
+After the setup, start a new session. Claude Code loads the plugin, its skills and its hook only in a new session.
+If `~/.local/bin` is not on your `PATH`, add this line to your shell file (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
 
 To finish or change the setup, run the skill again at any time.
 
@@ -53,23 +68,30 @@ To finish or change the setup, run the skill again at any time.
 git clone https://github.com/gabe4coding/retroagent ~/.retroagent
 gh repo create <you>/retroagent-data --private          # or use an existing private repo
 ~/.retroagent/install.sh --repo git@github.com:<you>/retroagent-data.git --host <unique-name>
-kb backfill                   # process every session; the first push
+kb backfill --recent 14       # the sessions of the last 14 days, in about a minute; no push
+kb backfill                   # every other session; the first push; then automatic syncs start
 kb backfill --summaries       # 3-line summaries with Haiku (slow; uses your Claude quota)
-kb enable                     # sync automatically when a session starts
 ```
+
+After the first sync, `kb find` works. When `kb backfill` completes with no errors, it turns on automatic syncs. Until
+then, each new session starts `kb backfill` again in the background. If a backfill stops, the next one continues from
+where it stopped. To decide yourself, run `kb enable` or `kb disable`.
 
 If you use Codex, open Codex once and trust the retroagent hook with `/hooks`.
 
 ### What `install.sh` does
 
 1. It clones the data repo into `~/.retroagent-data`. The `--root DIR` option changes that folder.
-2. It writes `~/.config/retroagent/config.json` (see [Configuration](./configuration.mdx)). If the config has no
-   `auto_sync` value, it sets `auto_sync: false`.
-3. It pushes the base files that the data repo does not have (`README.md`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`).
+2. If it does not find gitleaks, it downloads a pinned version and checks its sha256.
+3. It writes `~/.config/retroagent/config.json` (see [Configuration](./configuration.mdx)). If the config has no
+   `auto_sync` value, it sets `auto_sync: false` and `auto_sync_pending: true`. The first full `kb backfill` then
+   turns on automatic syncs.
+4. It pushes the base files that the data repo does not have (`README.md`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`).
    It pushes them in one commit.
-4. It installs the Claude Code and Codex plugins from the code clone.
-5. It links `kb` into `~/.local/bin`.
-6. It builds the search index.
+5. It installs the Claude Code and Codex plugins from the code clone. If you added the `retroagent` marketplace from
+   GitHub, it replaces that marketplace with the code clone. Then the plugin, Codex and the shell use the same code.
+6. It links `kb` into `~/.local/bin`.
+7. It builds the search index.
 
 If `auto_sync` is already `true`, `install.sh` starts a sync in the background. Otherwise it starts no sync. To
 prevent that sync, add `--no-sync`.

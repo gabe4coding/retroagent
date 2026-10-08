@@ -5,7 +5,7 @@
 # suggestions accepted for its repo); "brief": false in the config turns it off. Skips everything when KB_CHILD=1 (our
 # own headless summary calls). With no data repo set up yet (the plugin was just installed), it prints only one line that
 # asks the agent to offer the setup skill, unless "brief" is false. Starts no sync when the last one finished less than
-# debounce_minutes ago.
+# debounce_minutes ago. While the first full backfill is not done (auto_sync_pending), it starts `kb backfill` instead.
 [ "${KB_CHILD:-}" = "1" ] && exit 0
 HERE=$(cd "$(dirname "$0")" && pwd)
 CFG="${KB_CONFIG:-}"
@@ -32,6 +32,13 @@ if ! grep -q '"brief"[[:space:]]*:[[:space:]]*false' "$CFG" 2>/dev/null; then
 fi
 mkdir -p "$ROOT/.kb"
 if [ -f "$ROOT/.kb/last-ok" ] && [ -n "$(find "$ROOT/.kb/last-ok" -mmin "-$DEBOUNCE" 2>/dev/null)" ]; then
+  exit 0
+fi
+# The first full backfill has not finished yet (install.sh wrote auto_sync_pending; `kb backfill` removes it and turns
+# auto_sync on when it is done): start it again. It goes on where it stopped, and the sync lock stops a second copy.
+if grep -q '"auto_sync_pending"[[:space:]]*:[[:space:]]*true' "$CFG" 2>/dev/null \
+   && ! grep -q '"auto_sync"[[:space:]]*:[[:space:]]*true' "$CFG" 2>/dev/null; then
+  KB_ROOT="$ROOT" KB_CONFIG="$CFG" nohup "$HERE/kb" backfill </dev/null >>"$ROOT/.kb/backfill.log" 2>&1 &
   exit 0
 fi
 KB_ROOT="$ROOT" KB_CONFIG="$CFG" nohup "$HERE/kb" sync --auto </dev/null >>"$ROOT/.kb/sync.log" 2>&1 &
