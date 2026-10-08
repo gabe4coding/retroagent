@@ -503,6 +503,49 @@ def test_plain_sync_and_backfill_ignore_the_gate(kb_env, tmp_path, capsys, monke
     assert run(capsys, "backfill")[0] == 0 and len(calls) == 2
 
 
+def test_backfill_recent_commits_the_last_days_without_a_push(kb_env, tmp_path, capsys, monkeypatch):
+    _set_config(tmp_path, auto_sync=False, auto_sync_pending=True)
+    calls = _spy_run_sync(monkeypatch)
+    code, out = run(capsys, "backfill", "--recent", "14")
+    assert code == 0 and calls[0]["max_age_days"] == 14 and calls[0]["push"] is False
+    assert "kb find works now" in out and "kb backfill" in out
+    cfg = json.loads(_config_file(tmp_path).read_text())
+    assert cfg["auto_sync"] is False and cfg["auto_sync_pending"] is True           # not a full backfill
+    assert run(capsys, "backfill", "--recent", "0")[0] == 2
+    assert run(capsys, "backfill", "--recent", "3", "--summaries")[0] == 2
+
+
+def test_the_first_full_backfill_turns_automatic_syncs_on(kb_env, tmp_path, capsys, monkeypatch):
+    from kb import sync as sync_mod
+    _set_config(tmp_path, auto_sync=False, auto_sync_pending=True)
+    errors = ["push: rejected"]
+    monkeypatch.setattr(sync_mod, "run_sync", lambda cfg, **kw: sync_mod.Report(errors=list(errors)))
+    code, out = run(capsys, "backfill")
+    cfg = json.loads(_config_file(tmp_path).read_text())
+    assert code == 1 and cfg["auto_sync"] is False and cfg["auto_sync_pending"] is True   # a failed one: not yet
+    errors.clear()
+    code, out = run(capsys, "backfill")
+    cfg = json.loads(_config_file(tmp_path).read_text())
+    assert code == 0 and cfg["auto_sync"] is True and "auto_sync_pending" not in cfg
+    assert "automatic syncs enabled" in out
+
+
+def test_a_backfill_without_the_pending_key_never_turns_automatic_syncs_on(kb_env, tmp_path, capsys, monkeypatch):
+    _set_config(tmp_path, auto_sync=False)                                            # the owner ran kb disable
+    _spy_run_sync(monkeypatch)
+    code, out = run(capsys, "backfill")
+    assert code == 0 and json.loads(_config_file(tmp_path).read_text())["auto_sync"] is False
+    assert "enabled" not in out
+
+
+@pytest.mark.parametrize("cmd", ["enable", "disable"])
+def test_enable_and_disable_drop_the_pending_key(kb_env, tmp_path, capsys, cmd):
+    _set_config(tmp_path, auto_sync=False, auto_sync_pending=True)
+    assert run(capsys, cmd)[0] == 0
+    cfg = json.loads(_config_file(tmp_path).read_text())
+    assert "auto_sync_pending" not in cfg and cfg["auto_sync"] is (cmd == "enable")
+
+
 def test_sync_auto_accepts_the_other_sync_flags(kb_env, tmp_path, capsys, monkeypatch):
     calls = _spy_run_sync(monkeypatch)
     assert run(capsys, "sync", "--auto", "--now", "--no-summaries")[0] == 0
@@ -542,6 +585,9 @@ def test_status_shows_whether_automatic_syncs_are_on(kb_env, tmp_path, capsys):
     _set_config(tmp_path, auto_sync=False)
     _, out = run(capsys, "status")
     assert any(l.startswith("auto sync: off") and "kb enable" in l for l in out.splitlines())
+    _set_config(tmp_path, auto_sync_pending=True)
+    _, out = run(capsys, "status")
+    assert any(l.startswith("auto sync: off until the first full backfill") for l in out.splitlines())
 
 
 def test_status_uses_the_configured_gitleaks_path_and_says_when_it_is_required(kb_env, tmp_path, capsys, monkeypatch):

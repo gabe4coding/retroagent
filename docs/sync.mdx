@@ -8,7 +8,8 @@ description: What kb sync writes to the data repo, when, and the one-writer-per-
 ## When it runs
 
 A SessionStart hook (Claude Code and Codex) runs `kb sync --auto` in the background. The hook prints nothing. It
-does nothing until you run `kb enable` (`auto_sync` in the [config](./configuration.mdx)).
+does nothing until the first full `kb backfill` completes, or until you run `kb enable` (`auto_sync` in the
+[config](./configuration.mdx)). Until the first full backfill completes, the hook starts `kb backfill` again.
 
 Only `kb sync --auto` (the hook) obeys `auto_sync`. Plain `kb sync` and `kb backfill` always run.
 

@@ -154,6 +154,16 @@ def test_unusable_values_of_new_keys_take_the_safe_side(tmp_path, monkeypatch):
     assert cfg.gitleaks_path == "" and cfg.branch == "main"
 
 
+def test_set_key_none_removes_the_key(tmp_path, monkeypatch):
+    p = tmp_path / "c.json"
+    p.write_text('{"auto_sync_pending": true, "host": "h"}')
+    monkeypatch.setenv("KB_CONFIG", str(p))
+    config.set_key("auto_sync_pending", None)
+    config.set_key("missing", None)
+    assert json.loads(p.read_text()) == {"host": "h"}
+    assert config.load().auto_sync_pending is False
+
+
 def test_set_key_rewrites_the_file_and_keeps_other_keys(tmp_path, monkeypatch):
     p = tmp_path / "c.json"
     p.write_text(json.dumps({"root": "/x", "host": "box", "extra": [1, 2]}))

@@ -4,6 +4,7 @@ On purpose very little, and no facts that can be out of date:
   - a pointer to the project page, with how many open threads and errors → fixes it has, so the agent knows the page
     is there and reads it with `kb page` only when the task needs it;
   - every suggestion accepted for this project's repo (kb.ledger), one line each: a change the owner wants made;
+  - while the first full backfill is not done (auto_sync_pending), one line that says so: the hook starts it again;
   - always, last: one line that the past sessions are searchable with `kb find`. Skills trigger only when the agent
     thinks of them; without this line a project with no page gives the agent no sign that the KB exists. The project is the working directory's, as for
 `kb hint` (kb.hint.projects). Reads three files of the data clone, never the index: it runs before each session.
@@ -20,6 +21,11 @@ MAX_CHARS = 1200                 # the whole brief; suggestions past it are coun
 LINE_CHARS = 220                 # one suggestion line
 KB_LINE = ("Past Claude Code and Codex sessions of all projects are searchable: `kb find \"<words>\"` "
            "(skill kb-search). Look there before you debug an error seen before or redo past work.")
+
+
+FIRST_SYNC_LINE = ("The first full retroagent sync is not finished: it runs again in the background now, and "
+                   "automatic syncs turn on when it is done. `kb find` sees only the sessions synced so far; "
+                   "`kb status` shows what is left.")
 
 
 def _bullets(body: str, heading: str) -> int:
@@ -49,10 +55,11 @@ def accepted(root: Path, project: str) -> list:
     return sorted(rows, key=lambda r: (r[1]["weeks"][0], r[0]))
 
 
-def build(root, cwd: str, project: str = "") -> str:
-    """The brief for a session in `cwd` (or for `project`): the project part, then KB_LINE."""
-    part = _project_part(Path(root), cwd, project)
-    return part + "\n" + KB_LINE if part else KB_LINE
+def build(root, cwd: str, project: str = "", first_sync_pending: bool = False) -> str:
+    """The brief for a session in `cwd` (or for `project`): the project part, FIRST_SYNC_LINE while the first full
+    backfill is not done, then KB_LINE."""
+    parts = [_project_part(Path(root), cwd, project), FIRST_SYNC_LINE if first_sync_pending else "", KB_LINE]
+    return "\n".join(p for p in parts if p)
 
 
 def _project_part(root: Path, cwd: str, project: str) -> str:

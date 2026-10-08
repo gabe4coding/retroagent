@@ -1495,6 +1495,20 @@ def _wipe(cfg):
     (cfg.kb_dir / "machine-id").write_text(mid)
 
 
+def test_recent_processes_only_the_last_days_and_commits_without_a_push(hosts):
+    a, _ = hosts
+    later = _days_later(30)
+    state = State.load(a.kb_dir / "sync-state.json")
+    assert pending_units(a, state, now=True, clock=later, max_age_days=14) == []
+    every = pending_units(a, state, now=True, clock=later)
+    assert every and pending_units(a, state, now=True, clock=later, max_age_days=60) == every
+    r = run_sync(a, now=True, runner=FakeRunner(), summary_cap=0, max_age_days=14, push=False)
+    assert r.errors == [] and r.sessions == 3 and r.committed and not r.pushed
+    assert git("rev-list", "--count", "@{u}..HEAD", cwd=a.root).stdout.strip() != "0"    # committed here only
+    r = run_sync(a, now=True, runner=FakeRunner(), summary_cap=0)
+    assert r.errors == [] and r.pushed
+
+
 def test_an_active_session_gets_its_markdown_now_and_its_raw_copy_once_it_settles(hosts):
     a, _ = hosts
     assert a.raw_settle_hours == 24

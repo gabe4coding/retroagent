@@ -55,8 +55,9 @@ You need these tools:
 
 - git
 - Python 3.9+
-- [gitleaks](https://github.com/gitleaks/gitleaks) (`brew install gitleaks`)
-- the GitHub CLI `gh`
+
+The setup downloads [gitleaks](https://github.com/gitleaks/gitleaks) if your machine does not have it. The GitHub CLI
+`gh` is optional: without it, you create the private data repo on github.com.
 
 ### Let your agent do it
 
@@ -78,8 +79,11 @@ The agent asks you before each step. It does these steps:
 
 1. It creates or picks your private data repo.
 2. It installs the plugins and the `kb` CLI.
-3. It runs the first sync.
-4. It enables automatic syncs.
+3. It runs the first sync. Search works after approximately one minute, and the rest of the sync continues in the
+   background.
+4. When the first sync is complete, automatic syncs start.
+
+After the setup, start a new session. The plugin loads only in a new session.
 
 ### Or with the Claude Code plugin
 

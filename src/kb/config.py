@@ -42,6 +42,7 @@ class Config:
     codex_home: Path = field(default_factory=lambda: expand("~/.codex"))
     exclude_cwd_globs: list = field(default_factory=lambda: list(DEFAULT_EXCLUDES))
     auto_sync: bool = True                      # `kb sync --auto` (the hook) runs only when this is true
+    auto_sync_pending: bool = False             # install.sh: the first full `kb backfill` turns auto_sync on
     skip_headless_single_prompt: bool = True    # skip `claude -p` / `codex exec` sessions with one prompt
     gitleaks_path: str = ""                     # optional: where gitleaks is, tried before PATH
     require_gitleaks: bool = False              # true: no scanner means no commit
@@ -142,7 +143,7 @@ def config_path(path: str | None = None) -> Path:
 
 
 def set_key(key: str, value, path: str | None = None) -> Path:
-    """Set one key in the config file and keep every other key. A missing file is created.
+    """Set one key in the config file and keep every other key (None removes the key). A missing file is created.
 
     A file that is not a JSON object is never overwritten: ConfigError (one line) instead.
     """
@@ -155,7 +156,10 @@ def set_key(key: str, value, path: str | None = None) -> Path:
             raise ConfigError(f"cannot change {p}: not valid JSON ({' '.join(str(e).split())}); fix it first") from None
         if not isinstance(data, dict):
             raise ConfigError(f"cannot change {p}: it is not a JSON object; fix it first")
-    data[key] = value
+    if value is None:
+        data.pop(key, None)
+    else:
+        data[key] = value
     atomic_write(p, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
     return p
 
@@ -177,6 +181,7 @@ def load(path: str | None = None) -> Config:
         cfg.codex_home = expand(raw["codex_home"])
     cfg.exclude_cwd_globs = _list(raw, "exclude_cwd_globs", cfg.exclude_cwd_globs)
     cfg.auto_sync = _bool(raw, "auto_sync", True, if_invalid=False)          # absent: old configs keep syncing
+    cfg.auto_sync_pending = _bool(raw, "auto_sync_pending", False, if_invalid=False)
     cfg.skip_headless_single_prompt = _bool(raw, "skip_headless_single_prompt", True, if_invalid=True)
     cfg.require_gitleaks = _bool(raw, "require_gitleaks", False, if_invalid=True)
     cfg.gitleaks_path = _text(raw, "gitleaks_path")

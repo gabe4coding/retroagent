@@ -284,6 +284,36 @@ that branch.
 """
 
 
+def _github_status(slug: str) -> int:
+    """HTTP status of the GitHub API for owner/name, without a login (0: no answer). 200 means anyone can read it."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(f"https://api.github.com/repos/{slug}", headers={"Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except (OSError, urllib.error.URLError):
+        return 0
+
+
+def repo_check(url: str, status=_github_status) -> dict:
+    """Can git reach the data repo at `url`, and is it private? For the setup skill when gh is missing.
+
+    "public" is true when the GitHub API answers 200 without a login, false when it answers 404 (private, or no such
+    repo: then "reachable" tells which), null when it cannot tell (not GitHub, or no answer)."""
+    url = (url or "").strip()
+    if not url:
+        raise SetupError("repo-check needs the git URL of the data repo")
+    p = gitops.git(tempfile.gettempdir(), "ls-remote", "--heads", url, check=False)
+    slug = github_slug(url)
+    code = status(slug) if slug else 0
+    return {"url": url, "slug": slug, "reachable": p.returncode == 0,
+            "public": True if code == 200 else False if code == 404 else None,
+            "error": "" if p.returncode == 0 else " ".join((p.stderr or p.stdout).split())[-300:]}
+
+
 def check(cfg, config_file: Path) -> dict:
     """What is set up, for the setup skill: code, config, data clone, plugins on PATH, routine files."""
     root = cfg.root
@@ -302,7 +332,7 @@ def check(cfg, config_file: Path) -> dict:
         "code": str(CODE_ROOT), "code_repo": code_repo(), "code_is_clone": (CODE_ROOT / ".git").exists(),
         "config": str(config_file), "config_exists": config_file.exists(),
         "data_root": str(root), "data_clone": clone, "data_repo": data, "branch": cfg.branch, "host": cfg.host,
-        "auto_sync": cfg.auto_sync, "auto_update": cfg.auto_update,
+        "auto_sync": cfg.auto_sync, "auto_sync_pending": cfg.auto_sync_pending, "auto_update": cfg.auto_update,
         "gitleaks": bool(gitops.find_gitleaks(cfg.gitleaks_path)),
         "gh": bool(shutil.which("gh")), "claude": bool(shutil.which("claude")), "codex": bool(shutil.which("codex")),
         "kb_on_path": bool(shutil.which("kb")),
