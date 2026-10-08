@@ -7,6 +7,8 @@
   kb summary <id>      summary, decisions, outcome, files, PRs, subagents of one session
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
   kb hint --event error  a past fix for a failed tool call (the PostToolUseFailure hook runs it; "hints": true)
+  kb suggestions       the changes weekly retros suggested, your decisions (pages/decisions.json), and whether
+                       the error each one should remove still happens
   kb stats [report]    ready-made analytics (errors: tool errors that came back); kb sql "<SELECT …>" for custom ones
   kb sync | backfill | status | reindex   maintenance
   kb embed             turn on semantic search: kb installs and runs a local embedding model (--status, --off)
@@ -39,7 +41,7 @@ from kb import gitops
 from kb.distill import parse_markdown, split_front_matter
 from kb.index import MIN_PREFIX, AmbiguousId, Filters, Index, connect_readonly, run_sql
 from kb.pages import parse_page, section, sections
-from kb.stats import REPORTS, repeated_errors
+from kb.stats import REPORTS, repeated_errors, signature_sessions
 from kb.util import short_id
 
 
@@ -472,6 +474,40 @@ def cmd_stats(args, cfg) -> int:
         return 2
     _open_index(cfg).close()
     print(table(*run_sql(cfg.kb_dir / "index.sqlite", sql), args.width))
+    return 0
+
+
+def cmd_suggestions(args, cfg) -> int:
+    from kb import ledger
+    known = ledger.load(cfg.root)
+    if not known:
+        print("no suggestions yet (finish records the \"Suggested changes\" of each new weekly retro)")
+        return 0
+    sigs = {e.get("signature") for e in known.values() if e.get("signature")}
+    seen = {}
+    if sigs:
+        _open_index(cfg).close()
+        con = connect_readonly(cfg.kb_dir / "index.sqlite")
+        try:
+            seen = signature_sessions(con, sigs)
+        finally:
+            con.close()
+    rows = ledger.report(known, ledger.decisions(cfg.root), seen, dt.date.today())
+    if not args.all:
+        rows = [r for r in rows if r["state"] != "rejected" and not r["verdict"].startswith("fixed")]
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False))
+        return 0
+    for r in rows:
+        weeks = ",".join(w[5:] for w in r["weeks"])
+        print(f"{r['id']}  {r['state']:<8}  {weeks:<12}  {r['verdict']}")
+        cat = r["category"] + " · " if r["category"] else ""
+        src = f" ({', '.join(r['sources'])})" if r["sources"] else ""
+        print(f"    {cat}{r['text'][:200]}{src}")
+        if r["note"]:
+            print(f"    note: {r['note'][:200]}")
+    if not rows:
+        print("nothing open; --all also lists the fixed and rejected ones")
     return 0
 
 
@@ -951,6 +987,12 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--skip", help="finish: planned names (projects or weeks) not to retry, comma-separated")
     ps.add_argument("--no-push", action="store_true", help="finish: commit but do not push")
     ps.set_defaults(func=cmd_pages)
+
+    sg = sub.add_parser("suggestions", help="the changes weekly retros suggested, your decisions, and whether the "
+                        "error each one should remove still happens")
+    sg.add_argument("--all", action="store_true", help="also the fixed and the rejected ones")
+    sg.add_argument("--json", action="store_true")
+    sg.set_defaults(func=cmd_suggestions)
 
     r = sub.add_parser("recent", help="latest sessions (no subagents)")
     filters(r)

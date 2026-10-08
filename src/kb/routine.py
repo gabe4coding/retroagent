@@ -22,10 +22,11 @@ import datetime as dt
 import json
 from pathlib import Path
 
-from kb import freshness, gitops
-from kb.index import Index, parse_memory
+from kb import freshness, gitops, ledger
+from kb.index import Index, connect_readonly, parse_memory
 from kb.pages import WEEK_RE, page_rel, parse_page, set_fields
 from kb.redact import redact
+from kb.stats import signature_sessions
 from kb.util import atomic_write, short_id
 
 CONFIG_REL = "pages/config.json"
@@ -619,20 +620,25 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
     for code, rel in changes:
         if not rel.startswith("pages/"):
             problems.append(f"{rel}: outside pages/")
-        elif rel in (CONFIG_REL, STATE_REL):
-            problems.append(f"{rel}: only {'the owner' if rel == CONFIG_REL else '`kb pages finish`'} writes it")
+        elif rel in (CONFIG_REL, STATE_REL, ledger.SUGGESTIONS_REL, ledger.DECISIONS_REL):
+            owner = rel in (CONFIG_REL, ledger.DECISIONS_REL)
+            problems.append(f"{rel}: only {'the owner' if owner else '`kb pages finish`'} writes it")
         elif "D" in code:
             problems.append(f"{rel}: the routine never deletes pages")
         elif not rel.endswith(".md"):
             problems.append(f"{rel}: only .md pages may be written")
         else:
             problems += check_page(root, rel, settings)
+    index_path = Path(index_path) if index_path else root / ".kb" / "index.sqlite"
+    known = ledger.load(root)
+    if not problems:
+        problems += _check_suggestions(root, sorted(rel for _, rel in changes), known, index_path)
     if problems:
         raise PagesError("refusing to commit:\n  " + "\n  ".join(problems))
 
     written = {rel for _, rel in changes}
     undated, moved = [], []
-    index_path = Path(index_path) if index_path else root / ".kb" / "index.sqlite"
+    suggestions = dict(known)
     idx = Index(index_path) if index_path.is_file() else None
     try:
         for rel in sorted(written):      # the facts finish knows better than the writer: when, how many sessions
@@ -644,11 +650,16 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
                 undated += [f"{rel}: {line[:120]}" for line in missing]
                 body, gone = freshness.sweep(body, settings["stale_days"], settings["stale_days_current"])
                 moved += [f"{rel}: {line[2:122]}" for line in gone]
+            else:
+                body, found = ledger.assign(body, meta["name"], suggestions)
+                suggestions = ledger.record(suggestions, meta["name"], found)
             fields = {"updated": _iso(now), "sessions": len(set(meta["sources"]))}
             atomic_write(path, set_fields(text, fields, body).encode("utf-8"))
     finally:
         if idx:
             idx.close()
+    if suggestions != known:
+        ledger.save(root, suggestions)
     pending = {"projects": dict(plan["pending"]["projects"]), "weeks": list(plan["pending"]["weeks"])}
     returned = []
     todo = plan.get("todo") if isinstance(plan.get("todo"), dict) else {}
@@ -682,6 +693,22 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
     if push:
         result["push"] = _push(root, branch)
     return result
+
+
+def _check_suggestions(root: Path, rels: list, known: dict, index_path: Path) -> list:
+    """Problems of the "Suggested changes" of the retros written in this run (kb.ledger)."""
+    bodies = {}
+    for rel in rels:
+        if rel.startswith("pages/retro/"):
+            bodies[rel] = parse_page((root / rel).read_bytes().decode("utf-8", errors="replace"))[1]
+    signatures = None
+    if any(it["signature"] for body in bodies.values() for it in ledger.items(body)) and index_path.is_file():
+        con = connect_readonly(index_path)
+        try:
+            signatures = set(signature_sessions(con))
+        finally:
+            con.close()
+    return [p for rel, body in bodies.items() for p in ledger.check(rel, body, known, signatures)]
 
 
 def _push(root, branch: str) -> str:
