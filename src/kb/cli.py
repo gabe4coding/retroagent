@@ -1162,7 +1162,7 @@ def build_parser() -> argparse.ArgumentParser:
     de.add_argument("answer", nargs="?", choices=["accept", "reject", "later"])
     de.add_argument("id", nargs="?", help="accept, reject: the id, like s-1a2b3c (a suggestion) or m-1a2b3c (a memory "
                                           "fix: accept changes this machine's memory file)")
-    de.add_argument("--yes", action="store_true", help="accept, reject: without a terminal, for the retroagent-decide "
+    de.add_argument("--yes", action="store_true", help="accept, reject: without a terminal, for the decide "
                                                         "mod (an agent's call is blocked by the PreToolUse hook)")
     de.add_argument("--note", help="accept, reject: why, in one line")
     de.add_argument("--days", type=int, default=1, help="later: how many days (default 1)")

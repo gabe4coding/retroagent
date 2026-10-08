@@ -1,5 +1,5 @@
-// retroagent-decide: a band above the prompt when questions of `kb decide` wait for the user, and a pane to answer
-// them. The questions are retro suggestions (accept: new sessions of the repo see the change) and memory fixes the
+// The decide mod of retroagent (Claude Code only: .claude-plugin/plugin.json names hooks/mods.json, which Codex never
+// reads): a band above the prompt when questions of `kb decide` wait for the user, and a pane to answer them. The questions are retro suggestions (accept: new sessions of the repo see the change) and memory fixes the
 // pages routine proposed (accept: kb changes this machine's memory file). See src/kb/decide.py in retroagent.
 //
 // The mod runs kb and keeps no logic of its own: `kb decide --json` lists the questions and the day the user hid
@@ -14,9 +14,9 @@ const PANE = 'retroagent-decide'
 const DETAIL_LINES = 12
 const TIMEOUT_MS = 60_000
 
-const items = atom({ plugin: 'retroagent-decide', key: 'items' } as const, [] as Item[])
-const hiddenUntil = atom({ plugin: 'retroagent-decide', key: 'hiddenUntil' } as const, '')
-const message = atom({ plugin: 'retroagent-decide', key: 'message' } as const, '')
+const items = atom({ plugin: 'retroagent', key: 'items' } as const, [] as Item[])
+const hiddenUntil = atom({ plugin: 'retroagent', key: 'hiddenUntil' } as const, '')
+const message = atom({ plugin: 'retroagent', key: 'message' } as const, '')
 
 type Ran = { exitCode: number; stdout: string; stderr: string }
 
@@ -37,10 +37,10 @@ function today(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
-// kb as configured; when it does not start (not on the PATH of the app), the link install.sh makes
-async function kb($: EngineInterface, command: string, args: string[]): Promise<Ran> {
+// kb from the PATH; when it does not start there (the PATH of the app), the link install.sh makes
+async function kb($: EngineInterface, args: string[]): Promise<Ran> {
   try {
-    return await $.process.run([command, ...args], { timeoutMs: TIMEOUT_MS })
+    return await $.process.run(['kb', ...args], { timeoutMs: TIMEOUT_MS })
   } catch (first) {
     const home = await $.env.get('HOME')
     if (!home) throw first
@@ -48,11 +48,11 @@ async function kb($: EngineInterface, command: string, args: string[]): Promise<
   }
 }
 
-async function refresh($: EngineInterface, command: string): Promise<void> {
+async function refresh($: EngineInterface): Promise<void> {
   let found: Item[] = []
   let until = ''
   try {
-    const ran = await kb($, command, ['decide', '--json'])
+    const ran = await kb($, ['decide', '--json'])
     if (ran.exitCode === 0) {
       const data = JSON.parse(ran.stdout) as { items?: unknown; hidden_until?: unknown }
       found = asItems(data.items)
@@ -66,35 +66,33 @@ async function refresh($: EngineInterface, command: string): Promise<void> {
 }
 
 // run kb, show what it said in the pane, then list the questions again
-async function answer($: EngineInterface, command: string, args: string[]): Promise<void> {
+async function answer($: EngineInterface, args: string[]): Promise<void> {
   let said: string
   try {
-    const ran = await kb($, command, args)
+    const ran = await kb($, args)
     said = `${ran.stdout}\n${ran.stderr}`.trim().split('\n').filter(Boolean).join(' · ')
   } catch (e) {
     said = `kb did not start: ${e instanceof Error ? e.message : String(e)}`
   }
   await update($, message, () => said)
-  await refresh($, command)
+  await refresh($)
 }
 
-export const register: Register = (on, options) => {
-  const command = typeof options.kb === 'string' && options.kb.trim() ? options.kb.trim() : 'kb'
-
+export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'decide', description: 'Answer the retro suggestions and memory fixes that wait' })
-    await refresh($, command)
+    await refresh($)
     return next(e)
   })
 
   // /clear, /resume and /branch reset $.state, and session.start does not fire again
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
-    await refresh($, command)
+    await refresh($)
     return next(e)
   }).catch(($, e, next) => next(e))         // a failed refresh never holds up the session
 
   on('command.run', { command: 'decide' }, async $ => {
-    await refresh($, command)
+    await refresh($)
     const list = await read($, items)
     if (list.length === 0) return { text: 'Nothing waits for you.' }
     await $.ui.open({ id: PANE, title: 'kb decide', focus: true, closeOnEscape: true })
@@ -121,7 +119,7 @@ export const register: Register = (on, options) => {
             label="Review"
             onPress={() => $.ui.open({ id: PANE, title: 'kb decide', focus: true, closeOnEscape: true })}
           />
-          <Button key="later" label="Later" onPress={() => answer($, command, ['decide', 'later'])} />
+          <Button key="later" label="Later" onPress={() => answer($, ['decide', 'later'])} />
         </Box>
       </Box>
     )
@@ -153,19 +151,19 @@ export const register: Register = (on, options) => {
                 <Button
                   key={`accept-${item.id}`}
                   label="Accept"
-                  onPress={() => answer($, command, ['decide', 'accept', item.id, '--yes'])}
+                  onPress={() => answer($, ['decide', 'accept', item.id, '--yes'])}
                 />
                 <Button
                   key={`reject-${item.id}`}
                   label="Reject"
-                  onPress={() => answer($, command, ['decide', 'reject', item.id, '--yes'])}
+                  onPress={() => answer($, ['decide', 'reject', item.id, '--yes'])}
                 />
               </Box>
             </Box>
           )
         })}
         <Box flexDirection="row" columnGap={2}>
-          <Button key="pane-later" label="Later" onPress={() => answer($, command, ['decide', 'later'])} />
+          <Button key="pane-later" label="Later" onPress={() => answer($, ['decide', 'later'])} />
           <Button key="close" label="Close" onPress={() => $.ui.close({ id: PANE })} />
         </Box>
       </Box>

@@ -8,7 +8,7 @@ export type Item = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'retroagent-decide': {
+    'retroagent': {
       items: Item[]
       hiddenUntil: string
       message: string

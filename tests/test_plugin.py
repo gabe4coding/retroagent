@@ -20,10 +20,12 @@ def test_manifests_agree():
     assert claude["name"] == codex["name"] == market["name"] == "retroagent"
     assert claude["version"] == codex["version"]
     assert market["plugins"][0]["name"] == "retroagent" and market["plugins"][0]["source"] == "./"
-    mod = market["plugins"][1]                          # the mod: its own plugin, so Codex never reads its hooks
-    manifest = json.loads((REPO / mod["source"] / ".claude-plugin/plugin.json").read_text())
-    assert mod["name"] == manifest["name"] == "retroagent-decide"
-    assert json.loads((REPO / mod["source"] / "hooks/hooks.json").read_text()) == {"modules": ["./register.tsx"]}
+    assert len(market["plugins"]) == 1
+    # the decide mod: only Claude Code's manifest names hooks/mods.json, merged with hooks/hooks.json; Codex reads only
+    # hooks/hooks.json, which must hold nothing but command hooks
+    assert claude["hooks"] == "./hooks/mods.json" and codex["hooks"] == "./hooks/hooks.json"
+    assert json.loads((PLUGIN / "hooks/mods.json").read_text()) == {"modules": ["./decide.tsx"]}
+    assert (PLUGIN / "hooks/decide.tsx").is_file() and claude["types"] == "./types/index.d.ts"
     hooks = json.loads((PLUGIN / "hooks/hooks.json").read_text())
     assert set(hooks) == {"hooks"}                      # Codex rejects unknown top-level keys
     entry = hooks["hooks"]["SessionStart"][0]
