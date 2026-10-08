@@ -38,6 +38,8 @@ class SummaryUnavailable(Exception):
 
 
 def build_input(md: str, limit: int = INPUT_LIMIT) -> str:
+    """The markdown, cut to `limit` characters when it is longer: the first 40% and the last 60% of the limit stay,
+    with a note of how many characters were left out between them."""
     if len(md) <= limit:
         return md
     head = int(limit * 0.4)
@@ -109,7 +111,8 @@ def parse_result(stdout: str):
             "decisions": decisions[:MAX_DECISIONS]}
 
 
-def _one_line(text, limit: int = 200) -> str:
+def _error_tail(text, limit: int = 200) -> str:
+    """The end of an error text on one line: whitespace collapsed, then the last `limit` characters."""
     return " ".join(str(text or "").split())[-limit:]
 
 
@@ -123,10 +126,10 @@ def summarize(md: str, model: str = "haiku", runner=subprocess.run, timeout: int
         p = runner(command(model), input=build_input(md), capture_output=True, encoding="utf-8", errors="replace",
                    timeout=timeout, env=env, cwd=cwd)
     except Exception as e:  # noqa: BLE001 - whatever the runner raises, the call did not happen
-        raise SummaryUnavailable(f"claude did not run: {type(e).__name__}: {_one_line(e)}") from e
+        raise SummaryUnavailable(f"claude did not run: {type(e).__name__}: {_error_tail(e)}") from e
     if p.returncode != 0:
-        raise SummaryUnavailable(f"claude exited {p.returncode}: {_one_line(p.stderr or p.stdout)}")
+        raise SummaryUnavailable(f"claude exited {p.returncode}: {_error_tail(p.stderr or p.stdout)}")
     env_out = _envelope(p.stdout)
     if env_out is not None and env_out.get("is_error") is True:
-        raise SummaryUnavailable(f"claude reported an error: {_one_line(env_out.get('result'))}")
+        raise SummaryUnavailable(f"claude reported an error: {_error_tail(env_out.get('result'))}")
     return parse_result(p.stdout)

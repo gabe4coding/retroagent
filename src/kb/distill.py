@@ -1,4 +1,11 @@
-"""Distilled markdown: JSON-valued front matter + '## [N] role · HH:MM' turns."""
+"""Distilled markdown: the readable form of a session that the data repo keeps under sessions/<host>/.
+
+A distilled markdown file has two parts:
+- front matter: one "key: <JSON value>" line per session field (FIELD_ORDER), between two "---" lines,
+- the turns: each starts with a "## [N] role · HH:MM" header, then the text, and one line per tool call.
+
+The index, the catalog and people read this file. The slim raw copy keeps the transcript records (kb.slimraw).
+"""
 from __future__ import annotations
 
 import json
@@ -12,6 +19,7 @@ FIELD_ORDER = ["id", "agent", "host", "project", "cwd", "branch", "started", "en
                "user_turns", "title", "summary", "tags", "outcome", "decisions", "summary_turns", "files",
                "prs", "parent", "raw"]
 SUMMARY_FIELDS = ("summary", "tags", "outcome", "decisions", "summary_turns")
+_FILES_KEPT = 50             # edited files kept in the front matter of a session
 HEADER_RE = re.compile(r"^## \[(\d+)\] (user|assistant) · (\S+)$", re.M)
 _NEWLINES = re.compile(r"\r\n?")
 
@@ -48,7 +56,7 @@ def session_meta(s, host: str, keep: dict, raw: str) -> dict:
     meta = {"id": s.id, "agent": s.agent, "host": host, "project": s.project, "cwd": s.cwd,
             "branch": s.branch, "started": s.started, "ended": s.ended, "model": s.model,
             "turns": len(s.turns), "user_turns": s.user_turns, "title": s.title, "summary": "",
-            "tags": [], "outcome": "", "decisions": [], "summary_turns": 0, "files": s.files[:50],
+            "tags": [], "outcome": "", "decisions": [], "summary_turns": 0, "files": s.files[:_FILES_KEPT],
             "prs": s.prs, "parent": s.parent, "raw": raw}
     for k in SUMMARY_FIELDS:
         if k in keep:
@@ -78,6 +86,8 @@ def _tool_line(tc: ToolCall, sub_files: dict) -> str:
 
 
 def _escape(text: str) -> str:
+    """Put a backslash before a line of turn text that looks like a turn header. parse_markdown then does not split
+    the turn there."""
     return re.sub(r"^(## \[\d+\] (?:user|assistant) · )", r"\\\1", text, flags=re.M)
 
 
