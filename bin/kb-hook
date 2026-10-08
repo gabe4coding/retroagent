@@ -1,10 +1,10 @@
 #!/bin/sh
 # SessionStart hook (Claude Code and Codex): start `kb sync --auto` in the background and return at once.
 # `--auto` makes kb do nothing unless auto_sync is true in the config (see `kb enable`).
-# Prints nothing, unless "brief": true in the config: then `kb brief --hook` prints a short brief for the session's
-# project first (src/kb/brief.py: a pointer to its page, the suggestions accepted for its repo). Skips when KB_CHILD=1
-# (our own headless summary calls), when no data repo is set up yet, and starts no sync when the last one finished
-# less than debounce_minutes ago.
+# First `kb brief --hook` prints a short brief for the session's project (src/kb/brief.py: a pointer to its page, the
+# suggestions accepted for its repo); "brief": false in the config turns it off. Skips everything when KB_CHILD=1 (our
+# own headless summary calls) and when no data repo is set up yet; starts no sync when the last one finished less than
+# debounce_minutes ago.
 [ "${KB_CHILD:-}" = "1" ] && exit 0
 HERE=$(cd "$(dirname "$0")" && pwd)
 CFG="${KB_CONFIG:-}"
@@ -22,7 +22,7 @@ case "$ROOT" in "~"*) ROOT="$HOME${ROOT#\~}" ;; esac
 DEBOUNCE=""
 [ -f "$CFG" ] && DEBOUNCE=$(sed -n 's/.*"debounce_minutes"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$CFG" | head -n 1)
 DEBOUNCE="${DEBOUNCE:-10}"
-if [ -f "$CFG" ] && grep -q '"brief"[[:space:]]*:[[:space:]]*true' "$CFG" 2>/dev/null; then
+if ! grep -q '"brief"[[:space:]]*:[[:space:]]*false' "$CFG" 2>/dev/null; then
   KB_ROOT="$ROOT" KB_CONFIG="$CFG" "$HERE/kb" brief --hook 2>/dev/null || true
 fi
 mkdir -p "$ROOT/.kb"

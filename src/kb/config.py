@@ -53,10 +53,10 @@ class Config:
     embed_sync_seconds: int = 60                # longest a sync spends embedding new items
     cloud_import: bool = False                  # this machine imports the cloud sessions' inbox (`kb cloud import`)
     cloud_host: str = "cloud"                   # the host the imported cloud sessions are written under
-    hints: bool = False                         # `kb hint`: a past fix when a tool call fails (kb.hint)
+    hints: bool = True                          # `kb hint`: a past fix when a tool call fails (kb.hint)
     hint_semantic_min: float = 0.78             # cosine a semantic hint needs (embeddinggemma scores are compressed)
     hint_keyword_min: int = 3                   # shared words a keyword hint needs
-    brief: bool = False                         # SessionStart hook: `kb brief` (page pointer, accepted suggestions)
+    brief: bool = True                          # SessionStart hook: `kb brief` (page pointer, accepted suggestions)
 
     @property
     def kb_dir(self) -> Path:
@@ -186,8 +186,8 @@ def load(path: str | None = None) -> Config:
     cfg.embed_sync_seconds = _int(raw, "embed_sync_seconds", cfg.embed_sync_seconds)
     cfg.cloud_import = _bool(raw, "cloud_import", False, bad=False)
     cfg.cloud_host = slug(_text(raw, "cloud_host") or cfg.cloud_host)
-    cfg.hints = _bool(raw, "hints", False, bad=False)
+    cfg.hints = _bool(raw, "hints", True, bad=False)
     cfg.hint_semantic_min = _float(raw, "hint_semantic_min", cfg.hint_semantic_min)
     cfg.hint_keyword_min = _int(raw, "hint_keyword_min", cfg.hint_keyword_min) or cfg.hint_keyword_min
-    cfg.brief = _bool(raw, "brief", False, bad=False)
+    cfg.brief = _bool(raw, "brief", True, bad=False)
     return cfg
