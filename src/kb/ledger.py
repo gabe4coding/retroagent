@@ -1,23 +1,39 @@
 """The suggestion ledger: every change a weekly retro suggested, what the owner decided, and whether it worked.
 
-A retro's "## Suggested changes" bullets start with an id in brackets:
+Bullet format. A retro's "## Suggested changes" bullets start with an id in brackets:
   - [new] <category> · <the change: which file, check, command or tool> · repo "<project>" ·
     signature "<error signature>" (<short>)
   - [s-1a2b3c] <…>                 the same problem as an earlier suggestion, which came back
-`kb pages finish` gives each [new] bullet its id (s- and 6 hex digits) and records every bullet in
-pages/suggestions.json, which only finish writes. Both named parts are optional. repo is the project whose repo the
-change goes in (`kb brief` shows an accepted one in that project's sessions). signature is the `kb stats errors`
-signature of the error the change should remove; finish refuses one that no session has.
+The repo and signature parts are optional. repo is the project whose repo the change goes in. `kb brief` shows an
+accepted suggestion in the sessions of that project.
 
-Decisions are in pages/decisions.json. The pages routine writes them from the evidence in the sessions, and
-`kb pages finish` checks and commits them:
+Signature: the short form of a tool error that `kb stats errors` groups by (kb.stats.error_signature). It keeps the
+first words of the error message, without paths, numbers, ids and quoted values. So the same error in two sessions
+gets the same signature. A suggestion's signature names the error that the change should remove.
+
+suggestions.json (pages/suggestions.json): `kb pages finish` gives each [new] bullet its id (s- and 6 hex digits).
+Then it records every bullet in this file. finish refuses a signature that no session has.
+
+decisions.json (pages/decisions.json): what was decided for each suggestion. The pages routine writes it from the
+evidence in the sessions. `kb pages finish` checks and commits it:
   {"s-1a2b3c": {"state": "applied", "source": "a1b2c3d4", "note": "hook patterns fixed in PR 12",
                 "date": "2026-10-09", "by": "routine"}}
-state is accepted, applied or rejected; source is the session short id or `memory <ref>` that shows it. finish sets
-date from the source in the index (never from the writer) and by to "routine". An entry the owner writes by hand
-(any entry whose by is not "routine") is the owner's: the routine never changes or removes it. `kb suggestions` joins
-the ledger and the decisions with the index: a suggestion with a signature is measured by the sessions that still have
-its error, from the decision's date. Nothing here writes a file except save() and save_decisions().
+- state: accepted, applied or rejected.
+- source: the session short id or `memory <ref>` that shows the decision.
+- date: finish sets it from the source in the index, never from the writer.
+- by: finish sets it to "routine".
+
+Who may write what:
+- Only `kb pages finish` writes suggestions.json.
+- The routine writes decisions.json, and finish checks it.
+- An entry whose by is not "routine" is the owner's, written by hand. The routine never changes or removes it.
+- Nothing here writes a file except save() and save_decisions().
+
+How a fix is measured: `kb suggestions` joins the ledger and the decisions with the index (report()). Only a
+suggestion with a signature is measured, by the sessions that still have its error:
+- applied: it "came back" when a session has the error on or after the decision's date. It is "fixed" when no
+  session has it for SETTLE_DAYS days after that date.
+- not applied: it is "still happening" when a session had the error in the last RECENT_DAYS days.
 """
 from __future__ import annotations
 
@@ -122,17 +138,17 @@ def assign(body: str, week: str, ledger: dict):
 def record(ledger: dict, week: str, found: list) -> dict:
     """The ledger after a retro of `week` was (re)written with these items: the week's old entries are replaced."""
     out = {}
-    for sid, e in ledger.items():
-        weeks = [w for w in e.get("weeks", []) if w != week]
+    for sid, entry in ledger.items():
+        weeks = [w for w in entry.get("weeks", []) if w != week]
         if weeks:
-            out[sid] = {**e, "weeks": weeks}
-    for it in found:
-        e = out.get(it["id"], {})
-        weeks = sorted(set(e.get("weeks", [])) | {week})
-        if week == weeks[-1] or not e:            # the newest retro's wording wins
-            e = {"category": it["category"], "text": it["text"], "signature": it["signature"],
-                 "repo": it.get("repo", ""), "sources": it["sources"]}
-        out[it["id"]] = {**e, "weeks": weeks}
+            out[sid] = {**entry, "weeks": weeks}
+    for item in found:
+        entry = out.get(item["id"], {})
+        weeks = sorted(set(entry.get("weeks", [])) | {week})
+        if week == weeks[-1] or not entry:        # the newest retro's wording wins
+            entry = {"category": item["category"], "text": item["text"], "signature": item["signature"],
+                     "repo": item.get("repo", ""), "sources": item["sources"]}
+        out[item["id"]] = {**entry, "weeks": weeks}
     return dict(sorted(out.items()))
 
 
@@ -177,23 +193,23 @@ def check_decisions(old, new, known: dict, lookup):
     problems, out = [], {}
     for sid in sorted(set(old) | set(new)):
         where = f"{DECISIONS_REL}: {sid}"
-        before, d = old.get(sid), new.get(sid)
-        if d is None:
+        before, decision = old.get(sid), new.get(sid)
+        if decision is None:
             problems.append(f"{where}: removed; change its state instead")
             continue
-        if d == before:
-            out[sid] = d
+        if decision == before:
+            out[sid] = decision
             continue
         if isinstance(before, dict) and before.get("by") != "routine":
             problems.append(f"{where}: the owner wrote it; the routine never changes it")
             continue
-        if not isinstance(d, dict):
+        if not isinstance(decision, dict):
             problems.append(f"{where}: must be an object with state, source and note")
             continue
         if sid not in known:
             problems.append(f"{where}: no such suggestion; `kb suggestions --all` lists them")
             continue
-        state, source = d.get("state"), _text(d.get("source")).strip()
+        state, source = decision.get("state"), _text(decision.get("source")).strip()
         if state not in STATES:
             problems.append(f"{where}: state must be one of {', '.join(STATES)}")
             continue
@@ -206,12 +222,13 @@ def check_decisions(old, new, known: dict, lookup):
             problems.append(f"{where}: source {source!r} is not in the index")
             continue
         first = known[sid]["weeks"][0]
+        # the Monday of the ISO week "YYYY-Www": [:4] is the year, [6:] the week number
         monday = dt.date.fromisocalendar(int(first[:4]), int(first[6:]), 1).isoformat()
         if state == "applied" and date < monday:
             problems.append(f"{where}: applied on {date}, before it was suggested ({first}); cite the session that "
                             "made the change")
             continue
-        out[sid] = {"state": state, "source": source, "note": _text(d.get("note")).strip(), "date": date,
+        out[sid] = {"state": state, "source": source, "note": _text(decision.get("note")).strip(), "date": date,
                     "by": "routine"}
     return problems, out
 
@@ -233,37 +250,43 @@ def report(ledger: dict, decided: dict, seen: dict, today: dt.date) -> list:
     signature_sessions() of the ledger's signatures."""
     out = []
     recent_from = (today - dt.timedelta(days=RECENT_DAYS)).isoformat()
-    for sid, e in ledger.items():
-        d = decided.get(sid, {})
-        state = d.get("state", "proposed")
-        sig = e.get("signature") or ""
+    for sid, entry in ledger.items():
+        decision = decided.get(sid, {})
+        state = decision.get("state", "proposed")
+        sig = entry.get("signature") or ""
         starts = sorted(seen.get(sig, {}).values()) if sig else []
+        # rank orders the report: 0 came back, 1 still happening, 2 the rest (not measured, too early, not seen),
+        # 3 fixed, 4 rejected
         rank = 2
         if state == "rejected":
             verdict, rank = "rejected", 4
         elif not sig:
             verdict = "not measured (no error signature)"
-        elif state == "applied" and d.get("date"):
-            after = [s for s in starts if s[:10] >= d["date"]]
+        elif state == "applied" and decision.get("date"):
+            after = [s for s in starts if s[:10] >= decision["date"]]
             if after:
-                verdict, rank = f"came back: {len(after)} sessions since {d['date']}, last {after[-1][:10]}", 0
-            elif (today - dt.date.fromisoformat(d["date"])).days >= SETTLE_DAYS:
-                verdict, rank = f"fixed: not seen since {d['date']}", 3
+                verdict, rank = f"came back: {len(after)} sessions since {decision['date']}, last {after[-1][:10]}", 0
+            elif (today - dt.date.fromisoformat(decision["date"])).days >= SETTLE_DAYS:
+                verdict, rank = f"fixed: not seen since {decision['date']}", 3
             else:
-                verdict = f"applied {d['date']}: too early to tell"
+                verdict = f"applied {decision['date']}: too early to tell"
         else:
             recent = [s for s in starts if s[:10] >= recent_from]
             if recent:
                 verdict, rank = f"still happening: {len(recent)} sessions in {RECENT_DAYS} days, last {recent[-1][:10]}", 1
             else:
                 verdict = f"not seen in {RECENT_DAYS} days" + (f" (last {starts[-1][:10]})" if starts else "")
-        if state == "applied" and not d.get("date"):
+        if state == "applied" and not decision.get("date"):
             verdict += "; give the decision a date to measure it"
-        out.append({"id": sid, "state": state, "weeks": e["weeks"], "category": e.get("category", ""),
-                    "text": e.get("text", ""), "signature": sig, "verdict": verdict, "note": d.get("note", ""),
-                    "source": d.get("source", ""), "by": d.get("by", ""), "repo": e.get("repo", ""),
-                    "sources": e.get("sources", []), "_rank": rank})
-    out.sort(key=lambda r: (r["weeks"][-1], r["id"]), reverse=True)        # newest first within a rank
+        out.append({"id": sid, "state": state, "weeks": entry["weeks"], "category": entry.get("category", ""),
+                    "text": entry.get("text", ""), "signature": sig, "verdict": verdict,
+                    "note": decision.get("note", ""), "source": decision.get("source", ""),
+                    "by": decision.get("by", ""), "repo": entry.get("repo", ""),
+                    "sources": entry.get("sources", []), "_rank": rank})
+    # Two sorts: Python's sort is stable, so the second keeps the order of the first among equal keys.
+    # 1. newest last week first (then id, descending)
+    out.sort(key=lambda r: (r["weeks"][-1], r["id"]), reverse=True)
+    # 2. by rank, then the suggestions seen in more retros first
     out.sort(key=lambda r: (r["_rank"], -len(r["weeks"])))
     for r in out:
         del r["_rank"]

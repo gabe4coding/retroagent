@@ -50,6 +50,10 @@ SUBAGENT_LINES = 10
 STATS = list(REPORTS) + ["errors"]  # errors: tool errors that came back in 2+ sessions (kb.stats)
 PAGE_HITS = 3                    # pages listed before the sessions in `kb find`
 MEMORY_HITS = 3                  # memories listed after the pages, before the sessions
+_SHOW_FILES = 15                 # files per session
+_GREP_MATCHES = 5                # matched turns shown
+_SUGGESTION_CHARS = 200          # suggestion text cut
+_QUARANTINE_SHOWN = 5            # quarantined files listed
 
 
 def parse_since(value: str) -> str:
@@ -134,7 +138,8 @@ def _memory_row(r: dict) -> str:
 
 def cmd_find(args, cfg) -> int:
     query = " ".join(args.query)
-    # pages have no agent, host, date, tag or role: those filters ask for sessions only; memories have no date, tag or role
+    # Pages have no agent, host, date, tag or role. So these filters ask for sessions only.
+    # Memories have no date, tag or role. So these filters leave memories out.
     want_pages = not (args.no_pages or args.agent or args.host or args.since or args.until or args.tag or args.role)
     want_memories = not (args.no_memories or args.since or args.until or args.tag or args.role)
     idx = _open_index(cfg)
@@ -209,24 +214,24 @@ def _maybe_fill(cfg, idx, store) -> bool:
     (an embed_url, or the installed runtime). Cheap when it does nothing. Returns True when it started one."""
     import time
 
-    from kb import embed, embed_runtime as er
+    from kb import embed, embed_runtime
     try:
-        stamp = er.cache_dir() / "last-fill"
-        if stamp.exists() and time.time() - stamp.stat().st_mtime < FILL_EVERY:
+        last_fill_marker = embed_runtime.cache_dir() / "last-fill"     # touched when a fill starts
+        if last_fill_marker.exists() and time.time() - last_fill_marker.stat().st_mtime < FILL_EVERY:
             return False
-        if not (cfg.embed_url or er.installed()):
+        if not (cfg.embed_url or embed_runtime.installed()):
             return False
         if store is not None:
-            model = embed.model_key("url:" + cfg.embed_url if cfg.embed_url else er.MODEL)
-            have = sum(store.counts(model).values())
-            want = sum(idx.db.execute(sql, args).fetchone()[0] for sql, args in (
+            model = embed.model_key("url:" + cfg.embed_url if cfg.embed_url else embed_runtime.MODEL)
+            vectors_now = sum(store.counts(model).values())
+            items_to_embed = sum(idx.db.execute(sql, args).fetchone()[0] for sql, args in (
                 ("SELECT COUNT(*) FROM sessions", ()), ("SELECT COUNT(*) FROM pages", ()),
                 ("SELECT COUNT(*) FROM memories", ()),
                 ("SELECT COUNT(*) FROM turns WHERE role = 'user' AND length(text) >= ?", (embed.TURN_MIN,))))
-            if have >= want:
+            if vectors_now >= items_to_embed:
                 return False
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.touch()
+        last_fill_marker.parent.mkdir(parents=True, exist_ok=True)
+        last_fill_marker.touch()
         _spawn_fill()
         return True
     except (OSError, sqlite3.Error):
@@ -288,8 +293,8 @@ def cmd_summary(args, cfg) -> int:
         print(f"decision: {d}")
     files = json.loads(r.get("files") or "[]")
     if files:
-        more = f" (+{len(files) - 15})" if len(files) > 15 else ""
-        print("files: " + ", ".join(files[:15]) + more)
+        more = f" (+{len(files) - _SHOW_FILES})" if len(files) > _SHOW_FILES else ""
+        print("files: " + ", ".join(files[:_SHOW_FILES]) + more)
     for p in json.loads(r.get("prs") or "[]"):
         print(f"pr: {p}")
     for k in kids[:SUBAGENT_LINES]:
@@ -415,12 +420,18 @@ def cmd_pages(args, cfg) -> int:
 
 
 def select_turns(turns: list, turn=None, around: int = 0, grep=None) -> list:
+    """The turns `kb show` prints, in order.
+
+    - turn given: that turn and `around` turns on each side.
+    - grep given: the first _GREP_MATCHES turns that match it (case-insensitive), each with `around` turns on each side.
+    - else: the first user turn and the last assistant turn.
+    """
     if turn is not None:
         return [t for t in turns if turn - around <= t["n"] <= turn + around]
     if grep:
         rx = re.compile(grep, re.I)
         keep = set()
-        for n in [t["n"] for t in turns if rx.search(t["text"])][:5]:
+        for n in [t["n"] for t in turns if rx.search(t["text"])][:_GREP_MATCHES]:
             keep.update(range(n - around, n + around + 1))
         return [t for t in turns if t["n"] in keep]
     picked = [t for t in turns if t["role"] == "user"][:1] + [t for t in turns if t["role"] == "assistant"][-1:]
@@ -504,10 +515,10 @@ def cmd_suggestions(args, cfg) -> int:
         print(f"{r['id']}  {r['state']:<8}  {weeks:<12}  {r['verdict']}")
         cat = r["category"] + " · " if r["category"] else ""
         src = f" ({', '.join(r['sources'])})" if r["sources"] else ""
-        print(f"    {cat}{r['text'][:200]}{src}")
+        print(f"    {cat}{r['text'][:_SUGGESTION_CHARS]}{src}")
         if r["state"] != "proposed":
             src = f" ({r['source']})" if r["source"] else ""
-            print(f"    {r['state']} by {r['by']}{src}{': ' + r['note'][:200] if r['note'] else ''}")
+            print(f"    {r['state']} by {r['by']}{src}{': ' + r['note'][:_SUGGESTION_CHARS] if r['note'] else ''}")
     if not rows:
         print("nothing open; --all also lists the fixed and rejected ones")
     return 0
@@ -584,7 +595,8 @@ def dry_run_text(rep) -> str:
 
 def cmd_sync(args, cfg) -> int:
     from kb.sync import now_iso, run_sync
-    if getattr(args, "auto", False) and not cfg.auto_sync:     # the hook asks; the owner has not said yes yet. Plain `kb sync` always runs.
+    # --auto is what the hook runs. It does nothing until the owner turns auto_sync on. A plain `kb sync` always runs.
+    if getattr(args, "auto", False) and not cfg.auto_sync:
         return 0
     if getattr(args, "auto", False) and cfg.auto_update:
         from kb.setup import auto_update
@@ -689,10 +701,10 @@ def cmd_status(args, cfg) -> int:
     if st.quarantine:
         print(f"quarantined: {len(st.quarantine)} file(s)")
         held = sorted(st.quarantine.items(), key=lambda kv: (kv[1], kv[0]))
-        for path, since in held[:5]:
+        for path, since in held[:_QUARANTINE_SHOWN]:
             print(f"  {path}" + (f" (since {since[:10]})" if since else ""))
-        if len(held) > 5:
-            print(f"  … and {len(held) - 5} more")
+        if len(held) > _QUARANTINE_SHOWN:
+            print(f"  … and {len(held) - _QUARANTINE_SHOWN} more")
     return 0
 
 
@@ -768,8 +780,8 @@ def cmd_update(args, cfg) -> int:
 def cmd_embed(args, cfg) -> int:
     import shutil
 
-    from kb import embed, embed_runtime as er
-    srv = er.Server()
+    from kb import embed, embed_runtime
+    srv = embed_runtime.Server()
     store_path = cfg.kb_dir / embed.STORE
     if args.status:
         return _embed_status(cfg, srv, store_path)
@@ -780,18 +792,18 @@ def cmd_embed(args, cfg) -> int:
         config_mod.set_key("embed", False)
         srv.stop()
         if args.remove:
-            shutil.rmtree(er.cache_dir(), ignore_errors=True)
+            shutil.rmtree(embed_runtime.cache_dir(), ignore_errors=True)
             _drop_store(store_path)
-        print("semantic search is off" + (f"; removed {er.cache_dir()} and the vectors" if args.remove else
-                                           "; kb embed turns it on again"))
+        print("semantic search is off" + (f"; removed {embed_runtime.cache_dir()} and the vectors" if args.remove
+                                           else "; kb embed turns it on again"))
         return 0
     if args.install:
         return _embed_install(args)
     if args.quiet:
         return _embed_quiet(cfg, store_path)
     try:
-        ep = er.ensure(cfg, wait=True, progress=_progress())
-    except er.EmbedUnavailable as e:
+        ep = embed_runtime.ensure(cfg, wait=True, progress=_progress())
+    except embed_runtime.EmbedUnavailable as e:
         print(f"kb: {e}")
         return 2
     if args.rebuild:
@@ -819,16 +831,16 @@ def _embed_install(args) -> int:
     cloud environment's setup script, whose files are cached for later sessions (`kb setup cloud` prints it)."""
     from pathlib import Path
 
-    from kb import embed_runtime as er
+    from kb import embed_runtime
     try:
-        er.install(progress=_progress())
-    except er.EmbedUnavailable as e:
+        embed_runtime.install(progress=_progress())
+    except embed_runtime.EmbedUnavailable as e:
         print(f"kb: {e}")
         return 2
     if args.root:
         config_mod.set_key("root", str(Path(args.root).expanduser().resolve()))
     config_mod.set_key("embed", True)
-    print(f"semantic search installed ({er.cache_dir()}) and on; kb find starts the model when it needs it")
+    print(f"semantic search installed ({embed_runtime.cache_dir()}) and on; kb find starts the model when it needs it")
     return 0
 
 
@@ -838,16 +850,16 @@ def _embed_quiet(cfg, store_path) -> int:
     background, and what the pages routine runs."""
     import time
 
-    from kb import embed, embed_runtime as er
+    from kb import embed, embed_runtime
     from kb.lock import Lock
     if not (cfg.embed or cfg.embed_url):
         return 0
-    lock = Lock(er.cache_dir() / "fill.lock")
+    lock = Lock(embed_runtime.cache_dir() / "fill.lock")
     if not lock.acquire():
         return 0
     try:
         deadline = time.time() + cfg.embed_sync_seconds
-        ep = er.ensure(cfg, wait=True)
+        ep = embed_runtime.ensure(cfg, wait=True)
         idx = _open_index(cfg)
         store = embed.Vectors(store_path)
         try:
@@ -857,8 +869,8 @@ def _embed_quiet(cfg, store_path) -> int:
             store.close()
             idx.close()
         if not cfg.embed_url:
-            er.Server().touch()
-    except (er.EmbedUnavailable, IndexNotBuilt, sqlite3.Error, OSError):
+            embed_runtime.Server().touch()
+    except (embed_runtime.EmbedUnavailable, IndexNotBuilt, sqlite3.Error, OSError):
         pass
     finally:
         lock.release()
@@ -890,16 +902,17 @@ def _progress():
 def _embed_status(cfg, srv, store_path) -> int:
     import time
 
-    from kb import embed, embed_runtime as er
+    from kb import embed, embed_runtime
     print(f"semantic search: {'on' if cfg.embed or cfg.embed_url else 'off'}")
     if cfg.embed_url:
         print(f"server: {cfg.embed_url} (embed_url; kb does not manage it)")
         model = "url:" + cfg.embed_url
     else:
-        model = er.MODEL
-        key = er.platform_key()
-        print(f"runtime: llama.cpp {er.ASSETS['llama_build']} for {key or 'this platform: not available'}, "
-              f"{'installed' if er.installed() else 'not installed'} ({er.cache_dir()})")
+        model = embed_runtime.MODEL
+        key = embed_runtime.platform_key()
+        print(f"runtime: llama.cpp {embed_runtime.ASSETS['llama_build']} for "
+              f"{key or 'this platform: not available'}, "
+              f"{'installed' if embed_runtime.installed() else 'not installed'} ({embed_runtime.cache_dir()})")
         s = srv.state()
         if s and srv.alive(timeout=1.0):
             idle = int((time.time() - float(s.get("last_used") or 0)) // 60)
