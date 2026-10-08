@@ -86,11 +86,18 @@ def test_hook_passes_auto_to_kb_even_when_the_config_turns_auto_sync_off(tmp_pat
     assert _wait(marker) and marker.read_text().strip() == "sync --auto"
 
 
-def test_hook_does_nothing_without_a_data_clone(tmp_path):
+def test_hook_without_a_data_clone_only_asks_to_offer_the_setup(tmp_path):
     hook, marker, root, env = _hook_env(tmp_path)
     (root / ".git").rmdir()
     p = subprocess.run([str(hook)], env=env, input="{}", capture_output=True, text=True, timeout=5)
     assert p.returncode == 0 and not _wait(marker, 0.5) and not (root / ".kb").exists()
+    ctx = json.loads(p.stdout)["hookSpecificOutput"]
+    assert ctx["hookEventName"] == "SessionStart" and "/retroagent:setup" in ctx["additionalContext"]
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"brief": False}))
+    p = subprocess.run([str(hook)], env={**env, "KB_CONFIG": str(cfg)}, input="{}", capture_output=True, text=True,
+                       timeout=5)
+    assert p.returncode == 0 and p.stdout == ""
 
 
 def test_hook_falls_back_to_the_config_from_before_the_rename(tmp_path):

@@ -32,10 +32,11 @@ def _ledger(root, **decisions):
 def test_page_pointer_only(tmp_path):
     write_page(tmp_path, "project", "demo", body=BODY)
     assert brief.build(tmp_path, "/work/demo") == (
-        "Project page of demo: `kb page demo` (2 open threads, 1 error → fix). Read it when the task needs it.")
-    assert brief.build(tmp_path, "/work/nothing") == ""
+        "Project page of demo: `kb page demo` (2 open threads, 1 error → fix). Read it when the task needs it.\n"
+        + brief.KB_LINE)
+    assert brief.build(tmp_path, "/work/nothing") == brief.KB_LINE     # no page: still a pointer to the KB
     _ledger(tmp_path, **{"s-000001": {"state": "applied"}})            # applied or proposed: not shown
-    assert "\n" not in brief.build(tmp_path, "/work/demo")
+    assert len(brief.build(tmp_path, "/work/demo").splitlines()) == 2
 
 
 def test_accepted_suggestions_for_this_repo(tmp_path):
@@ -44,11 +45,20 @@ def test_accepted_suggestions_for_this_repo(tmp_path):
     out = brief.build(tmp_path, "/work/demo").splitlines()           # no page: the suggestions still come
     assert out[0] == "Changes the owner accepted for the demo repo (`kb suggestions`):"
     assert out[1].startswith("- [s-000002] xxx") and out[1].endswith("…") and len(out[1]) == brief.LINE_CHARS
-    assert out[2] == "- [s-000001] Rules · wait for CI with a watch" and len(out) == 3
-    assert brief.build(tmp_path, "/", project="other").endswith("- [s-000003] other repo")
+    assert out[2] == "- [s-000001] Rules · wait for CI with a watch" and out[3:] == [brief.KB_LINE]
+    assert brief.build(tmp_path, "/", project="other").endswith("- [s-000003] other repo\n" + brief.KB_LINE)
 
 
 def test_items_read_the_repo():
     body = '# W\n\n## Suggested changes\n- [new] Rules · do it · repo "demo" · signature "a b c" (a0000001)\n'
     it = ledger.items(body)[0]
     assert (it["text"], it["repo"], it["signature"]) == ("do it", "demo", "a b c")
+
+
+def test_the_whole_brief_stays_under_the_limit(tmp_path):
+    (tmp_path / "pages").mkdir()
+    ledger.save(tmp_path, {f"s-{i:06d}": {"category": "", "text": "y" * 300, "signature": "", "repo": "demo",
+                                          "sources": [], "weeks": ["2026-W40"]} for i in range(20)})
+    (tmp_path / ledger.DECISIONS_REL).write_text(json.dumps({f"s-{i:06d}": {"state": "accepted"} for i in range(20)}))
+    out = brief.build(tmp_path, "/work/demo")
+    assert len(out) <= brief.MAX_CHARS + len("- … and 20 more") and out.endswith(brief.KB_LINE)
