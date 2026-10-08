@@ -702,3 +702,24 @@ def test_finish_asks_to_compact_current_state_and_open_threads(tmp_path):
     assert '3 bullets in "Current state", the limit is 2' in str(e.value)
     assert '3 bullets in "Open threads", the limit is 2; close the finished ones' in str(e.value)
     assert routine.finish(root, settings(max_current_bullets=3, max_open_threads=3), now=NOW, push=False)["committed"]
+
+
+def test_a_memory_whose_only_change_is_its_date_changes_nothing(tmp_path):
+    """A sync that fills in `modified` on old memories leaves their facts as they were: no page to update."""
+    root = repo(tmp_path / "kb")
+    built(root)
+    memory(root, "alpha", "deploy-gotcha.md")
+    commit(root)
+    plan(root, retro_weeks_back=0)
+    routine.finish(root, settings(), now=NOW, push=False, skip=["alpha"])      # nothing pending
+    head = git(root, "rev-parse", "HEAD")
+    memory(root, "alpha", "deploy-gotcha.md", modified="2026-06-04T03:29:52Z")
+    commit(root)
+    assert plan(root, retro_weeks_back=0)["projects"] == []
+    assert routine._date_only(root, head, "HEAD") == {"memories/h/claude/-Users-me-alpha/deploy-gotcha.md"}
+    memory(root, "alpha", "deploy-gotcha.md", body="A fact worth keeping, and a new one.\n",
+           modified="2026-10-07T08:00:00Z")
+    commit(root)
+    item = plan(root, retro_weeks_back=0)["projects"][0]
+    assert item["memories"] == ["memories/h/claude/-Users-me-alpha/deploy-gotcha.md"]
+    assert routine._date_only(root, head, "HEAD") == set()
