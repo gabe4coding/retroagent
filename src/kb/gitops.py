@@ -418,7 +418,8 @@ def _scan_raw(root, exe, raw_paths, tmpdir: Path):
 
 
 def find_gitleaks(exe=None):
-    """Path of a usable gitleaks, or None: the given path, else PATH, else the usual install folders.
+    """Path of a usable gitleaks, or None: the given path, else PATH, else the usual install folders, else the one
+    `kb setup gitleaks` downloaded (kb.gitleaks_fetch).
 
     A hook runs with a short PATH, so the usual folders matter. A given path that is no executable file is ignored.
     """
@@ -431,7 +432,8 @@ def find_gitleaks(exe=None):
     found = shutil.which("gitleaks")
     if found:
         return found
-    return next((p for p in GITLEAKS_FALLBACKS if usable(p)), None)
+    from kb.gitleaks_fetch import binary_path
+    return next((p for p in (*GITLEAKS_FALLBACKS, str(binary_path())) if usable(p)), None)
 
 
 def secrets_check(root, exe=None) -> SecretsResult:

@@ -29,6 +29,12 @@ def _ledger(root, **decisions):
     (root / ledger.DECISIONS_REL).write_text(json.dumps(decisions))
 
 
+def test_the_first_sync_line_comes_before_the_kb_line_while_the_backfill_is_pending(tmp_path):
+    text = brief.build(tmp_path, str(tmp_path), first_sync_pending=True)
+    assert text.splitlines() == [brief.FIRST_SYNC_LINE, brief.KB_LINE]
+    assert brief.build(tmp_path, str(tmp_path)) == brief.KB_LINE
+
+
 def test_page_pointer_only(tmp_path):
     write_page(tmp_path, "project", "demo", body=BODY)
     assert brief.build(tmp_path, "/work/demo") == (

@@ -18,8 +18,8 @@
   kb pages start | plan | digest | finish | due   steps of the cloud routine that writes pages/ (scripts/pages-routine.md)
   kb enable | disable  switch automatic syncs (the SessionStart hook) on or off; `kb enable updates` pulls the code
                        once a day
-  kb setup init | routine | cloud | check   set up the data repo, the cloud routine, cloud environments (the setup
-                       skill drives these)
+  kb setup init | routine | cloud | check | gitleaks | repo-check   set up the data repo, the cloud routine, cloud
+                       environments, gitleaks (the setup skill drives these)
   kb cloud push | hook | install | import   get Claude Code cloud sessions into the KB: the cloud pushes them to
                        an inbox, one machine imports them as host `cloud`
   kb update            pull the retroagent code and refresh the plugins
@@ -534,7 +534,7 @@ def cmd_brief(args, cfg) -> int:
                 return 0
             event = json.loads(sys.stdin.read() or "{}")
             cwd = event.get("cwd") if isinstance(event, dict) and isinstance(event.get("cwd"), str) else cwd
-        text = brief.build(cfg.root, cwd, args.project or "")
+        text = brief.build(cfg.root, cwd, args.project or "", first_sync_pending=cfg.auto_sync_pending and not cfg.auto_sync)
     except Exception:  # noqa: BLE001 - a brief is never worth breaking the start of a session
         if not args.hook:
             raise
@@ -618,11 +618,16 @@ def cmd_backfill(args, cfg) -> int:
     if (args.host or args.force_host) and not args.summaries:
         print("kb: --host and --force-host work only with --summaries")
         return 2
+    recent = getattr(args, "recent", None)
+    if recent is not None and (recent < 1 or args.summaries):
+        print("kb: --recent needs a number of days of 1 or more, without --summaries")
+        return 2
     if host == cfg.host:
         if args.force_host:
             print(f"kb: --force-host needs --host with another machine's host (this machine's host is '{cfg.host}')")
             return 2
-        rep = run_sync(cfg, now=True, summary_cap=None if args.summaries else 0)
+        rep = run_sync(cfg, now=True, summary_cap=None if args.summaries else 0, max_age_days=recent,
+                       push=recent is None)
     elif not args.force_host:              # only the owner writes sessions/<host>: see README, "One writer per host"
         print(f"kb: {foreign_host(cfg, host)} (--force-host overrides this; read the README first)")
         return 2
@@ -632,6 +637,11 @@ def cmd_backfill(args, cfg) -> int:
         print("another sync is running; try again later")
         return 1
     print(f"{now_iso()} {host}: {rep.line()}")
+    if recent is not None and not rep.errors:
+        print(f"the sessions of the last {recent} days are indexed and committed, not pushed; kb find works now. "
+              f"Run kb backfill for the rest and the first push.")
+    elif host == cfg.host and not rep.errors and cfg.auto_sync_pending:
+        _first_backfill_done()
     if host != cfg.host:
         print(f"forced from host '{cfg.host}': not committed; review the changes under sessions/{host} and "
               f"catalog/{host}, send them as a PR, and if the next sync of '{host}' then fails to pull, run kb repair "
@@ -651,8 +661,17 @@ def cmd_repair(args, cfg) -> int:
     return 0
 
 
+def _first_backfill_done() -> None:
+    """install.sh left auto_sync off until one full backfill works (auto_sync_pending): turn it on now."""
+    config_mod.set_key("auto_sync", True)
+    config_mod.set_key("auto_sync_pending", None)
+    print("automatic syncs enabled (the first full backfill is done; kb disable turns them off)")
+
+
 def _switch(what: str, on: bool) -> int:
     key, label = {"sync": ("auto_sync", "automatic syncs"), "updates": ("auto_update", "automatic code updates")}[what]
+    if key == "auto_sync":
+        config_mod.set_key("auto_sync_pending", None)      # the owner chose: no automatic switch later
     path = config_mod.set_key(key, on)
     print(f"{label} {'enabled' if on else 'disabled'} ({path})")
     return 0
@@ -674,7 +693,12 @@ def cmd_status(args, cfg) -> int:
     backlog = len(needs_summary(idx, cfg.host))
     idx.close()
     print(f"root: {cfg.root} · host: {cfg.host}")
-    print("auto sync: on" if cfg.auto_sync else "auto sync: off (the hook does nothing; run: kb enable)")
+    if cfg.auto_sync:
+        print("auto sync: on")
+    elif cfg.auto_sync_pending:
+        print("auto sync: off until the first full backfill is done (each new session runs kb backfill again)")
+    else:
+        print("auto sync: off (the hook does nothing; run: kb enable)")
     print("auto update: on (the code clone is pulled once a day)" if cfg.auto_update
           else "auto update: off (run: kb update; or kb enable updates)")
     print(f"last sync: {st.last_ok or 'never'}" + (f" · {st.last_result}" if st.last_result else ""))
@@ -721,7 +745,7 @@ def _pages_status(cfg) -> str:
 
 
 def cmd_setup(args, cfg) -> int:
-    from kb import setup
+    from kb import gitleaks_fetch, setup
     try:
         if args.step == "init":
             print(setup.dumps(setup.init(cfg.root, cfg.branch)))
@@ -730,9 +754,14 @@ def cmd_setup(args, cfg) -> int:
         elif args.step == "routine":
             print(setup.dumps(setup.routine(cfg.root, cfg.branch, code=args.code_repo or "", model=args.model,
                                             environment=args.environment or "", push=not args.no_push)))
+        elif args.step == "repo-check":
+            print(setup.dumps(setup.repo_check(args.url or "")))
+        elif args.step == "gitleaks":
+            found = gitops.find_gitleaks(cfg.gitleaks_path)
+            print(found or gitleaks_fetch.install())
         else:
             print(setup.dumps(setup.check(cfg, config_mod.config_path())))
-    except (setup.SetupError, gitops.GitError) as e:
+    except (setup.SetupError, gitops.GitError, gitleaks_fetch.FetchError) as e:
         print(f"kb: {e}", file=sys.stderr)
         return 2
     return 0
@@ -1088,6 +1117,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     b = sub.add_parser("backfill", help="process every pending session now")
     b.add_argument("--summaries", action="store_true", help="also summarize everything (no per-run cap, no time limit)")
+    b.add_argument("--recent", type=int, metavar="DAYS",
+                   help="only the sessions changed in the last DAYS days, committed but not pushed: a fast first "
+                        "part, so kb find works before the long first push")
     b.add_argument("--host", help="with --summaries: the host to summarize; another machine's host is refused "
                                   "unless --force-host")
     b.add_argument("--force-host", action="store_true",
@@ -1117,9 +1149,12 @@ def build_parser() -> argparse.ArgumentParser:
                                                           "embed_sync_seconds, without output")
     em.set_defaults(func=cmd_embed)
     su = sub.add_parser("setup", help="set up the data repo and the cloud routine")
-    su.add_argument("step", choices=["init", "routine", "cloud", "check"],
+    su.add_argument("step", choices=["init", "routine", "cloud", "check", "gitleaks", "repo-check"],
                     help="init: base files of the data repo · routine: files and spec of the pages routine · "
-                         "cloud: network and setup script of a cloud environment · check: what is set up (JSON)")
+                         "cloud: network and setup script of a cloud environment · check: what is set up (JSON) · "
+                         "gitleaks: print the path of gitleaks; download a pinned one when there is none · "
+                         "repo-check URL: can git reach the data repo, and is it private (JSON)")
+    su.add_argument("url", nargs="?", help="repo-check: the git URL of the data repo")
     su.add_argument("--code-repo", help="owner/name of the retroagent code the routine, workflow and cloud sessions "
                                         "use (default: this code's origin)")
     su.add_argument("--model", default="claude-sonnet-5-5", help="model of the routine")

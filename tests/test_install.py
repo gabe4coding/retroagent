@@ -182,6 +182,7 @@ class Machine:
     def env(self, **extra):
         env = {"HOME": str(self.home), "PATH": f"{self.bin}:{SYSTEM_PATH}", "FAKE_LOG": str(self.log),
                "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "KB_INSTALL_GITLEAKS_DIRS": "",
+               "KB_INSTALL_NO_FETCH": "1",                       # never download gitleaks in a test
                "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
                "GIT_COMMITTER_EMAIL": "t@example.com", "LANG": "C"}
         env.update(extra)
@@ -218,6 +219,7 @@ def test_fresh_install_clones_the_data_repo_writes_the_config_and_installs_both_
     cfg = m.config
     assert cfg["root"] == str(m.root) and cfg["host"] == "laptop-1"
     assert cfg["auto_sync"] is False and cfg["skip_headless_single_prompt"] is True and cfg["branch"] == "main"
+    assert cfg["auto_sync_pending"] is True                               # the first full backfill turns it on
     assert cfg["gitleaks_path"] == str(m.bin / "gitleaks") and cfg["require_gitleaks"] is True
     calls = m.calls()
     assert f"claude plugin marketplace add {m.code}" in calls and "claude plugin install retroagent@retroagent" in calls
@@ -230,8 +232,9 @@ def test_fresh_install_clones_the_data_repo_writes_the_config_and_installs_both_
     link = m.home / ".local/bin/kb"
     assert link.is_symlink() and os.readlink(link) == str(m.code / "bin/kb")
     out = p.stdout
-    assert "kb backfill" in out and "kb backfill --summaries" in out and "kb enable" in out
-    assert out.index("kb backfill") < out.index("kb backfill --summaries") < out.index("kb enable")
+    assert "kb backfill --recent 14" in out and "kb backfill --summaries" in out and "kb enable" not in out
+    assert out.index("kb backfill --recent 14") < out.index("2. kb backfill ") < out.index("kb backfill --summaries")
+    assert "Automatic syncs start when step 2 is done" in out
     assert not (m.root / ".kb/sync.log").exists()
     assert not (m.home / ".config/sessions-kb").exists()
 
@@ -340,6 +343,56 @@ def test_without_gitleaks_install_warns_and_does_not_require_it(tmp_path):
     warning = [l for l in _out(p).splitlines() if "gitleaks" in l.lower() and "WARNING" in l]
     assert len(warning) == 1 and "brew install gitleaks" in warning[0]
     assert "gitleaks_path" not in m.config and m.config.get("require_gitleaks") is not True
+
+
+def test_without_gitleaks_install_downloads_the_pinned_one(tmp_path):
+    m = Machine(tmp_path)
+    got = tmp_path / "cache/gitleaks"
+    m.tool("kb", '#!/bin/sh\nprintf \'kb %s\\n\' "$*" >> "$FAKE_LOG"\n'
+                 f'[ "$*" = "setup gitleaks" ] && echo "{got}"\nexit 0\n')
+    (m.code / "bin/kb").write_text((m.bin / "kb").read_text())
+    got.parent.mkdir()
+    got.write_text("#!/bin/sh\nexit 0\n")
+    got.chmod(0o755)
+    p = m.install("--host", "h", KB_INSTALL_NO_FETCH="")
+    assert p.returncode == 0, _out(p)
+    assert "kb setup gitleaks" in m.calls() and f"gitleaks: downloaded to {got}" in p.stdout
+    assert m.config["gitleaks_path"] == str(got) and m.config["require_gitleaks"] is True
+    assert "WARNING" not in "".join(l for l in p.stdout.splitlines() if "gitleaks" in l)
+
+
+def test_a_failed_gitleaks_download_warns_and_goes_on(tmp_path):
+    m = Machine(tmp_path)
+    (m.code / "bin/kb").write_text(FAKE_KB + '[ "$*" = "setup gitleaks" ] && { echo "kb: download failed" >&2; exit 2; }\nexit 0\n')
+    p = m.install("--host", "h", KB_INSTALL_NO_FETCH="")
+    assert p.returncode == 0, _out(p)
+    assert "gitleaks: WARNING could not download it: kb: download failed" in p.stdout
+    assert "gitleaks_path" not in m.config
+
+
+CLAUDE_WITH_GITHUB_MARKETPLACE = (FAKE_TOOL.replace('exit "${FAKE_EXIT:-0}"\n', '') +
+    'case "$*" in "plugin marketplace list --json") '
+    'echo \'[{"name": "other", "source": "github"}, {"name": "retroagent", "source": "github", '
+    '"repo": "gabe4coding/retroagent"}]\' ;; esac\nexit 0\n')
+
+
+def test_a_github_marketplace_is_replaced_by_the_code_clone(tmp_path):
+    m = Machine(tmp_path)
+    m.tool("claude", CLAUDE_WITH_GITHUB_MARKETPLACE)
+    p = m.install("--host", "h")
+    assert p.returncode == 0, _out(p)
+    calls = m.calls()
+    remove, add = "claude plugin marketplace remove retroagent", f"claude plugin marketplace add {m.code}"
+    assert remove in calls and add in calls and calls.index(remove) < calls.index(add)
+    assert f"claude: replaced the retroagent marketplace (github) with {m.code}" in p.stdout
+
+
+def test_a_folder_marketplace_is_kept(tmp_path):
+    m = Machine(tmp_path)
+    m.tool("claude", CLAUDE_WITH_GITHUB_MARKETPLACE.replace('"source": "github", "repo"', '"source": "directory", "repo"'))
+    p = m.install("--host", "h")
+    assert p.returncode == 0, _out(p)
+    assert "claude plugin marketplace remove retroagent" not in m.calls() and "replaced" not in p.stdout
 
 
 def test_missing_claude_and_codex_are_skipped(tmp_path):

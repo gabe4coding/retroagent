@@ -86,6 +86,18 @@ def test_hook_passes_auto_to_kb_even_when_the_config_turns_auto_sync_off(tmp_pat
     assert _wait(marker) and marker.read_text().strip() == "sync --auto"
 
 
+def test_hook_starts_the_backfill_again_while_the_first_one_is_not_done(tmp_path):
+    hook, marker, _, env = _hook_env(tmp_path)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"auto_sync": False, "auto_sync_pending": True}))
+    subprocess.run([str(hook)], env={**env, "KB_CONFIG": str(cfg)}, input="{}", capture_output=True, text=True, timeout=5)
+    assert _wait(marker) and marker.read_text().strip() == "backfill"
+    marker.unlink()
+    cfg.write_text(json.dumps({"auto_sync": True, "auto_sync_pending": True}))      # the owner ran kb enable meanwhile
+    subprocess.run([str(hook)], env={**env, "KB_CONFIG": str(cfg)}, input="{}", capture_output=True, text=True, timeout=5)
+    assert _wait(marker) and marker.read_text().strip() == "sync --auto"
+
+
 def test_hook_without_a_data_clone_only_asks_to_offer_the_setup(tmp_path):
     hook, marker, root, env = _hook_env(tmp_path)
     (root / ".git").rmdir()
