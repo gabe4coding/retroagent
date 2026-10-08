@@ -641,3 +641,32 @@ def test_cli_digest_takes_memory_paths(tmp_path, monkeypatch, capsys):
     assert main(["pages", "digest", "--memories", "memories/h/claude/-Users-me-alpha/note.md"]) == 0
     assert capsys.readouterr().out.startswith("0 sessions, 1 memories\n\n### memory alpha/note")
     assert main(["pages", "digest"]) == 2 and "--memories" in capsys.readouterr().out
+
+
+def test_finish_records_the_suggestions_of_a_retro(tmp_path):
+    from kb import ledger
+    root = repo(tmp_path / "kb")
+    demo(root)
+    p = plan(root)
+    w40 = p["retros"][0]
+    body = (f"# Week 2026-W40\n\n## Suggested changes\n- [new] Rules · wait for CI with a watch command (a0000002)\n"
+            f"- [new] Tool economy · a cheaper search · signature \"no such signature here\" (b0000001)\n")
+    write_page(root, "retro", "2026-W40", body=body, sources=w40["sessions"])
+    with pytest.raises(PagesError, match="no session has the error signature"):
+        routine.finish(root, settings(), now=NOW, push=False)
+    write_page(root, "retro", "2026-W40", body=body.replace(' · signature "no such signature here"', ""),
+               sources=w40["sessions"])
+    res = routine.finish(root, settings(), now=NOW, push=False)
+    assert res["committed"] and "pages/suggestions.json" in git(root, "show", "--name-only", "--format=", "HEAD")
+    led = ledger.load(root)
+    assert sorted(e["category"] for e in led.values()) == ["Rules", "Tool economy"]
+    text = (root / "pages" / "retro" / "2026-W40.md").read_text()
+    assert "[new]" not in text and all(f"[{sid}]" in text for sid in led)
+
+    # the writer may not touch the ledger or the owner's decisions
+    for rel in (ledger.SUGGESTIONS_REL, ledger.DECISIONS_REL):
+        plan(root)
+        (root / rel).write_text("{}")
+        with pytest.raises(PagesError, match="only"):
+            routine.finish(root, settings(), now=NOW, push=False)
+        git(root, "checkout", "--", ".") if rel == ledger.SUGGESTIONS_REL else (root / rel).unlink()

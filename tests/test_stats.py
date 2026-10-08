@@ -1,7 +1,7 @@
 from test_index import put
 
 from kb.index import Index, connect_readonly
-from kb.stats import error_signature, repeated_errors
+from kb.stats import error_signature, repeated_errors, signature_sessions
 
 HOOK = ("- Bash `rm -rf dist` → ERROR: PreToolUse:Bash hook error: [bash \"/home/u/.hooks/guard.sh\"]: "
         "Blocked: destructive command")
@@ -50,5 +50,18 @@ def test_repeated_errors(tmp_path):
         rows = repeated_errors(con, since="2026-10-02")[1]          # the hook error is left in one session
         assert [(r[0], r[4]) for r in rows] == [(2, not_read["signature"])]
         assert repeated_errors(con, project="other")[1] == []
+    finally:
+        con.close()
+
+
+def test_signature_sessions(tmp_path):
+    con = _index(tmp_path)
+    try:
+        hook = "pretooluse bash hook bash blocked destructive command"
+        got = signature_sessions(con)
+        assert set(got[hook]) == {"aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"}
+        assert got[hook]["aaaaaaaa-0000-0000-0000-000000000002"] == "2026-10-03T10:00:00Z"   # the parent's own start
+        only = signature_sessions(con, {hook}, since="2026-10-02")
+        assert list(only) == [hook] and list(only[hook]) == ["aaaaaaaa-0000-0000-0000-000000000002"]
     finally:
         con.close()

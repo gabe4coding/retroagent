@@ -9,7 +9,9 @@ REPORTS = {
                 "FROM sessions WHERE parent='' GROUP BY project ORDER BY sessions DESC LIMIT 30",
     "agents": "SELECT agent, COALESCE(NULLIF(model,''),'(unknown)') AS model, COUNT(*) AS sessions "
               "FROM sessions WHERE parent='' GROUP BY agent, model ORDER BY sessions DESC",
-    "outcomes": "SELECT COALESCE(NULLIF(outcome,''),'(none)') AS outcome, COUNT(*) AS sessions "
+    # a session without a summary (most are one-prompt sessions the sync does not summarize) has no outcome
+    "outcomes": "SELECT COALESCE(NULLIF(outcome,''), CASE WHEN summary='' THEN '(no summary)' ELSE '(none)' END) "
+                "AS outcome, COUNT(*) AS sessions "
                 "FROM sessions WHERE parent='' GROUP BY 1 ORDER BY sessions DESC",
     "tags": "SELECT j.value AS tag, COUNT(*) AS sessions FROM sessions, json_each(sessions.tags) AS j "
             "WHERE sessions.parent='' GROUP BY j.value ORDER BY sessions DESC LIMIT 40",
@@ -68,3 +70,19 @@ def repeated_errors(con, since: str = "", project: str = "", limit: int = 30):
     rows.sort(key=lambda r: (-r[0], -r[1], r[4]))
     # first_seen, tool and example are from the first time the error was seen
     return ["sessions", "errors", "first", "last", "signature", "first_seen", "tool", "example"], rows[:limit]
+
+
+def signature_sessions(con, signatures=None, since: str = "") -> dict:
+    """{signature: {root session id: start of its first session with that error}} for the tool errors since `since`,
+    only these signatures when given. A subagent's error counts for its parent, at the subagent's start time."""
+    want = set(signatures) if signatures is not None else None
+    out = {}
+    sql = ("SELECT s.id, s.parent, s.started, t.text FROM turns t JOIN sessions s ON s.id = t.session_id "
+           "WHERE t.text LIKE ? AND s.started >= ? ORDER BY s.started, t.n")
+    for sid, parent, started, text in con.execute(sql, ["%" + ERROR_MARK + "%", since]):
+        for line in text.splitlines():
+            m = _ERROR_LINE.match(line)
+            sig = error_signature(m.group(2)) if m else ""
+            if sig and (want is None or sig in want):
+                out.setdefault(sig, {}).setdefault(parent or sid, started or "")
+    return out
