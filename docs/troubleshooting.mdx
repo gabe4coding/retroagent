@@ -7,49 +7,64 @@ description: What to do when a sync fails, a host is claimed by another machine,
 
 ## Every sync fails to pull
 
-If every sync fails with `pull: the remote changed this host's files too; run: kb repair`, run on that machine:
+Symptom: each sync fails with `pull: the remote changed this host's files too; run: kb repair`.
+
+On that machine, run these commands in this order:
 
 ```bash
 kb repair
 kb sync --now --no-summaries
 ```
 
-`kb repair` fetches, resets the data clone to its upstream and clears the fingerprints (`files` in
-`.kb/sync-state.json`). The next sync renders every session again on top of the remote files, keeps the summaries it
-finds there, commits only real changes and pushes.
+`kb repair` does these steps:
 
-Only this host's own work is dropped, and the sync makes it again from the local transcripts. Dropped commits stay in
-the clone as `refs/kb/repair/<time>`.
+1. It fetches.
+2. It resets the data clone to its upstream.
+3. It clears the fingerprints (`files` in `.kb/sync-state.json`).
 
-`kb repair` refuses, and changes nothing, when:
+The next sync writes all sessions again on top of the remote files. It keeps the summaries that it finds there. It
+commits only real changes, and pushes.
 
-- a sync runs;
-- the clone is not on the configured branch, has no upstream, or cannot fetch;
-- a local-only commit or an uncommitted change touches a file outside this host's folders.
+`kb repair` drops only the work of this host, and the sync makes it again from the local transcripts. The dropped
+commits stay in the data clone as `refs/kb/repair/<time>`.
 
-This usually happens after someone wrote this host's files from another machine. See
+`kb repair` refuses, and changes nothing, in these conditions:
+
+- A sync runs.
+- The data clone is not on the configured branch, has no upstream, or cannot fetch.
+- A local-only commit or an uncommitted change touches a file outside the folders of this host.
+
+The usual cause: a person wrote the files of this host from another machine. See
 [One writer per host](./sync.mdx#one-writer-per-host).
 
 ## `host '<host>' belongs to another machine`
 
-Another machine already uses this `host` name. Give this machine its own name with
-`install.sh --host <unique-name>`. If this machine is the owner and only lost its id (a new clone, a deleted
-`.kb/machine-id`), run `install.sh --host <host> --force-host` instead. See
-[One host name per machine](./installation.mdx#one-host-name-per-machine).
+Symptom: another machine already uses this `host` name.
+
+- To give this machine its own name, run `install.sh --host <unique-name>`.
+- If this machine is the owner and lost only its id (a new data clone, a deleted `.kb/machine-id`), run
+  `install.sh --host <host> --force-host`.
+
+See [One host name per machine](./installation.mdx#one-host-name-per-machine).
 
 ## `index not built yet; run: kb reindex`
 
-The read commands could not build the index because `.kb/` is not writable (for example, in a sandbox). Run
-`kb reindex` once from a normal shell.
+Symptom: the read commands cannot build the index because `.kb/` is not writable (for example, in a sandbox).
 
-## Semantic search seems off
+To fix it, run `kb reindex` one time from a normal shell.
 
-`kb find -v <words…>` says on stderr why a query used keywords only:
+## Semantic search uses keywords only
 
-- `no vectors yet; run: kb embed`: the feature is on but nothing is embedded on this machine.
-- `the embedding model is starting`: the server was stopped; it starts in the background, so the next query uses it.
-- A timeout right after a long idle: the model was unloaded and is loading again (about a second).
+Symptom: `kb find` gives keyword results only.
 
-`kb embed --status` shows the runtime, the server and the vector counts, and the path of the server log. A sync line
-that ends with `embed: …` names what went wrong; the sync itself still succeeded. `kb embed` fixes most states: it
-installs what is missing, starts the server and embeds what is new.
+Run `kb find -v <words…>`. It writes on stderr why the query used keywords only:
+
+- `no vectors yet; run: kb embed`: the feature is on, but this machine has no embedded items.
+- `the embedding model is starting`: the server was stopped. It starts in the background, and the next query uses it.
+- A timeout after a long idle time: the model was unloaded and loads again (about one second).
+
+`kb embed --status` shows the runtime, the server, the vector counts and the path of the server log.
+
+A sync line that ends with `embed: …` names the problem. The sync itself was successful.
+
+`kb embed` fixes most problems. It installs the missing parts, starts the server and embeds the new items.

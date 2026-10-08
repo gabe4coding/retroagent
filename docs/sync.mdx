@@ -7,80 +7,91 @@ description: What kb sync writes to the data repo, when, and the one-writer-per-
 
 ## When it runs
 
-A SessionStart hook (Claude Code and Codex) runs `kb sync --auto` in the background. It prints nothing. It does
-nothing until you run `kb enable` (`auto_sync` in the [config](./configuration.mdx)).
+A SessionStart hook (Claude Code and Codex) runs `kb sync --auto` in the background. The hook prints nothing. It
+does nothing until you run `kb enable` (`auto_sync` in the [config](./configuration.mdx)).
 
-Plain `kb sync` and `kb backfill` always run; only `kb sync --auto` (the hook) obeys `auto_sync`.
+Only `kb sync --auto` (the hook) obeys `auto_sync`. Plain `kb sync` and `kb backfill` always run.
 
 ## What it does
 
-For each session that has been idle for 15 minutes, `kb sync`:
+`kb sync` takes each session with no change for 15 minutes (`quiet_minutes`) and does these steps:
 
-1. Turns it into markdown under `sessions/<host>/…`.
-2. Keeps a slim, redacted raw copy under `raw/<host>/…` once the session has been idle for 24 hours
-   (`raw_settle_hours`).
-3. Asks Haiku for a 3-line summary.
-4. Updates `catalog/<host>/…`.
-5. With [semantic search](./commands.mdx#semantic-search) on, embeds what is new into `vectors/<host>/…` (after
-   the push, it imports the vectors other machines committed).
-6. Scans everything with gitleaks.
-7. Commits only this machine's folders, and pushes.
+1. It writes the session as markdown under `sessions/<host>/…`.
+2. It keeps a slim, redacted raw copy under `raw/<host>/…`. It writes this copy only after the session has no change
+   for 24 hours (`raw_settle_hours`).
+3. It asks Haiku for a 3-line summary.
+4. It updates `catalog/<host>/…`.
+5. If [semantic search](./commands.mdx#semantic-search) is on, it embeds the new items into `vectors/<host>/…`. After
+   the push, it imports the vectors that other machines committed.
+6. It scans all the files with gitleaks.
+7. It commits only the folders of this machine, and pushes.
 
-On the one machine with `cloud_import` on, it also imports the [cloud sessions](./commands.mdx#capture-cloud-sessions)
-from the inbox branches as host `cloud`, through the same steps.
+On the one machine with `cloud_import` on, the sync also imports the
+[cloud sessions](./commands.mdx#capture-cloud-sessions) from the inbox branches. It writes them as host `cloud`, with
+the same steps.
 
-Headless one-prompt sessions (`claude -p`, `codex exec`) are skipped.
+The sync skips headless one-prompt sessions (`claude -p`, `codex exec`).
 
 ### Memory files
 
-The sync also copies the memory files agents keep between sessions to `memories/<host>/…` (redacted, scanned,
-committed with the sessions):
+The sync also copies the memory files of the agents to `memories/<host>/…`. It redacts and scans them, and commits
+them with the sessions. The sources are:
 
-- Claude Code: `~/.claude/projects/*/memory/*.md`
+- Claude Code: `~/.claude/projects/*/memory/**/*.md`
 - Codex: `~/.codex/memories/**/*.md`
 
-Each copy has a `modified` time: the one in the memory's own front matter, or else the file's last change on the
-machine (UTC). A memory touched without a change keeps its date, so it adds nothing to the next commit.
+Each copy has a `modified` time. This time comes from the front matter of the memory file. If the front matter has no
+time, it is the last change of the file on the machine (UTC). If a memory file gets a new file time but no new text, its
+copy keeps its date. Thus it adds nothing to the next commit.
 
-A memory deleted or renamed on the machine leaves the KB too. A memory folder that is gone entirely keeps its copies.
-Projects whose folder matches `exclude_cwd_globs` are left out.
+If you delete or rename a memory file on the machine, the sync removes its copy from the data repo. If the full memory
+folder is gone, the sync keeps its copies. The sync ignores projects whose folder matches `exclude_cwd_globs`.
 
 ### Subagents of resumed sessions
 
-A resumed or forked Claude session can copy its parent's subagents. Such a subagent is written once, under the session
-its own records name first; the others link to that file.
+A resumed or forked Claude session can copy the subagents of its parent session. The sync writes such a subagent one
+time, under the session that its own records name first. The other sessions link to that file.
 
 ### Speed and summaries
 
-- `kb sync --now --no-summaries` syncs fast.
-- A normal run writes at most `summary_cap_per_run` summaries and stops after 20 minutes.
-- `kb backfill --summaries` writes the summaries of every session, with no cap and no time limit.
+- To sync fast, run `kb sync --now --no-summaries`.
+- A normal run writes at most `summary_cap_per_run` summaries and spends at most 20 minutes on them.
+- `kb backfill --summaries` writes the summaries of all sessions, with no cap and no time limit.
 
 ## Safety
 
-- The sync works in its own data clone. Nobody edits it by hand.
-- It only touches git on the configured `branch` (`main`).
-- It never pushes commits that touch anything outside this machine's folders.
-- Secrets are redacted, and every commit the sync makes is scanned with gitleaks. gitleaks uses the data repo's own
-  `.gitleaks.toml` when it has one, else the one shipped with retroagent (it needs gitleaks 8.25 or newer).
-- A cloud session's push to its inbox branch is redacted but not scanned: the cloud container has no gitleaks. The
-  machine that imports it scans the session before it reaches `main`.
+- The sync works in its own data clone. Do not edit the data clone by hand.
+- The sync uses git only on the configured `branch` (`main`).
+- The sync never pushes commits that change files outside the folders of this machine.
+- The sync redacts secrets and scans each commit that it makes with gitleaks.
+- gitleaks uses the `.gitleaks.toml` of the data repo if it has one. Else it uses the file in retroagent. This file
+  needs gitleaks 8.25 or newer.
+- A cloud session redacts its push to its inbox branch, but does not scan it, because the cloud container has no
+  gitleaks. The machine that imports the session scans it before it goes to `main`.
 - Search is local: `kb` builds a SQLite FTS5 index in `.kb/` of the data clone.
 
 ## One writer per host
 
-Only the machine that owns a host writes `sessions/<host>`, `raw/<host>`, `catalog/<host>`, `memories/<host>` and
-`vectors/<host>`, summaries included. Make them on that machine with `kb backfill --summaries`.
+Only the machine that owns a host writes these folders, summaries included:
 
-Do not make them on another machine (a cloud session, a second laptop) and merge them by pull request. The owner's
-sync writes the same files from its local transcripts; after the merge its pull conflicts, and every later sync fails
-the same way.
+- `sessions/<host>`
+- `raw/<host>`
+- `catalog/<host>`
+- `memories/<host>`
+- `vectors/<host>`
 
-- `kb backfill --summaries --host <other host>` refuses, and so does the library (`summarize_pending` raises
-  `ForeignHost`).
-- `--force-host` overrides this: it writes only the summary fields and the catalog of that host, and syncs, commits
-  and pushes nothing. Use it only when the owner cannot run the summaries itself, send the result as a pull request,
-  and expect to run [`kb repair`](./troubleshooting.mdx#every-sync-fails-to-pull) on the owner after the merge.
-- A script that calls `summarize()`, `update_front_matter()` or `write_catalog()` itself skips every check. Don't.
-- [Cloud sessions](./commands.mdx#capture-cloud-sessions) own no host. They push their transcripts to an inbox on
-  their branch; the one machine with `cloud_import` on writes them as host `cloud`, which it then owns.
+To make the summaries, run `kb backfill --summaries` on that machine.
+
+Do not make them on another machine (a cloud session, a second machine) and merge them with a pull request. The sync
+of the owner writes the same files from its local transcripts. After the merge, its pull has a conflict, and each
+later sync fails in the same way.
+
+- `kb backfill --summaries --host <other host>` refuses.
+- `--force-host` overrides this check. It writes only the summary fields and the catalog of that host. It does not
+  sync, commit or push.
+- Use `--force-host` only when the owner cannot make the summaries. Send the result as a pull request. After the
+  merge, expect to run [`kb repair`](./troubleshooting.mdx#every-sync-fails-to-pull) on the owner.
+- A script that calls `summarize()`, `update_front_matter()` or `write_catalog()` directly skips all the checks. Do
+  not write such a script.
+- [Cloud sessions](./commands.mdx#capture-cloud-sessions) own no host. They push their transcripts to an inbox on their
+  branch. The one machine with `cloud_import` on writes them as host `cloud`, and then owns this host.

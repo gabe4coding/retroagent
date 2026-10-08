@@ -5,40 +5,40 @@ description: Every key of ~/.config/retroagent/config.json and its default.
 
 # Configuration
 
-The config lives in `~/.config/retroagent/config.json`. An install from before the rename keeps reading
-`~/.config/sessions-kb/`. Every key is optional.
+The config is in `~/.config/retroagent/config.json`. If this file does not exist, `kb` reads
+`~/.config/sessions-kb/config.json` and `kb enable` / `kb disable` change that file. All keys are optional.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `root` | `~/.retroagent-data` | The data clone. |
-| `code` | written by `install.sh` | The code clone that plugin caches forward to. |
-| `host` | short hostname | This machine's name. Must be unique per machine. See [Installation](./installation.mdx#one-host-name-per-machine). |
-| `auto_sync` | `true` when missing; `install.sh` writes `false` | Whether the SessionStart hook syncs. Set with `kb enable` / `kb disable`. |
-| `auto_update` | `false` | Pull the code once a day. Set with `kb enable updates`. |
-| `embed` | `false` | [Semantic search](./commands.mdx#semantic-search). Set with `kb embed` / `kb embed --off`. |
-| `embed_url` | empty | An OpenAI-compatible `/v1/embeddings` server to use instead of the one `kb` manages. Keep it on localhost: it receives the text of your sessions. |
-| `embed_sync_seconds` | `60` | Longest a sync spends embedding new items. |
-| `cloud_import` | `false` | This machine imports the [cloud sessions](./commands.mdx#capture-cloud-sessions). Set with `kb cloud import --on` / `--off`, on one machine only. |
-| `cloud_host` | `cloud` | The host the imported cloud sessions are written under. |
-| `brief` | `true` | At the start of a session, add a short brief for its project: a pointer to the project page and the suggestions accepted for its repo. See [Brief at session start](./commands.mdx#brief-at-session-start). |
-| `hints` | `true` | When a tool call fails, add at most one past fix from the project page to the agent's context. See [Hints when a command fails](./commands.mdx#hints-when-a-command-fails). |
-| `hint_semantic_min` | `0.80` | Cosine a semantic hint needs (0 to 1). The model's scores are close together (about 0.6 to 0.85), so a small change shows many more hints. |
-| `hint_keyword_min` | `3` | Words an error must share with the problem side of a bullet for a keyword hint. |
-| `branch` | `main` | On any other branch, the sync touches no git. |
+| `code` | written by `install.sh` | The code clone that the plugin caches run. |
+| `host` | short hostname | The name of this machine. It must be unique per machine. See [Installation](./installation.mdx#one-host-name-per-machine). |
+| `auto_sync` | `true` when missing, `install.sh` writes `false` | If `true`, the SessionStart hook syncs. Set it with `kb enable` / `kb disable`. |
+| `auto_update` | `false` | If `true`, `kb sync --auto` pulls the code clone one time each day. Set it with `kb enable updates`. |
+| `embed` | `false` | Turns on [semantic search](./commands.mdx#semantic-search). Set it with `kb embed` / `kb embed --off`. |
+| `embed_url` | empty | An OpenAI-compatible `/v1/embeddings` server that `kb` uses instead of its own server. Keep it on localhost, because it gets the text of your sessions. |
+| `embed_sync_seconds` | `60` | The maximum time that a sync spends to embed new items. |
+| `cloud_import` | `false` | If `true`, this machine imports the [cloud sessions](./commands.mdx#capture-cloud-sessions). Set it with `kb cloud import --on` / `--off`, on one machine only. |
+| `cloud_host` | `cloud` | The host for the imported cloud sessions. |
+| `brief` | `true` | At the start of a session, adds a short brief for its project. The brief has a pointer to the project page and the accepted suggestions for its repo. See [Brief at session start](./commands.mdx#brief-at-session-start). |
+| `hints` | `true` | When a tool call fails, adds at most one past fix from the project page to the context of the agent. See [Hints when a command fails](./commands.mdx#hints-when-a-command-fails). |
+| `hint_semantic_min` | `0.80` | The minimum cosine for a semantic hint (0 to 1). The scores of the model are close together (about 0.6 to 0.85). Thus a small change shows many more hints. |
+| `hint_keyword_min` | `3` | The minimum number of words that an error and the problem side of a bullet must share for a keyword hint. |
+| `branch` | `main` | On all other branches, the sync does not use git. |
 | `raw_settle_hours` | `24` | See below. |
-| `skip_headless_single_prompt` | `true` | Skip `claude -p` / `codex exec` sessions. |
-| `gitleaks_path` | found on `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin` | Where gitleaks lives. |
-| `require_gitleaks` | `false`; `install.sh` sets `true` when it finds gitleaks | With no scanner, nothing is committed. |
-| `quiet_minutes` | `15` | How long a session must be idle before it is synced. |
-| `debounce_minutes` | `10` | Read but not used yet. |
-| `summary_model` | `haiku` | Model for the 3-line summaries. |
-| `summary_cap_per_run` | `30` | Maximum summaries per normal sync. |
-| `claude_dir` | `~/.claude/projects` | Where Claude Code transcripts live. |
-| `codex_dirs` | `~/.codex/sessions`, `~/.codex/archived_sessions` | Where Codex transcripts live. |
-| `codex_home` | `~/.codex` | Codex home (for memories). |
-| `exclude_cwd_globs` | temp folders | Projects whose folder matches are left out. |
+| `skip_headless_single_prompt` | `true` | If `true`, the sync skips `claude -p` / `codex exec` sessions. |
+| `gitleaks_path` | found on `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin` | The path of gitleaks. |
+| `require_gitleaks` | `false`, `install.sh` sets `true` when it finds gitleaks | If `true` and there is no scanner, the sync commits nothing. |
+| `quiet_minutes` | `15` | The time with no change before the sync takes a session. |
+| `debounce_minutes` | `10` | `kb` reads this key but does not use it. |
+| `summary_model` | `haiku` | The model for the 3-line summaries. |
+| `summary_cap_per_run` | `30` | The maximum number of summaries in a normal sync. |
+| `claude_dir` | `~/.claude/projects` | The folder of the Claude Code transcripts. |
+| `codex_dirs` | `~/.codex/sessions`, `~/.codex/archived_sessions` | The folders of the Codex transcripts. |
+| `codex_home` | `~/.codex` | The Codex home folder (for memory files). |
+| `exclude_cwd_globs` | temp folders | The sync ignores projects whose folder matches. |
 
 ## `raw_settle_hours`
 
-The raw copy of a session is written once the session has been idle that many hours. Until then, only its markdown
-follows each change. `0` writes the raw copy at every sync. `--now` does not skip the wait.
+The sync writes the raw copy of a session after the session has no change for this number of hours. Until then, only
+the markdown of the session gets each change. `0` writes the raw copy at each sync. `--now` does not skip this wait.

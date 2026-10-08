@@ -1,105 +1,127 @@
 ---
 title: Pages routine
-description: The optional cloud routine that writes one page per project and one retrospective per week.
+description: The optional cloud routine that writes one page per project and one retro per week.
 ---
 
 # Pages routine
 
-A cloud routine keeps `pages/` of the data repo up to date:
+The pages routine keeps the `pages/` folder of the data repo up to date. It writes these files:
 
-- `pages/projects/<project>.md` — state, decisions, files, errors → fixes, open threads
-- `pages/retro/<YYYY-Www>.md` — one retrospective per closed week
+- `pages/projects/<project>.md`: state, decisions, files, errors → fixes, open threads
+- `pages/retro/<YYYY-Www>.md`: one retro per closed week
 
-Every bullet links to its source session. Read them with `kb page [name] [--section NAME]`; `kb find` lists matching
-pages first; `kb status` shows the routine's last run.
+Each bullet links to its source session. These commands read the pages:
+
+- `kb page [name] [--section NAME]` prints a page.
+- `kb find` lists the matching pages first.
+- `kb status` shows the last run of the pages routine.
 
 ## Set it up
 
-With the `setup` skill, or by hand:
+Use the `setup` skill, or run this command:
 
 ```bash
 kb setup routine
 ```
 
-It pushes `pages/config.json` and the trigger workflow to the data repo, and prints:
+The command pushes `pages/config.json` and the trigger workflow to the data repo. Then it prints these items:
 
-- the routine to create on claude.ai — no schedule and no connectors, because it reads untrusted session text;
-- the two repository secrets to set from the routine's API trigger: `PAGES_ROUTINE_FIRE_URL` and
+- The routine to create on claude.ai. It has no schedule and no connectors, because it reads untrusted session text.
+- The two repository secrets to set from the API trigger of the routine: `PAGES_ROUTINE_FIRE_URL` and
   `PAGES_ROUTINE_FIRE_TOKEN`.
 
 ## How a run works
 
-The routine runs on claude.ai with two repos checked out side by side, your data repo and the retroagent code, and
-follows [`scripts/pages-routine.md`](../scripts/pages-routine.md). Code does the parts that need no judgement:
+The pages routine runs on claude.ai with two repos next to each other: your data repo and the retroagent code. It
+follows [`scripts/pages-routine.md`](../scripts/pages-routine.md). Code does the steps that need no judgement:
 
 | Step | What it does |
 | --- | --- |
-| `kb pages start` | Branch and index. |
-| `kb pages plan` | What to write, from the sessions and memories changed since the watermark in `pages/.state.json`. |
-| `kb pages digest` | Compact input for the model. |
-| `kb pages finish` | Refuses files outside `pages/`, bad front matter, oversized pages and anything that looks like a secret; dates the bullets and moves stale ones to History (see below); records the watermark; commits; pushes, rebasing over session pushes. |
+| `kb pages start` | Selects the branch and builds the index. |
+| `kb pages plan` | Selects what to write, from the sessions and memory files changed since the watermark in `pages/.state.json`. |
+| `kb pages digest` | Makes a compact input for the model. |
+| `kb pages finish` | Refuses files outside `pages/`, bad front matter, pages that are too large and text that looks like a secret. Dates the bullets and moves old bullets to History (see below). Records the watermark, commits and pushes. If sessions were pushed in the meantime, it rebases over them first. |
 
 ## Old and conflicting facts
 
-What was true last month can be wrong this month. So every bullet of a project page shows the date a session last
-confirmed it, at the end of its sources: `(a1b2c3d4, memory demo/some-fact · 2026-10-07)`. `kb pages finish` computes
-the date from the index (a session's start, a memory's modified time); the model never writes it.
+A fact that was true last month can be wrong this month. Thus each bullet of a project page shows the date that a
+session last confirmed it. The date is at the end of its sources: `(a1b2c3d4, memory demo/some-fact · 2026-10-07)`.
+`kb pages finish` calculates the date from the index: the start of a session, or the modified time of a memory file.
+The model never writes the date.
 
-- **Confirmed:** when a new session states the same fact, the routine adds its short id, and the date moves forward.
-- **Contradicted:** when a new session says otherwise, the routine writes the new bullet and moves the old one to
-  History as `superseded <date> by <short>`. When two memories disagree, the newer wins and an open thread asks you to
-  delete the old one.
-- **Sessions from another folder:** a session belongs to its own project and to every project whose repo it changed
-  files in or opened a PR in, wherever it started: your home folder, `~/Repositories`, a Codex scratch folder or a
-  cloud session's `/home/user`. Each plan compares every project page with these sessions and plans the ones the page
-  does not cite. A project's repo folders are learned from its own sessions, so a `docs/` folder in another repo is
-  not the `docs` project.
-- **Sessions that went on:** a session can go on after a page cited it (the page was written while it ran). Each plan
-  checks every page and retro for cited sessions that ended after the page was written, and plans the page again with
-  them as `grown`. `kb pages finish` refuses to skip such a page, or one with a planned session it does not cite.
-- **Finished:** each time a page is updated, the routine checks every open thread against all sessions since the
-  thread's date (not only the new ones). A page whose threads were never checked this way is planned once for that
-  review, even with no new sessions (`threads_reviewed` in `pages/.state.json` lists the pages done). When a session finished it (its PR merged, the task done), the routine moves
-  it to History as `closed <date> by <short>`.
-- **State now, not a log:** "Current state" has one bullet per area as it is now, without details that change at
-  almost every session (version numbers, test counts, timings). Such a bullet stays true longer: new sessions confirm
-  it instead of contradicting it.
-- **Not confirmed for a long time:** in "Current state", "Errors seen → fixes" and "Open threads", a bullet whose date
-  is more than `stale_days` (90; `stale_days_current`, 30, for "Current state"; `stale_days_threads`, 30, for "Open
-  threads") older than the newest bullet on the same page moves to History as `unconfirmed since <date>`. Age counts from the page, not from today: a project you
-  stopped working on keeps its page. "Key decisions" and "Important files" never age out; only a contradiction
-  replaces them.
+- **Confirmed:** when a new session states the same fact, the pages routine adds its short id. The date moves
+  forward.
+- **Contradicted:** when a new session states a different fact, the pages routine writes the new bullet. It moves
+  the old bullet to History as `superseded <date> by <short>`. When two memory files disagree, the newer one wins. An
+  open thread then asks you to delete the old one.
+- **Sessions from another folder:** a session belongs to its own project. It also belongs to each project whose repo
+  it changed files in or opened a PR in. This is true for all start folders:
+  - your home folder
+  - `~/Repositories`
+  - a Codex scratch folder
+  - the `/home/user` folder of a cloud session
 
-Nothing is deleted: History bullets are still found by `kb find`. A bullet whose sources are not in the index gets no
-date and never moves; `finish` lists those in `undated` and the moved ones in `moved`.
+  Each plan compares each project page with these sessions, and plans the sessions that the page does not cite.
+  The repo folders of a project come from its own sessions. Thus a `docs/` folder in another repo is not the `docs`
+  project.
+- **Sessions that continued:** a session can continue after a page cited it, because the page was written while the
+  session ran. Each plan finds cited sessions that ended after the page or retro was written. It plans the page again
+  with them as `grown`. `kb pages finish` refuses to skip such a page. It also refuses to skip a page that does not
+  cite one of its planned sessions.
+- **Finished:** each time the pages routine updates a page, it checks each open thread against all sessions since
+  the thread date. It does not check only the new sessions. If a page never had this check, the plan selects it one
+  time for this review, also with no new sessions. `threads_reviewed` in `pages/.state.json` lists the pages that had
+  the check. When a session finished a thread (its PR merged, or the task is done), the pages routine moves it to
+  History as `closed <date> by <short>`.
+- **Current state, not a log:** "Current state" has one bullet per area, as the area is now. It does not include
+  details that change in almost each session: version numbers, test counts, timings. Such a bullet stays true longer,
+  because new sessions confirm it and do not contradict it.
+- **Not confirmed for a long time:** a bullet moves to History as `unconfirmed since <date>` when its date is older
+  than the newest bullet on the same page by more than a limit. The limits are:
+  - "Current state": `stale_days_current` (30 days)
+  - "Errors seen → fixes": `stale_days` (90 days)
+  - "Open threads": `stale_days_threads` (30 days)
+
+  The age counts from the page, not from today. Thus a project that you stopped work on keeps its page. "Key
+  decisions" and "Important files" never move to History because of age. Only a contradiction replaces them.
+
+The pages routine deletes nothing. `kb find` still finds History bullets. If the sources of a bullet are not in the
+index, the bullet gets no date and never moves. `finish` lists these bullets in `undated`, and the moved bullets in
+`moved`.
 
 ## When it fires
 
-`.github/workflows/pages-trigger.yml` in the data repo decides when to fire the routine, because routine runs are
-counted per day. On each push to `main`, and every 2 hours, it fires only if:
+Routine runs are counted per day. Thus `.github/workflows/pages-trigger.yml` in the data repo decides when to fire the
+pages routine. It checks on each push to `main`, and every 2 hours. It fires only when both of these are true:
 
-- `kb pages due` finds pages to write (about a second, no LLM), and
-- nothing fired it in the last `min_hours_between_fires` hours (3).
+- `kb pages due` finds pages to write. This check takes about a second and uses no LLM.
+- Nothing fired the pages routine in the last `min_hours_between_fires` hours (3).
 
-The routine's own commits change only `pages/` and carry `[skip ci]`, so they never start it. Run the workflow by hand
-with the `force` input to fire at once.
+The commits of the pages routine change only `pages/` and contain `[skip ci]`. Thus they never start it. To fire it
+immediately, run the workflow manually with the `force` input.
 
 ## First run
 
-Until `main` holds `pages/.state.json`, runs write to the `claude/pages-bootstrap` branch only. Review that branch and
-merge it to start the normal runs on `main`.
+Until `main` contains `pages/.state.json`, runs write only to the `claude/pages-bootstrap` branch. Review that branch.
+Then merge it to start the normal runs on `main`.
 
 ## Suggested changes and whether they worked
 
-Each retro ends with "Suggested changes": changes to your agents' environment (a rule, a check, a hook, a tool). Each
-bullet starts with an id, like `[s-1a2b3c]`. `kb pages finish` records them in `pages/suggestions.json`. When the
-same problem comes back in a later week, the retro cites the same id, so a suggestion that keeps coming back is easy
-to see.
+Each retro ends with "Suggested changes". These are changes to the environment of your agents: a rule, a check, a
+hook or a tool. Each bullet starts with an id, like `[s-1a2b3c]`. The model starts a new suggestion with `[new]`, and
+`kb pages finish` gives it its id. `kb pages finish` records the suggestions in `pages/suggestions.json`. When the
+same problem returns in a later week, the retro cites the same id. Thus you can see a suggestion that returns many
+times.
 
-The routine also records the decisions on them in `pages/decisions.json`, from evidence in the sessions: `applied`
-when a session made the change, `accepted` or `rejected` when you asked for it or said no in your own words (or a
-`feedback` memory says no). Each decision cites its source, and `kb pages finish` takes its date from that source, so
-the routine cannot invent one:
+The pages routine also records the decisions on the suggestions in `pages/decisions.json`. It finds the evidence in
+the sessions:
+
+- `applied`: a session made the change.
+- `accepted`: you asked for the change in your own words.
+- `rejected`: you said no in your own words, or a `feedback` memory file says no.
+
+Each decision cites its source. `kb pages finish` takes the date from that source, so the pages routine cannot invent
+a date:
 
 ```json
 {
@@ -109,23 +131,35 @@ the routine cannot invent one:
 }
 ```
 
-You can add or change entries by hand too. An entry whose `by` is not `"routine"` is yours: the routine never changes
-or removes it, and `finish` refuses a run that tries.
+You can also add or change entries manually. An entry whose `by` is not `"routine"` is yours. The pages routine never
+changes or removes it, and `finish` refuses a run that tries to.
 
-`kb suggestions` shows each open suggestion with a verdict. A suggestion that names an error signature (from
-`kb stats errors`) is measured:
+`kb suggestions` shows each open suggestion with a verdict. If a suggestion names an error signature (from
+`kb stats errors`), `kb suggestions` measures it:
 
-- not applied: `still happening` (the error was seen in the last 14 days) or `not seen in 14 days`;
-- applied on a date: `came back` (sessions after that date still have the error), `fixed` (not seen for 7 days or
-  more since then), or `too early to tell`.
+- Not applied:
+  - `still happening`: the error occurred in the last 14 days.
+  - `not seen in 14 days`.
+- Applied on a date:
+  - `came back`: sessions after that date still have the error.
+  - `fixed`: the error did not occur for 7 days or more since that date.
+  - `too early to tell`.
 
-`kb suggestions --all` also lists the fixed and rejected ones. The next retros read this list: they do not suggest a
-rejected change again, and they rank a change that came back higher.
+`kb suggestions --all` also lists the fixed and rejected suggestions. The next retros read this list. They do not
+suggest a rejected change again. They give a higher rank to a change that came back.
 
 ## Settings
 
-`pages/config.json` in the data repo: projects to skip, minimum sessions for a page, batch sizes, retro time zone,
-`stale_days` / `stale_days_current` / `stale_days_threads` (see [Old and conflicting facts](#old-and-conflicting-facts)), and
-`max_current_bullets` (10) / `max_open_threads` (8): `kb pages finish` refuses a project page with more bullets in
-"Current state" or "Open threads", so the routine keeps them to the state now and closes finished threads.
-Local `kb sync` never touches `pages/`.
+`pages/config.json` in the data repo contains these settings:
+
+- the projects to skip
+- the minimum number of sessions for a page
+- the batch sizes
+- the time zone of the retros
+- `stale_days`, `stale_days_current` and `stale_days_threads` (see
+  [Old and conflicting facts](#old-and-conflicting-facts))
+- `max_current_bullets` (10) and `max_open_threads` (8)
+
+`kb pages finish` refuses a project page with more bullets than these limits in "Current state" or "Open threads".
+Thus the pages routine keeps these sections to the current state, and closes finished threads. A local `kb sync`
+never changes `pages/`.

@@ -8,14 +8,14 @@ description: Set up retroagent on a machine, give it a unique host name, and kee
 ## Requirements
 
 - git
-- Python 3.9+ with SQLite FTS5 (macOS's `/usr/bin/python3` works)
-- [gitleaks](https://github.com/gitleaks/gitleaks) 8.25 or newer — strongly recommended (`brew install gitleaks`)
-- The GitHub CLI `gh`, to create the data repo and the routine's secrets
+- Python 3.9+ with SQLite FTS5 (`/usr/bin/python3` on macOS works)
+- [gitleaks](https://github.com/gitleaks/gitleaks) 8.25 or newer, strongly recommended (`brew install gitleaks`)
+- The GitHub CLI `gh`, to create the data repo and the secrets of the pages routine
 
 ## Let your agent do it
 
-Paste this prompt into Claude Code or Codex. The agent clones the code and follows the same steps as the `setup`
-skill, asking you one question at a time.
+Paste this prompt into Claude Code or Codex. The agent clones the code and does the same steps as the `setup` skill.
+It asks you one question at a time.
 
 ```text
 Set up retroagent on this machine for me: https://github.com/gabe4coding/retroagent
@@ -37,15 +37,15 @@ Set up retroagent on this machine for me: https://github.com/gabe4coding/retroag
 /retroagent:setup
 ```
 
-The `setup` skill asks a few questions and runs the manual steps below for you:
+The `setup` skill asks you about these items. Then it does the manual steps below for you.
 
-- a new or an existing data repo
-- this machine's name (its `host`)
-- first sync now or later
+- a new data repo or an existing one
+- the name of this machine (its `host`)
+- the first sync now or later
 - automatic syncs and updates
 - the [pages routine](./pages-routine.mdx) now or later
 
-Run it again at any time to finish or change the setup.
+To finish or change the setup, run the skill again at any time.
 
 ## By hand, or for Codex only
 
@@ -58,40 +58,51 @@ kb backfill --summaries       # 3-line summaries with Haiku (slow; uses your Cla
 kb enable                     # sync automatically when a session starts
 ```
 
-In Codex, open it once and trust the retroagent hook with `/hooks`.
+If you use Codex, open Codex once and trust the retroagent hook with `/hooks`.
 
 ### What `install.sh` does
 
-1. Clones the data repo into `~/.retroagent-data` (`--root DIR` changes that).
-2. Pushes the base files the data repo lacks (`README.md`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`) in one commit.
-3. Writes `~/.config/retroagent/config.json` with `auto_sync: false` (see [Configuration](./configuration.mdx)).
-4. Installs the Claude Code and Codex plugins from the code clone.
-5. Links `kb` into `~/.local/bin`.
-6. Builds the search index.
+1. It clones the data repo into `~/.retroagent-data`. The `--root DIR` option changes that folder.
+2. It writes `~/.config/retroagent/config.json` (see [Configuration](./configuration.mdx)). If the config has no
+   `auto_sync` value, it sets `auto_sync: false`.
+3. It pushes the base files that the data repo does not have (`README.md`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`).
+   It pushes them in one commit.
+4. It installs the Claude Code and Codex plugins from the code clone.
+5. It links `kb` into `~/.local/bin`.
+6. It builds the search index.
 
-It starts no sync. Run it again at any time; it keeps your other config keys.
+If `auto_sync` is already `true`, `install.sh` starts a sync in the background. Otherwise it starts no sync. To
+prevent that sync, add `--no-sync`.
+
+You can run `install.sh` again at any time. It keeps your other config keys.
 
 ## One host name per machine
 
-Each machine needs its own `host` (default: the short hostname). Two machines with the same `host` would write the
-same folders.
+Each machine must have its own `host`. The default is the short hostname. Two machines with the same `host` write
+the same folders.
 
-The first sync commits `sessions/<host>/.machine-id`, a copy of the random id in `.kb/machine-id`. A sync or install
-on a machine with another id stops with `host '<host>' belongs to another machine`.
+Each machine has a random id in `.kb/machine-id`. The first sync commits a copy of this id as
+`sessions/<host>/.machine-id`. If a machine has a different id, a sync or install on it stops with
+`host '<host>' belongs to another machine`.
 
-- Never delete `.kb/machine-id`.
-- A machine that wrote `sessions/<host>` before these markers existed claims it once with `install.sh --force-host`.
-- After a new clone or a lost `.kb/machine-id`, the machine that owns the host takes its id back with
-  `install.sh --host <host> --force-host`: it copies the committed marker into `.kb/machine-id`. Run it only on that
-  machine; two machines with one id write the same folders.
+- Do not delete `.kb/machine-id`.
+- If a machine wrote `sessions/<host>` before retroagent added these markers, run `install.sh --force-host` once on
+  it. This claims the host.
+- After a new data clone or a lost `.kb/machine-id`, run `install.sh --host <host> --force-host` on the machine that
+  owns the host. The command copies the committed marker into `.kb/machine-id`, and the machine gets its id back.
+- Run `install.sh --force-host` only on the machine that owns the host. Two machines with one id write the same
+  folders.
 
 ## Update
 
-- `kb update` pulls the code clone (fast-forward only) and runs `install.sh` again (plugins, link, config).
-- `kb enable updates` does the pull once a day from the background sync instead, and refreshes the plugins when their
-  version changes.
+- `kb update` pulls the code clone (fast-forward only). Then it runs `install.sh` again for the plugins, the `kb`
+  link and the config.
+- `kb enable updates` makes the background sync do the pull once a day instead. When the plugin version changes, it
+  also refreshes the plugins.
 
-Both run the latest `main` of the code repo: read what changed if you care.
+Both commands run the latest `main` of the code repo. To know what changed, read the new commits on `main`.
 
-Every entry point runs one copy of the code: `~/.local/bin/kb` links to the clone, and a plugin's cached copy (Claude
-Code, Codex) forwards to the clone recorded as `code` in the config.
+All entry points run the same copy of the code:
+
+- `~/.local/bin/kb` links to the code clone.
+- The cached copy of a plugin (Claude Code, Codex) forwards to the code clone in the `code` config key.
