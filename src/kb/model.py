@@ -51,7 +51,9 @@ class Session:
     subagents: list = field(default_factory=list)   # list[Session] (Claude only)
     skipped: dict = field(default_factory=dict)     # unhandled record type -> count
     headless: bool = False                          # started by `claude -p` / `codex exec`, not by a person at a prompt
-    elsewhere: str = ""                             # a subagent another session writes: the md file that holds it
+    # Set only on a subagent that another session's markdown file already holds: the path of that file. The
+    # subagent is then linked, not written a second time.
+    elsewhere: str = ""
 
     @property
     def user_turns(self) -> int:
@@ -73,13 +75,15 @@ class Session:
 @dataclass
 class Unit:
     """The files that make up one session on disk (main + subagents, or Codex segments)."""
-    key: str
-    agent: str
-    paths: list
-    main: str
-    shared: dict = field(default_factory=dict)     # subagent id -> {main transcript: its copy}, for every session
-                                                   # that holds a copy, when there are several (Claude only)
-    related: list = field(default_factory=list)    # the other holders' files: they decide who writes a shared one
+    key: str                # the id of the unit in the sync state: the main transcript path (Claude), "codex:<thread>"
+    agent: str              # claude | codex
+    paths: list             # all files of the unit; for Claude, the main transcript first, then the subagents
+    main: str               # the main transcript (Claude) or the newest segment (Codex)
+    # Claude only: the subagents that several sessions hold a copy of (a resumed or forked session copies them).
+    # Subagent id -> {main transcript of each holder: that holder's copy}.
+    shared: dict = field(default_factory=dict)
+    # The other holders' main transcripts and copies. They are in the fingerprint: they decide who writes a shared one.
+    related: list = field(default_factory=list)
 
     def fingerprint(self) -> str:
         """sha1 of path, size, mtime and ctime of every file (related files too). Raises OSError if a file is gone."""

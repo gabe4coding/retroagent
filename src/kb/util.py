@@ -20,7 +20,7 @@ def iso_utc(ts) -> str:
     try:
         if isinstance(ts, (int, float)):
             v = float(ts)
-            if v > 1e12:
+            if v > 1e12:                        # epoch milliseconds: 1e12 seconds is far in the future
                 v /= 1000.0
             d = _dt.datetime.fromtimestamp(v, tz=_dt.timezone.utc)
         else:
@@ -72,6 +72,8 @@ def head_lines(text: str, n: int = 3, limit: int = 300) -> str:
 
 def slug(text: str, limit: int = 40) -> str:
     s = re.sub(r"[^a-z0-9._-]+", "-", (text or "").lower()).strip("-.")
+    # The cut can leave a "-" or "." at the end, so strip again. If nothing is left, use "unknown",
+    # also cut to limit: the result is never longer than limit.
     return (s or "unknown")[:limit].strip("-.") or "unknown"[:limit]
 
 
@@ -109,6 +111,8 @@ def main_checkout(cwd: str) -> str:
 def project_from_cwd(cwd: str) -> str:
     if not cwd:
         return "unknown"
+    # The Claude desktop app starts a session in a folder under .../Claude/scratch-workspaces/<id>/. The folder
+    # name says nothing about the work, so all these sessions share the project "scratch".
     if "/scratch-workspaces/" in cwd:
         return "scratch"
     return slug(main_checkout(cwd).rsplit("/", 1)[-1])

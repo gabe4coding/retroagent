@@ -57,37 +57,26 @@ def errors(con):
                 yield parent or sid, short_id(parent) if parent else short, project, m.group(2) if m else ""
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--semantic", action="store_true", help="also the semantic rule (needs an embedding server)")
-    ap.add_argument("--start", action="store_true", help="start kb's embedding server first")
-    ap.add_argument("--min", type=float, help="semantic limit (default: hint_semantic_min of the config)")
-    ap.add_argument("--keyword-min", type=int, help="keyword minimum (default: hint_keyword_min of the config)")
-    ap.add_argument("--show", type=int, default=0, help="print this many hints of each rule")
-    args = ap.parse_args(argv)
-    cfg = config_mod.load()
-    if args.min is not None:
-        cfg.hint_semantic_min = args.min
-    if args.keyword_min is not None:
-        cfg.hint_keyword_min = args.keyword_min
+def _endpoint(args, cfg):
+    """(embedding endpoint or None, problem). The endpoint is None without --semantic. problem is "" or the reason."""
+    if not args.semantic:
+        return None, ""
+    if args.start and not cfg.embed_url:
+        try:
+            embed_runtime.Server().start(wait=True)
+        except embed_runtime.EmbedUnavailable as e:
+            return None, f"cannot start the embedding server: {e}"
+    ep = hint.endpoint(cfg)
+    if ep is None:
+        return None, "no embedding server runs; use --start, or leave out --semantic"
+    return ep, ""
 
-    ep = None
-    if args.semantic:
-        if args.start and not cfg.embed_url:
-            try:
-                embed_runtime.Server().start(wait=True)
-            except embed_runtime.EmbedUnavailable as e:
-                print(f"cannot start the embedding server: {e}")
-                return 2
-        ep = hint.endpoint(cfg)
-        if ep is None:
-            print("no embedding server runs; use --start, or leave out --semantic")
-            return 2
 
-    con = connect_readonly(cfg.kb_dir / "index.sqlite")
+def _replay(con, cfg, ep):
+    """Run the hint steps on every tool error. Returns (count, pages, shown, bands)."""
     pages, count, shown, seen = {}, Counter(), {"keyword": [], "semantic": []}, {"keyword": set(), "semantic": set()}
     state = MemoryState()
-    bands = Counter()
+    bands = Counter()                                       # best cosine, cut down to 0.01 -> number of errors
     for root, short, project, err in errors(con):
         count["errors"] += 1
         if not err:
@@ -112,17 +101,17 @@ def main(argv=None) -> int:
         rules = {"keyword": None}
         if ep is not None:
             rules["semantic"] = ep
-        for method, rule_ep in rules.items():
-            todo = items
+        for method in rules:
             if method == "semantic":
-                vecs = hint.bullet_vectors(todo, project, ep, state)
+                vecs = hint.bullet_vectors(items, project, ep, state)
+                # 30 s, not the hook's hint.EMBED_TIMEOUT: a replay can wait for a slow embedding call.
                 q = embed.embed([embed.query_text(err)], ep.url, ep.key, timeout=30)[0]
-                best = max(((b, hint.cosine(q, vecs[b.key])) for b in todo), key=lambda x: x[1], default=None)
+                best = max(((b, hint.cosine(q, vecs[b.key])) for b in items), key=lambda x: x[1], default=None)
                 if best:
-                    bands[round(best[1] - 0.005, 2)] += 1
+                    bands[round(best[1] - 0.005, 2)] += 1     # rounds down to 0.01: 0.789 goes in band 0.78
                 hit = best if best and best[1] >= cfg.hint_semantic_min else None
             else:
-                hit = hint.keyword_match(err, todo, cfg.hint_keyword_min)
+                hit = hint.keyword_match(err, items, cfg.hint_keyword_min)
             if hit is None:
                 continue
             b, score = hit
@@ -133,8 +122,11 @@ def main(argv=None) -> int:
             own = b.source.endswith(short)
             count[f"{method} self"] += own
             shown[method].append((short, project, round(score, 3), own, err, b.full))
+    return count, pages, shown, bands
 
-    con.close()
+
+def _print_report(args, cfg, ep, count, pages, shown, bands) -> None:
+    """Print the counts, the cosine bands (with --semantic) and the first --show hints of each rule."""
     print(f"tool errors: {count['errors']}")
     for k in ("no message", "gated out", "denied", "no page bullets", "checked"):
         print(f"  {k}: {count[k]}")
@@ -148,7 +140,7 @@ def main(argv=None) -> int:
         total = 0
         for band in sorted(bands, reverse=True):
             total += bands[band]
-            if band >= 0.70:
+            if band >= 0.70:                                # the lower bands are counted but not printed
                 print(f"    >= {band:.2f}: {total}")
         kw = {(r[0], r[5]) for r in shown["keyword"]}
         sem = {(r[0], r[5]) for r in shown["semantic"]}
@@ -157,6 +149,29 @@ def main(argv=None) -> int:
         for short, project, score, own, err, bullet in shown[method][: args.show]:
             print(f"\n[{method} {score}{' self' if own else ''}] {short} {project}\n  error:  {err[:160]}\n"
                   f"  bullet: {bullet[:200]}")
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--semantic", action="store_true", help="also the semantic rule (needs an embedding server)")
+    ap.add_argument("--start", action="store_true", help="start kb's embedding server first")
+    ap.add_argument("--min", type=float, help="semantic limit (default: hint_semantic_min of the config)")
+    ap.add_argument("--keyword-min", type=int, help="keyword minimum (default: hint_keyword_min of the config)")
+    ap.add_argument("--show", type=int, default=0, help="print this many hints of each rule")
+    args = ap.parse_args(argv)
+    cfg = config_mod.load()
+    if args.min is not None:
+        cfg.hint_semantic_min = args.min
+    if args.keyword_min is not None:
+        cfg.hint_keyword_min = args.keyword_min
+    ep, problem = _endpoint(args, cfg)
+    if problem:
+        print(problem)
+        return 2
+    con = connect_readonly(cfg.kb_dir / "index.sqlite")
+    count, pages, shown, bands = _replay(con, cfg, ep)
+    con.close()
+    _print_report(args, cfg, ep, count, pages, shown, bands)
     return 0
 
 

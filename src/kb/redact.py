@@ -1,16 +1,19 @@
-"""Secret redaction. A match becomes [REDACTED:<rule>]; a named group 'keep' is preserved before it.
+"""Secret redaction: replace each secret in a text with [REDACTED:<rule>].
 
-This is the main barrier before transcripts are committed, so rules are ordered from specific to generic and
-written with three properties in mind:
-- JSON-safe: a rule never consumes a lone backslash, a closing quote or a newline it does not own, so redacting a
-  serialized JSON line keeps it valid (a backslash is only consumed together with the quote or character it escapes).
-- Linear time: every scan is bounded (scheme length, key body length, digit look-ahead, the 12 words between a command and
-  its password flag, a name suffix of 20 characters), so 1 MB lines are cheap.
-- Idempotent: placeholders start with "[", which no value pattern accepts.
-- Scanner-proof: what a text only mentions (a private-key marker in code or a test fixture) is rewritten, not removed,
-  so that a secret scanner does not read it as a key. See "private-key-marker" below.
-Each rule also lists hint substrings. A text that holds none of them cannot match, so its regex is skipped
-(a transcript has hundreds of thousands of short strings). A test checks that this never changes the result.
+A rule is a named regex. If the match has a named group "keep" (for example the name in `password=...`), that text
+stays before the placeholder. This is the main barrier before transcripts are committed. So the rules go from
+specific to generic, and each rule has four properties:
+- JSON-safe: redacting a line of serialized JSON leaves valid JSON. A rule takes a backslash only together with
+  the character it escapes, and never takes a closing quote or a newline that is not part of the secret.
+- Linear time: each scan that could run long has an upper bound (the comments on the rules give them). So a
+  1 MB line stays cheap.
+- Idempotent: a second run changes nothing. A placeholder starts with "[", and no value pattern accepts "[".
+- Scanner-proof: a private-key marker that a text only mentions is rewritten, not removed. Otherwise a secret
+  scanner reads it as a key (see "private-key-marker").
+
+Hints: each rule also has a list of lower-case substrings. A text that holds none of them cannot match the rule,
+so redact skips that regex. This saves time: a transcript has hundreds of thousands of short strings. A test checks
+that the hints never change the result.
 """
 from __future__ import annotations
 
@@ -18,25 +21,30 @@ import re
 from collections import Counter
 
 # Whitespace inside key material: a real one, or one written as a JSON escape (backslash + n/r/t).
-_WS = r"(?:[ \t\r\n]|\\[nrt])"
-_B64 = r"[A-Za-z0-9+/=]"
+_KEY_WHITESPACE = r"(?:[ \t\r\n]|\\[nrt])"
+_BASE64_CHAR = r"[A-Za-z0-9+/=]"
 
-_PK_BEGIN = r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
-_PK_END = r"-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
+_PRIVATE_KEY_BEGIN = r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
+_PRIVATE_KEY_END = r"-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
 # A key body is PEM/PGP text: base64, header lines (Proc-Type: ..., Version: ...) and whitespace. It never holds a
 # quote or other punctuation, so a match cannot cross from one JSON string (or markdown turn) into another. A "-" that
 # opens a BEGIN/END marker is not body either: a scan stops at the next marker, so many markers stay linear.
-_PK_BODY = r"(?:[A-Za-z0-9+/=:,.\s_]|-(?!----(?:BEGIN|END))|\\[nrt])"
+_PRIVATE_KEY_BODY_CHAR = r"(?:[A-Za-z0-9+/=:,.\s_]|-(?!----(?:BEGIN|END))|\\[nrt])"
 
 # Words that name a secret in an assignment (name=value, "name": "value"). The name may carry a prefix
 # (DB_PASSWORD, STRIPE_API_KEY): only a letter or digit directly before it blocks the match.
 _KEYWORDS = (r"password|passwd|secret|client[_-]?secret|secret[_-]?key|api[_-]?key|access[_-]?token|auth[_-]?token"
              r"|refresh[_-]?token|private[_-]?key|app[_-]?key|session[_-]?token|api[_-]?token|token")
-_Q = r"""\\?["']"""                    # a quote, or a quote escaped for JSON
+_QUOTE = r"""\\?["']"""                # a quote, or a quote escaped for JSON
 _NAME_START = r"(?<![A-Za-z0-9])"
 # After the name: either `[=:]` (the name may be unquoted, the value may or may not be quoted), or a quoted name
 # followed by `[=:]` and then a quoted value. A quoted name with a bare value is a JSON number/bool/null: leave it.
-_ASSIGN = rf"(?:[ \t]*[=:][ \t]*(?:{_Q})?|{_Q}[ \t]*[=:][ \t]*{_Q})"
+_ASSIGN = rf"(?:[ \t]*[=:][ \t]*(?:{_QUOTE})?|{_QUOTE}[ \t]*[=:][ \t]*{_QUOTE})"
+# One character of a quoted value. Use it after a group that captured the opening quote:
+#   oq = the whole opening quote, bs = the backslash before it (set only for a JSON-escaped quote), q = the quote.
+# A character is anything but a backslash, a line break, a double quote or the closing quote q. A backslash is taken
+# only together with the character it escapes. When bs is set, a backslash + q is the closing quote: it ends the value.
+_QUOTED_CHAR = r"""(?:(?!(?P=q))[^\\\r\n"]|\\(?(bs)(?!(?P=q)))[^\r\n])"""
 _PLACEHOLDER = r"(?![$<*{\[])"           # ${VAR}, <value>, ****, {{ x }}, [REDACTED...]
 _VALUE_END = r"""\s"'\\,;)}"""
 # Names whose value is a password even without a digit. PGPASSWORD and MYSQL_PWD are env vars that no prefix rule
@@ -57,11 +65,15 @@ def _add(name: str, pattern: str, hints: tuple, flags: int = 0, passes: int = 1,
 
 
 # --- private keys (a full block, then a block that was cut off)
-_add("private-key", _PK_BEGIN + _PK_BODY + "{0,20000}" + _PK_END, ("private key",))
+# Both private-key rules read at most 20000 key characters: the bound keeps the scan linear.
+_add("private-key", _PRIVATE_KEY_BEGIN + _PRIVATE_KEY_BODY_CHAR + "{0,20000}" + _PRIVATE_KEY_END, ("private key",))
 # A key that lost its END marker is cut only when 40 base64 characters follow in one unbroken run. A line break (and the
 # indentation after it) does not break the run, a space does: prose after a bare BEGIN marker stays.
-_BRK = r"(?:\r?\n|\\[nr])[ \t]*"
-_add("private-key", _PK_BEGIN + rf"(?={_WS}*(?:{_B64}(?:{_BRK})*){{40}})(?:{_B64}|{_WS}){{1,20000}}", ("private key",))
+_LINE_BREAK = r"(?:\r?\n|\\[nr])[ \t]*"
+_add("private-key", _PRIVATE_KEY_BEGIN
+     + rf"(?={_KEY_WHITESPACE}*(?:{_BASE64_CHAR}(?:{_LINE_BREAK})*){{40}})"
+     + rf"(?:{_BASE64_CHAR}|{_KEY_WHITESPACE}){{1,20000}}",
+     ("private key",))
 # A marker that is left (no key body, a cut-off key, regex source code, a test fixture built by string concatenation) is not
 # a key, but a secret scanner reads it as one. PRIVATE KEY becomes PRIVATE-KEY in the BEGIN and the END marker. This runs
 # after the rules above, so a real key is redacted whole first. At most 100 characters of words sit between the two.
@@ -101,9 +113,10 @@ _add("bearer", r"(?P<keep>\bBearer\s+)(?=[A-Za-z0-9._~+/-]*\d)[A-Za-z0-9._~+/-]{
 _add("http-basic", r"(?P<keep>\bBasic\s+)(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{12,}={0,2}", ("basic",))
 # not `date -u +%Y-%m-%d...` (a format) or `docker run -u 1000:1000` (uid:gid)
 _add("curl-user", r"""(?P<keep>(?:^|\s)(?:-u|--user)\s+["']?(?![+%])(?!\d+:)[^\s:"']+:)[^\s"'\\]+""", ("-u",))
+# The URL scheme is at most 32 characters: the bound keeps the scan linear.
 _add("url-credentials", r"""(?P<keep>\b[a-z][a-z0-9+.-]{0,31}://[^\s:/@"']*:)[^\s@/"']+(?=@)""", ("://",), re.I)
 _add("aws-secret",
-     rf"(?P<keep>aws_secret_access_key(?:{_Q})?[ \t]*[=:][ \t]*(?:{_Q})?)[A-Za-z0-9/+=]{{40}}",
+     rf"(?P<keep>aws_secret_access_key(?:{_QUOTE})?[ \t]*[=:][ \t]*(?:{_QUOTE})?)[A-Za-z0-9/+=]{{40}}",
      ("aws_secret_access_key",), re.I)
 # A secret in a URL query string (or a form body): the parameter name stays, the value goes. The name must be the whole name
 # (`?pageToken=`, `?query=`, `?monkey=` are not keys). The value is 8 or more characters up to `&`, `#`, `;`, white space, a
@@ -119,9 +132,9 @@ _add("url-query-secret",
 # The value is a run of whole tokens (a character, or a backslash + its character), so no escape is cut in half.
 # A bare double quote ends it even inside single quotes: in a serialized JSON line it is a string delimiter.
 _add("secret-assignment",
-     rf"(?P<keep>{_NAME_START}(?:{_PASSWORDS}|secret(?:[_-]?key)?)(?:{_Q})?[ \t]*[=:][ \t]*"
+     rf"(?P<keep>{_NAME_START}(?:{_PASSWORDS}|secret(?:[_-]?key)?)(?:{_QUOTE})?[ \t]*[=:][ \t]*"
      r"""(?P<oq>(?P<bs>\\)?(?P<q>["'])))"""
-     r"""(?![$<*{\[/~])(?:(?!(?P=q))[^\\\r\n"]|\\(?(bs)(?!(?P=q)))[^\r\n]){4,200}(?=(?(bs)\\)(?P=q))""",
+     rf"""(?![$<*{{\[/~]){_QUOTED_CHAR}{{4,200}}(?=(?(bs)\\)(?P=q))""",
      ("pass", "pwd", "secret"), re.I)
 # An unquoted password of 6 or more characters, digit or not. A dotted identifier (process.env.X, req.body.pw) is code
 # that reads a password, not a password: it ends at white space, a quote, a delimiter or a bracket.
@@ -171,7 +184,7 @@ _add("secret-assignment",
 # A quoted value does not start with `,` `:` `]` `}` or white space either: in serialized JSON a plain quote right after
 # "--pass " is the end of the string, and what follows it is JSON structure that must stay.
 _FLAG_QUOTE = r"""(?P<oq>(?P<bs>\\)?(?P<q>["']))?"""     # a quote, or a quote escaped for JSON; stays in the "keep" group
-_FLAG_VALUE = (r"""(?(oq)(?![$<*{\[/~,:\]}\s])(?:(?!(?P=q))[^\\\r\n"]|\\(?(bs)(?!(?P=q)))[^\r\n]){1,200}(?=(?(bs)\\)(?P=q))"""
+_FLAG_VALUE = (rf"""(?(oq)(?![$<*{{\[/~,:\]}}\s]){_QUOTED_CHAR}{{1,200}}(?=(?(bs)\\)(?P=q))"""
                r"""|(?![$<*{\[/~"'\\])[^\s"'\\;&|<>)}`]{1,200})""")
 # One word of a command line: it ends at white space and at a command separator (`;`, `&`, `|`, a line break written as
 # a real one or as a JSON escape), so an option is only looked for in the same command. 12 words of up to 80 characters.
@@ -199,14 +212,17 @@ _add("password-flag", rf"(?P<keep>(?<![\w-])--(?:{_FLAGS})[ \t]+(?!-)(?!{_PROSE}
 # of the name, so a long name is read once and not once per word it holds.
 _NAME_HOLDS = r"(?=[A-Za-z0-9_-]{0,80}?(?:password|passwd|secret|token|credentials?|login|api[-_]?key))"
 _NAME_SAYS_WHERE = r"(?<![-_]file)(?<![-_]path)(?<![-_]dir)(?<![-_]url)(?<![-_]stdin)(?<![-_]env)(?<![-_]name)"
-_FLAG2 = rf"(?<![\w-])--{_NAME_HOLDS}[A-Za-z0-9_-]+{_NAME_SAYS_WHERE}"
-_TOK = r"""(?:(?!(?P=q))[^\\\r\n"]|\\(?(bs)(?!(?P=q)))[^\r\n])"""
-_BARE = r"""[^\s"'\\;&|<>)}`]"""
-_FLAG2_VALUE = (rf"""(?(oq)(?![$<*{{\[/~.,:\]}}\s-])(?={_TOK}{{0,200}}?\d){_TOK}{{8,200}}(?=(?(bs)\\)(?P=q))"""
-                rf"""|(?![$<*{{\[/~.\-"'\\])(?={_BARE}{{0,200}}?\d){_BARE}{{8,2000}})""")
-_FLAG2_HINTS = ("password", "passwd", "secret", "token", "credential", "login", "api-key", "api_key", "apikey")
-_add("password-flag", rf"(?P<keep>{_FLAG2}={_FLAG_QUOTE}){_FLAG2_VALUE}", _FLAG2_HINTS, re.I)
-_add("password-flag", rf"(?P<keep>{_FLAG2}[ \t]+(?!-)(?!id=){_FLAG_QUOTE}){_FLAG2_VALUE}", _FLAG2_HINTS, re.I)
+_CREDENTIAL_FLAG = rf"(?<![\w-])--{_NAME_HOLDS}[A-Za-z0-9_-]+{_NAME_SAYS_WHERE}"
+_BARE_CHAR = r"""[^\s"'\\;&|<>)}`]"""        # one character of an unquoted value
+_CREDENTIAL_FLAG_VALUE = (
+    rf"""(?(oq)(?![$<*{{\[/~.,:\]}}\s-])(?={_QUOTED_CHAR}{{0,200}}?\d){_QUOTED_CHAR}{{8,200}}(?=(?(bs)\\)(?P=q))"""
+    rf"""|(?![$<*{{\[/~.\-"'\\])(?={_BARE_CHAR}{{0,200}}?\d){_BARE_CHAR}{{8,2000}})""")
+_CREDENTIAL_FLAG_HINTS = ("password", "passwd", "secret", "token", "credential", "login", "api-key", "api_key",
+                          "apikey")
+_add("password-flag", rf"(?P<keep>{_CREDENTIAL_FLAG}={_FLAG_QUOTE}){_CREDENTIAL_FLAG_VALUE}", _CREDENTIAL_FLAG_HINTS,
+     re.I)
+_add("password-flag", rf"(?P<keep>{_CREDENTIAL_FLAG}[ \t]+(?!-)(?!id=){_FLAG_QUOTE}){_CREDENTIAL_FLAG_VALUE}",
+     _CREDENTIAL_FLAG_HINTS, re.I)
 # The short options below only mean a password after their own command (`mkdir -p`, `ssh -p 2222`, `grep -a` do not).
 # For mysql, redis-cli and az the command word is part of the match, so a second flag of the same command is only reached
 # by running the rule again (passes=3): the first match has used up the command word. A run that finds nothing ends the
@@ -225,6 +241,12 @@ _add("password-flag", rf"(?P<keep>(?<![\w.-])az{_gap('az')}[ \t]+-p[ \t]+(?!-){_
 
 
 def _run(text: str, use_hints: bool):
+    """Apply every rule in order. Returns (redacted text, Counter of rule name -> matches).
+
+    use_hints=True skips a rule when the text holds none of its hints: redact does this. use_hints=False runs every
+    rule; the tests use it to check that the hints never change the result. A rule with passes > 1 runs again while
+    it still finds something, at most passes times.
+    """
     counts: Counter = Counter()
     low = text.lower() if use_hints else ""
     for (name, rx), hints, passes, repl in zip(_RULES, _HINTS, _PASSES, _REPLS):
