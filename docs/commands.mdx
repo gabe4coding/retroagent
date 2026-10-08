@@ -19,7 +19,7 @@ Run `kb --help` to see all the commands. To see the flags of a command, add `--h
 | `kb show <id>` | Only the part of a session that you need (`--turn N --around K`, `--grep PATTERN`). |
 | `kb stats [report]` | Ready-made analytics: overview, projects, agents, outcomes, tags, daily, subagents, errors. `kb stats errors [--since 7d] [--project P]` lists the tool errors that occur in two or more sessions. |
 | `kb suggestions [--all] [--json]` | The changes that weekly retros suggested, the decisions on them, and if the error that each change targets still occurs. See [Suggested changes and whether they worked](./pages-routine.mdx#suggested-changes-and-whether-they-worked). |
-| `kb brief [--project P] [--hook]` | What a new session in this project gets at the start: a pointer to the project page and the accepted suggestions for its repo, or nothing. See [Brief at session start](#brief-at-session-start). |
+| `kb brief [--project P] [--hook]` | What a new session in this project gets at the start: a pointer to the project page, the accepted suggestions for its repo and one line about `kb find`. See [Brief at session start](#brief-at-session-start). |
 | `kb hint --event error [--hook]` | A past fix for a failed tool call. It reads the hook event JSON on stdin and prints one line or nothing. `--hook` prints the hook output JSON. See [Hints when a command fails](#hints-when-a-command-fails). |
 | `kb sql "<SELECT …>" [--width N]` | Read-only SQL on the index (tables: `sessions`, `turns`, `pages`, `memories`). If a cell is longer than `N` characters (default 80), `kb sql` cuts it and adds `…` at the end. `--width 0` never cuts a cell. |
 
@@ -142,17 +142,23 @@ text:
 Project page of demo: `kb page demo` (2 open threads, 1 error → fix). Read it when the task needs it.
 Changes the owner accepted for the demo repo (`kb suggestions`):
 - [s-1a2b3c] Rules · wait for CI with a watch command, not sleep
+Past Claude Code and Codex sessions of all projects are searchable: `kb find "<words>"` (skill kb-search). Look there before you debug an error seen before or redo past work.
 ```
 
 On purpose, the brief holds no facts from the page. These facts can be out of date. The agent reads the page with
 `kb page` when the task needs it.
 
 The second part lists only the suggestions with an `accepted` decision whose `repo` is this project (see
-[Suggested changes](./pages-routine.mdx#suggested-changes-and-whether-they-worked)). With no page and no accepted
-suggestion, the brief is empty. The full brief stays under 1,200 characters. It reads three files of the data clone
+[Suggested changes](./pages-routine.mdx#suggested-changes-and-whether-they-worked)). The last line is always there,
+also when the project has no page and no accepted suggestion. A skill starts only when the agent thinks of it. This
+line tells the agent that the past sessions are there to search. The full brief stays under 1,200 characters. It reads three files of the data clone
 and never the index. Thus it adds no wait.
 
 To see what a session in a project gets, run `kb brief` (or `kb brief --project P`).
+
+On a machine where you installed the plugin but did not do the setup, there is no data repo. Then the hook does not
+sync and does not show a brief. It adds only one line that tells the agent to offer the setup skill
+(`/retroagent:setup`) to you. Set `"brief": false` in the config to stop this line.
 
 ## Hints when a command fails
 

@@ -20,7 +20,7 @@ The config is in `~/.config/retroagent/config.json`. If this file does not exist
 | `embed_sync_seconds` | `60` | The maximum time that a sync spends to embed new items. |
 | `cloud_import` | `false` | If `true`, this machine imports the [cloud sessions](./commands.mdx#capture-cloud-sessions). Set it with `kb cloud import --on` / `--off`, on one machine only. |
 | `cloud_host` | `cloud` | The host for the imported cloud sessions. |
-| `brief` | `true` | At the start of a session, adds a short brief for its project. The brief has a pointer to the project page and the accepted suggestions for its repo. See [Brief at session start](./commands.mdx#brief-at-session-start). |
+| `brief` | `true` | At the start of a session, adds a short brief for its project. The brief has a pointer to the project page, the accepted suggestions for its repo and one line about `kb find`. With no data repo, it is one line that offers the setup. See [Brief at session start](./commands.mdx#brief-at-session-start). |
 | `hints` | `true` | When a tool call fails, adds at most one past fix from the project page to the context of the agent. See [Hints when a command fails](./commands.mdx#hints-when-a-command-fails). |
 | `hint_semantic_min` | `0.80` | The minimum cosine for a semantic hint (0 to 1). The scores of the model are close together (about 0.6 to 0.85). Thus a small change shows many more hints. |
 | `hint_keyword_min` | `3` | The minimum number of words that an error and the problem side of a bullet must share for a keyword hint. |

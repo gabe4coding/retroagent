@@ -589,7 +589,7 @@ def test_suggestions(kb_env, capsys):
 def test_brief(kb_env, capsys, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     code, out = run(capsys, "brief")
-    assert code == 0 and out.startswith("(nothing")
+    assert code == 0 and out.startswith("Past Claude Code and Codex sessions")      # no page: only the KB line
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO('{"cwd": "/w/demo"}'))
     cfg = json.loads(open(os.environ["KB_CONFIG"]).read())
     open(os.environ["KB_CONFIG"], "w").write(json.dumps({**cfg, "brief": False}))
@@ -605,6 +605,7 @@ def test_brief_hook_output(kb_env, capsys, monkeypatch):
     code, out = run(capsys, "brief", "--hook")
     ctx = json.loads(out)["hookSpecificOutput"]
     assert code == 0 and ctx["hookEventName"] == "SessionStart"
-    assert ctx["additionalContext"] == "Project page of demo: `kb page demo` (1 open thread). Read it when the task needs it."
+    assert ctx["additionalContext"].splitlines()[0] == (
+        "Project page of demo: `kb page demo` (1 open thread). Read it when the task needs it.")
     monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
     assert run(capsys, "brief", "--hook") == (0, "")                  # never fails
