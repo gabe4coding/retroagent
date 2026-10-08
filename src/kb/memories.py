@@ -9,14 +9,14 @@ A KB memory file is front matter (the same JSON-valued lines as a session file) 
   name, description, type, origin_session, modified: from the memory's own front matter, when it has one
 The source's YAML front matter is not copied: its fields are lifted into the JSON front matter.
 
-A memory whose own front matter has no modified time gets the source file's mtime (UTC), so every memory is dated
-(kb.freshness dates page bullets by their sources). Not the day a sync committed it: a first sync commits old
-memories on one day. A file whose mtime moved but whose copy would not change otherwise (touched, restored from a
-backup) keeps the date of its KB copy, so the sync writes nothing.
+Dates: each memory gets a date, its own modified field or else the file's mtime in UTC. It is not the day of the
+commit, because the first sync commits all old memories on one day. Page freshness (kb.freshness) needs these dates.
+A file whose mtime changed but whose text did not (touched, restored from a backup) keeps the date of its KB copy,
+so the sync writes nothing.
 
-A memory is a curated note, not a log: when it is deleted or renamed on this machine, the KB copy goes too. That holds
-only while the source folder exists. A whole folder that is gone (a project moved or cleaned up) keeps its KB copies,
-like a session whose transcript is gone. A file that cannot be read is never removed from the KB.
+Deletes: a memory is a curated note, not a log. When it is deleted or renamed on this machine, its KB copy goes too.
+This holds only while the source folder exists. A whole folder that is gone (a project moved or cleaned up) keeps its
+KB copies, like a session whose transcript is gone. A file that cannot be read is never removed from the KB.
 """
 from __future__ import annotations
 
@@ -110,19 +110,47 @@ def render(host: str, src: Source, text: str, modified: str = "") -> str:
     return dump_front_matter(meta) + "\n" + body.strip("\n") + "\n"
 
 
-def _copy(host: str, src: Source, source: str, modified: str) -> tuple:
+def _kb_copy_bytes(host: str, src: Source, source: str, modified: str) -> tuple:
     """(bytes of the redacted KB copy, redactions found)."""
     text, found = redact(render(host, src, source, modified))
     return text.encode("utf-8", errors="replace"), found
 
 
-def _modified(copy) -> str:
+def _modified_in_copy(copy) -> str:
     """The modified time in the front matter of a KB copy (bytes or None), or ''."""
     value = split_front_matter(copy.decode("utf-8", errors="replace"))[0].get("modified") if copy else ""
     return value if isinstance(value, str) else ""
 
 
-def _owns(folder: str, cwd: str) -> str:
+def _render_keeping_date(host: str, src: Source, source: str, old) -> tuple:
+    """(bytes of the new KB copy, redactions found). old is the current KB copy (bytes or None).
+
+    The copy keeps the date of the old copy when that gives the same bytes. Otherwise (a new, undated or changed
+    memory) the date is the source file's mtime.
+    """
+    kept = _modified_in_copy(old)
+    if kept:
+        new, found = _kb_copy_bytes(host, src, source, kept)
+    if not kept or new != old:
+        new, found = _kb_copy_bytes(host, src, source, iso_utc(src.path.stat().st_mtime))
+    return new, found
+
+
+def _remove_deleted_copies(root: Path, folders: list, wanted: set, dry_run: bool) -> int:
+    """Remove the KB copies in folders that no source wants any more. Returns how many it removed (or would)."""
+    removed = 0
+    for folder in folders:
+        base = root / folder
+        for p in sorted(base.rglob("*.md")) if base.is_dir() else []:
+            if p.relative_to(root).as_posix() in wanted:
+                continue
+            if not dry_run:
+                p.unlink()
+            removed += 1
+    return removed
+
+
+def _cwd_for_folder(folder: str, cwd: str) -> str:
     """cwd, or the checkout of a worktree cwd, when Claude Code keeps its memory in this project folder; else ''."""
     for c in (cwd, main_checkout(cwd)):
         if c.startswith("/") and encode_cwd(c) == folder:
@@ -130,7 +158,7 @@ def _owns(folder: str, cwd: str) -> str:
     return ""
 
 
-def _cwd_in(proj: Path) -> str:
+def _project_folder_cwd(proj: Path) -> str:
     """The cwd of a Claude project folder, read from its transcripts (newest first). '' when none names it.
 
     The first cwd of a transcript is not enough: a desktop session can start in a scratch folder and be moved to the
@@ -148,7 +176,7 @@ def _cwd_in(proj: Path) -> str:
                     except ValueError:
                         continue
                     for key in ("cwd", "relocatedCwd") if isinstance(rec, dict) else ():
-                        cwd = _owns(proj.name, rec.get(key) if isinstance(rec.get(key), str) else "")
+                        cwd = _cwd_for_folder(proj.name, rec.get(key) if isinstance(rec.get(key), str) else "")
                         if cwd:
                             return cwd
         except OSError:
@@ -194,7 +222,7 @@ def discover(cfg, idx=None) -> tuple:
         files = _files(mem)
         if not files:
             continue
-        cwd = _cwd_in(proj)
+        cwd = _project_folder_cwd(proj)
         if not cwd:
             cwds = known_cwds(idx, cfg.host) if cwds is None else cwds
             cwd = cwds.get(proj.name, "")
@@ -229,11 +257,7 @@ def sync_memories(cfg, idx, report, excluded, dry_run: bool = False) -> int:
             source = data.decode("utf-8", errors="replace")
             target = cfg.root / rel
             old = target.read_bytes() if target.is_file() else None
-            kept = _modified(old)
-            if kept:                                    # a copy that only this date would keep unchanged stays
-                new, found = _copy(cfg.host, src, source, kept)
-            if not kept or new != old:                  # new, undated or changed: dated by the source file
-                new, found = _copy(cfg.host, src, source, iso_utc(src.path.stat().st_mtime))
+            new, found = _render_keeping_date(cfg.host, src, source, old)
         except (OSError, ValueError) as e:
             report.errors.append(f"memory {src.path}: {type(e).__name__}: {e}")
             continue
@@ -242,12 +266,4 @@ def sync_memories(cfg, idx, report, excluded, dry_run: bool = False) -> int:
             changed += new != old
         else:
             changed += atomic_write(target, new)
-    for folder in folders:
-        base = cfg.root / folder
-        for p in sorted(base.rglob("*.md")) if base.is_dir() else []:
-            if p.relative_to(cfg.root).as_posix() in wanted:
-                continue
-            if not dry_run:
-                p.unlink()
-            changed += 1
-    return changed
+    return changed + _remove_deleted_copies(cfg.root, folders, wanted, dry_run)

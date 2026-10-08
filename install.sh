@@ -47,6 +47,7 @@ esac
 
 CFG_DIR="$HOME/.config/retroagent"
 CFG="$CFG_DIR/config.json"
+# sessions-kb is the old name of retroagent: old installs keep their config there.
 LEGACY_CFG="$HOME/.config/sessions-kb/config.json"
 cfg_get() {     # one string value of the config, or nothing
   [ -f "$CFG" ] || return 0
@@ -66,7 +67,7 @@ python3 -c 'import sqlite3; sqlite3.connect(":memory:").execute("CREATE VIRTUAL 
   || die "python3 has no SQLite FTS5 support, which kb needs for search; use another python3 (for example from Homebrew)"
 command -v git >/dev/null 2>&1 || die "git not found"
 
-# 2. The config: an install from before the rename keeps its settings
+# 2. The config: an old install (sessions-kb) keeps its settings
 if [ ! -f "$CFG" ] && [ -f "$LEGACY_CFG" ]; then
   mkdir -p "$CFG_DIR"
   cp "$LEGACY_CFG" "$CFG"
