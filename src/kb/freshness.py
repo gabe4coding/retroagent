@@ -6,7 +6,8 @@ The date is computed from the index (a session's start, a memory's modified time
 taken from the writer: stamp() replaces any date it finds. A bullet whose sources cannot be found keeps no date.
 
 Age is relative to the page, not to today: a bullet of an aging section is stale when its date is more than
-`stale_days` (`stale_days_current` for "Current state") older than the newest bullet date of the same page. So a
+`stale_days` (`stale_days_current` for "Current state", `stale_days_threads` for "Open threads") older than the newest
+bullet date of the same page. So a
 dormant project keeps its page, and a page that is not written cannot become stale. "Key decisions" and "Important
 files" never age out: they stay true until a session replaces them. sweep() moves stale bullets to History as
   - unconfirmed since YYYY-MM-DD (<section>): <text> (<sources · date>)
@@ -25,6 +26,7 @@ AGING = ("Current state", "Errors seen", "Open threads")     # "Key decisions" a
 HISTORY = "History"
 STALE_DAYS = 90                  # default of pages/config.json `stale_days`
 STALE_DAYS_CURRENT = 30          # default of pages/config.json `stale_days_current`
+STALE_DAYS_THREADS = 30          # default of pages/config.json `stale_days_threads`
 _TAIL = re.compile(r"\s*\(([^()]*)\)(\.?)\s*$")       # a writer sometimes ends the bullet with a period
 _DATE = re.compile(r"\s*·\s*(\d{4}-\d{2}-\d{2})\s*$")
 _SHORT = re.compile(r"\b[0-9a-f]{8}\b")
@@ -114,7 +116,8 @@ def newest(body: str) -> str:
     return max((d for d in dates if _day(d)), default="")
 
 
-def sweep(body: str, stale_days: int = STALE_DAYS, stale_days_current: int = STALE_DAYS_CURRENT):
+def sweep(body: str, stale_days: int = STALE_DAYS, stale_days_current: int = STALE_DAYS_CURRENT,
+          stale_days_threads: int = STALE_DAYS_THREADS):
     """(body with the stale bullets of the AGING sections moved to the end of History, the moved History lines).
     History is added at the end when the page has none."""
     top = newest(body)
@@ -122,7 +125,7 @@ def sweep(body: str, stale_days: int = STALE_DAYS, stale_days_current: int = STA
     for line, key, _ in _walk(body):
         if key in AGING and line.startswith("- "):
             text, ref, content = parse_tail(line)
-            limit = stale_days_current if key == "Current state" else stale_days
+            limit = {"Current state": stale_days_current, "Open threads": stale_days_threads}.get(key, stale_days)
             if ref is not None and is_stale(ref.date, top, limit):
                 moved.append(f"- unconfirmed since {ref.date} ({key}): {text[2:]} ({content} · {ref.date})")
                 continue

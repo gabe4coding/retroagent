@@ -57,14 +57,15 @@ the date from the index (a session's start, a memory's modified time); the model
 - **Sessions that went on:** a session can go on after a page cited it (the page was written while it ran). Each plan
   checks every page and retro for cited sessions that ended after the page was written, and plans the page again with
   them as `grown`. `kb pages finish` refuses to skip such a page, or one with a planned session it does not cite.
-- **Finished:** when a session finishes an open thread (its PR merged, the task done), the routine moves it to
-  History as `closed <date> by <short>`.
+- **Finished:** each time a page is updated, the routine checks every open thread against all sessions since the
+  thread's date (not only the new ones). When a session finished it (its PR merged, the task done), the routine moves
+  it to History as `closed <date> by <short>`.
 - **State now, not a log:** "Current state" has one bullet per area as it is now, without details that change at
   almost every session (version numbers, test counts, timings). Such a bullet stays true longer: new sessions confirm
   it instead of contradicting it.
 - **Not confirmed for a long time:** in "Current state", "Errors seen → fixes" and "Open threads", a bullet whose date
-  is more than `stale_days` (90; `stale_days_current`, 30, for "Current state") older than the newest bullet on the
-  same page moves to History as `unconfirmed since <date>`. Age counts from the page, not from today: a project you
+  is more than `stale_days` (90; `stale_days_current`, 30, for "Current state"; `stale_days_threads`, 30, for "Open
+  threads") older than the newest bullet on the same page moves to History as `unconfirmed since <date>`. Age counts from the page, not from today: a project you
   stopped working on keeps its page. "Key decisions" and "Important files" never age out; only a contradiction
   replaces them.
 
@@ -123,7 +124,7 @@ rejected change again, and they rank a change that came back higher.
 ## Settings
 
 `pages/config.json` in the data repo: projects to skip, minimum sessions for a page, batch sizes, retro time zone,
-`stale_days` / `stale_days_current` (see [Old and conflicting facts](#old-and-conflicting-facts)), and
+`stale_days` / `stale_days_current` / `stale_days_threads` (see [Old and conflicting facts](#old-and-conflicting-facts)), and
 `max_current_bullets` (10) / `max_open_threads` (8): `kb pages finish` refuses a project page with more bullets in
 "Current state" or "Open threads", so the routine keeps them to the state now and closes finished threads.
 Local `kb sync` never touches `pages/`.
