@@ -130,3 +130,13 @@ def test_stale_settings(tmp_path):
     (tmp_path / "pages").mkdir()
     (tmp_path / "pages" / "config.json").write_text(json.dumps({"stale_days": 120, "stale_days_current": 0}))
     assert stale_settings(tmp_path) == (120, 30)
+
+
+def test_open_threads_age_with_their_own_limit():
+    body = page({"Current state": [("now", "2026-10-01")],
+                 "Errors seen → fixes": [("`e` → f", "2026-08-15")],
+                 "Open threads": [("recent", "2026-09-10"), ("old", "2026-08-20")]})
+    out, moved = sweep(body, 90, 30, 30)
+    assert moved == ["- unconfirmed since 2026-08-20 (Open threads): old (a0000001 · 2026-08-20)"]
+    assert "- `e` → f (a0000001 · 2026-08-15)" in out and "- recent (a0000001 · 2026-09-10)" in out
+    assert sweep(body, 90, 30, 60)[1] == []
