@@ -689,3 +689,16 @@ def test_finish_records_the_suggestions_of_a_retro(tmp_path):
                                                                            .read_text())[rules]}))
     with pytest.raises(PagesError, match="the owner wrote it"):
         routine.finish(root, settings(), now=NOW, push=False)
+
+
+def test_finish_asks_to_compact_current_state_and_open_threads(tmp_path):
+    root = repo(tmp_path / "kb")
+    demo(root)
+    plan(root)
+    many = "".join(f"- area {i} (a0000001)\n" for i in range(3))
+    write_page(root, "project", "alpha", body=f"# alpha\n\n## Current state\n{many}\n## Open threads\n{many}")
+    with pytest.raises(PagesError) as e:
+        routine.finish(root, settings(max_current_bullets=2, max_open_threads=2), now=NOW, push=False)
+    assert '3 bullets in "Current state", the limit is 2' in str(e.value)
+    assert '3 bullets in "Open threads", the limit is 2; close the finished ones' in str(e.value)
+    assert routine.finish(root, settings(max_current_bullets=3, max_open_threads=3), now=NOW, push=False)["committed"]

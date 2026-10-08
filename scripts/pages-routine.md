@@ -78,6 +78,18 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
        threads" bullet that names both refs, so the owner can delete the old one. Never edit a memory.
      - Not sure whether it confirms or contradicts: leave the bullet as it is.
      Never write dates into the parentheses: `finish` writes them (`· YYYY-MM-DD`) and replaces any you write.
+   - Keep the page true now (on `create` and on every `update`):
+     - "Current state" says what is true now, one bullet per area (a feature, a component, the release), not a log
+       of the work that got there. When a session changes an area, rewrite that area's bullet and move the old one to
+       History. Finished work that changes nothing now goes to History. `finish` refuses more than
+       `max_current_bullets` (10).
+     - Leave out details that change at almost every session: version numbers, test counts, timings, PR numbers of
+       past work. Name one only when it is the point of the bullet, and then only the newest. A bullet without them
+       stays true longer, so later sessions confirm it instead of contradicting it.
+     - Check every "Open threads" bullet against the new sessions, their summaries and PRs: a thread a session
+       finished (the PR merged, the task done) moves to History as `- closed <date of that session> by <short>:
+       <text>`. A thread only the owner can do (an upload, a setting in a web page) stays until a session says it is
+       done. `finish` refuses more than `max_open_threads` (8).
    - If the digest says it was cut, run the `kb pages digest --only …` command it prints for the rest.
 4. **Retros.** For each item in `retros` (a closed week, Monday to Sunday, Europe/Rome time):
    - `kb pages digest --since <since> --until <until>`
@@ -99,6 +111,8 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
        Rank it higher when it is still happening, and higher again when it "came back" after it was applied: then the
        bullet says why the applied change did not work. Never suggest again a rejected one.
      - A new problem: `[new]`. `finish` gives it an id.
+     - When the change goes in the repo of one project, add `repo "<project>"` with the project name of the plan:
+       a session in that project sees the suggestion once the owner accepted it (`kb brief`).
      - When the change should remove a tool error, add `signature "<signature>"` with the text of the `signature`
        column of `kb stats errors`, unchanged: `kb suggestions` uses it to measure whether the change worked. `finish`
        refuses a signature that no session has.
@@ -148,7 +162,7 @@ sources: ["<short>", "<short>"]
 <Two to four sentences: what the project is, its goal, its stack, where it stands now.>
 
 ## Current state
-- <what works, what is in progress, latest release or PR> (<short>)
+- <one area as it is now: what works, what is in progress; no counts or versions unless they are the point> (<short>)
 
 ## Key decisions
 - <YYYY-MM-DD> · <decision> — <why> (<short>)
@@ -166,6 +180,7 @@ sources: ["<short>", "<short>"]
 ## History
 - <YYYY-MM to YYYY-MM>: <compact summary of older work and superseded decisions> (<short>, <short>)
 - superseded <YYYY-MM-DD> by <short> (<section>): <old text> (<old sources>)
+- closed <YYYY-MM-DD> by <short>: <open thread that a session finished> (<old sources>)
 - unconfirmed since <YYYY-MM-DD> (<section>): <text> (<sources · date>)   ← written by `finish`
 ```
 
@@ -199,11 +214,11 @@ sources: ["<short>", "<short>"]
 - <2 to 5 bullets, root cause, not symptom> (<short>)
 
 ## Suggested changes
-- [new] <category> · <the change: which file, check, command or tool, linked to evidence> · signature "<signature>" (<short>)
+- [new] <category> · <the change: which file, check, command or tool, linked to evidence> · repo "<project>" · signature "<signature>" (<short>)
 - [s-1a2b3c] <category> · <an earlier suggestion that is still happening or came back, and why> (<short>)
 ```
 
-1 to 3 bullets, most severe first. The signature part is optional.
+1 to 3 bullets, most severe first. The repo and signature parts are optional.
 
 `finish` replaces each `[new]` with an id and records the bullets in `pages/suggestions.json` (never edit it). The
 decisions on them go in `pages/decisions.json` (step 4b).
