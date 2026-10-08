@@ -54,7 +54,7 @@ class Config:
     cloud_import: bool = False                  # this machine imports the cloud sessions' inbox (`kb cloud import`)
     cloud_host: str = "cloud"                   # the host the imported cloud sessions are written under
     hints: bool = True                          # `kb hint`: a past fix when a tool call fails (kb.hint)
-    hint_semantic_min: float = 0.78             # cosine a semantic hint needs (embeddinggemma scores are compressed)
+    hint_semantic_min: float = 0.80             # cosine a semantic hint needs (embeddinggemma scores are compressed)
     hint_keyword_min: int = 3                   # shared words a keyword hint needs
     brief: bool = True                          # SessionStart hook: `kb brief` (page pointer, accepted suggestions)
 
