@@ -42,7 +42,8 @@ def test_page_pointer_only(tmp_path):
         + brief.KB_LINE)
     assert brief.build(tmp_path, "/work/nothing") == brief.KB_LINE     # no page: still a pointer to the KB
     _ledger(tmp_path, **{"s-000001": {"state": "applied"}})            # applied or proposed: not shown
-    assert len(brief.build(tmp_path, "/work/demo").splitlines()) == 2
+    out = brief.build(tmp_path, "/work/demo").splitlines()
+    assert len(out) == 3 and out[1].startswith("2 retro suggestions wait")   # only the line of kb.decide
 
 
 def test_accepted_suggestions_for_this_repo(tmp_path):

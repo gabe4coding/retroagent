@@ -11,7 +11,8 @@ The steps of one run:
  6. Memories: copy this machine's memory files (kb.memories).
  7. Summaries: ask claude for the summaries that are missing or out of date.
  8. Catalog: rebuild the catalog pages of the months that changed.
- 9. Host marker: write sessions/<host>/.machine-id if it is missing.
+ 9. Answers and host marker: add back the owner's answers a `kb repair` dropped (kb.decide), and write
+    sessions/<host>/.machine-id if it is missing.
 10. Stage this host's folders, run the secrets check (gitleaks), commit what is clean.
 11. Pull: get the commits of the other machines.
 12. Index again: the sessions of the other machines become searchable.
@@ -47,7 +48,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kb import cloud, gitops, machine, memories
+from kb import cloud, decide, gitops, machine, memories
 from kb.adapters import claude, codex
 from kb.catalog import write_catalog
 from kb.distill import update_front_matter
@@ -455,7 +456,7 @@ def _staged(root, paths) -> bool:
 def own_paths(cfg) -> list:
     """The only folders this machine ever stages, commits or pushes: its host's, and the cloud host's when it imports."""
     hosts = [cfg.host] + [c.host for c in [cloud.lane(cfg)] if c is not None]
-    return [f"{top}/{h}" for h in hosts for top in ("sessions", "raw", "catalog", "memories", "vectors")]
+    return [f"{top}/{h}" for h in hosts for top in ("sessions", "raw", "catalog", "memories", "vectors", "decisions")]
 
 
 def _within(path: str, folders) -> bool:
@@ -770,6 +771,10 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
             semantic = cfg.embed or cfg.embed_url
             if semantic:                        # before the commit, so this host's vector files go out with it
                 endpoint, deadline = embed_own(cfg, idx, report, clock, hosts=[lane_cfg.host for lane_cfg in lanes])
+            try:                                # the owner's answers that a `kb repair` dropped (kb.decide)
+                decide.restore(cfg.root, cfg.kb_dir, cfg.host)
+            except OSError as e:
+                report.errors.append(f"decide: answers not restored: {e}")
             for lane_cfg in lanes:
                 machine.claim(cfg.root, lane_cfg.host, machine_id)
             if git_ok:

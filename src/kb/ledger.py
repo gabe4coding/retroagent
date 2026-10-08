@@ -29,6 +29,12 @@ Who may write what:
 - An entry whose by is not "routine" is the owner's, written by hand. The routine never changes or removes it.
 - Nothing here writes a file except save() and save_decisions().
 
+Answers (decisions/<host>/answers.jsonl): what the owner answered with `kb decide` (kb.decide) on a machine. One JSON
+line per answer: {"id", "state" (accepted or rejected), "date", "at" (UTC time), "note"}. Only that host's sync
+commits the file, so the cloud routine never conflicts with it. decisions() reads the answers of every host on top of
+decisions.json: per suggestion the newest answer counts, and it wins over a decisions.json entry unless that entry has
+a later date (a session applied the change after the owner accepted it).
+
 How a fix is measured: `kb suggestions` joins the ledger and the decisions with the index (report()). Only a
 suggestion with a signature is measured, by the sessions that still have its error:
 - applied: it "came back" when a session has the error on or after the decision's date. It is "fixed" when no
@@ -49,6 +55,9 @@ from kb.util import atomic_write
 
 SUGGESTIONS_REL = "pages/suggestions.json"
 DECISIONS_REL = "pages/decisions.json"
+ANSWERS_DIR = "decisions"                # decisions/<host>/answers.jsonl: the owner's answers from `kb decide`
+ANSWERS_FILE = "answers.jsonl"
+ANSWER_STATES = ("accepted", "rejected")
 SECTION = "Suggested changes"
 STATES = ("accepted", "applied", "rejected")
 CATEGORIES = ("Navigation", "Automated checks", "Rules", "Steering bloat and no-ops", "Tool economy",
@@ -168,7 +177,8 @@ def save(root, ledger: dict) -> None:
 
 
 def decisions(root) -> dict:
-    """The decisions {id: {state, date, note, source, by}}; entries with an unknown state are left out."""
+    """The decisions {id: {state, date, note, source, by}}: pages/decisions.json with the owner's answers on top (see
+    the module docstring). Entries with an unknown state are left out."""
     data = _read(Path(root) / DECISIONS_REL)
     out = {}
     for sid, d in (data.items() if isinstance(data, dict) else ()):
@@ -177,6 +187,42 @@ def decisions(root) -> dict:
         date = d.get("date") if isinstance(d.get("date"), str) and _DATE.match(d.get("date")) else ""
         out[sid] = {"state": d["state"], "date": date, "note": _text(d.get("note")), "source": _text(d.get("source")),
                     "by": "routine" if d.get("by") == "routine" else "owner"}
+    for sid, a in answers(root).items():
+        if sid in out and out[sid]["date"] > a["date"]:
+            continue
+        out[sid] = {"state": a["state"], "date": a["date"], "note": a["note"], "source": f"kb decide on {a['host']}",
+                    "by": "owner"}
+    return out
+
+
+def answers_rel(host: str) -> str:
+    return f"{ANSWERS_DIR}/{host}/{ANSWERS_FILE}"
+
+
+def parse_answer(line: str):
+    """One answer line as {id, state, date, at, note}, or None when it is not a valid answer."""
+    try:
+        a = json.loads(line)
+    except ValueError:
+        return None
+    if not (isinstance(a, dict) and _ID.match(_text(a.get("id"))) and a.get("state") in ANSWER_STATES
+            and _DATE.match(_text(a.get("date"))) and _text(a.get("at"))):
+        return None
+    return {"id": a["id"], "state": a["state"], "date": a["date"], "at": a["at"], "note": _text(a.get("note"))}
+
+
+def answers(root) -> dict:
+    """The owner's newest answer per suggestion, from every host: {id: {state, date, at, note, host}}."""
+    out = {}
+    for path in sorted((Path(root) / ANSWERS_DIR).glob(f"*/{ANSWERS_FILE}")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            a = parse_answer(line)
+            if a is not None and (a["id"] not in out or a["at"] >= out[a["id"]]["at"]):
+                out[a["id"]] = {**a, "host": path.parent.name}
     return out
 
 

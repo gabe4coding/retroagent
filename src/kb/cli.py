@@ -10,6 +10,7 @@
   kb brief             what a new session in this project sees (the SessionStart hook runs it; off: "brief": false)
   kb suggestions       the changes weekly retros suggested, the decisions on them (pages/decisions.json), and
                        whether the error each one should remove still happens
+  kb decide            the suggestions that wait for your answer: accept or reject each one (in your own terminal)
   kb stats [report]    ready-made analytics (errors: tool errors that came back); kb sql "<SELECT …>" for custom ones
   kb sync | backfill | status | reindex   maintenance
   kb embed             turn on semantic search: kb installs and runs a local embedding model (--status, --off)
@@ -489,12 +490,9 @@ def cmd_stats(args, cfg) -> int:
     return 0
 
 
-def cmd_suggestions(args, cfg) -> int:
+def _suggestion_rows(cfg, known: dict) -> list:
+    """kb.ledger.report() of the known suggestions, measured against the index when one has an error signature."""
     from kb import ledger
-    known = ledger.load(cfg.root)
-    if not known:
-        print("no suggestions yet (finish records the \"Suggested changes\" of each new weekly retro)")
-        return 0
     sigs = {e.get("signature") for e in known.values() if e.get("signature")}
     seen = {}
     if sigs:
@@ -504,23 +502,75 @@ def cmd_suggestions(args, cfg) -> int:
             seen = signature_sessions(con, sigs)
         finally:
             con.close()
-    rows = ledger.report(known, ledger.decisions(cfg.root), seen, dt.date.today())
+    return ledger.report(known, ledger.decisions(cfg.root), seen, dt.date.today())
+
+
+def _print_suggestion(r: dict) -> None:
+    weeks = ",".join(w[5:] for w in r["weeks"])
+    print(f"{r['id']}  {r['state']:<8}  {weeks:<12}  {r['verdict']}")
+    cat = r["category"] + " · " if r["category"] else ""
+    src = f" ({', '.join(r['sources'])})" if r["sources"] else ""
+    print(f"    {cat}{r['text'][:_SUGGESTION_CHARS]}{src}")
+
+
+def cmd_suggestions(args, cfg) -> int:
+    from kb import ledger
+    known = ledger.load(cfg.root)
+    if not known:
+        print("no suggestions yet (finish records the \"Suggested changes\" of each new weekly retro)")
+        return 0
+    rows = _suggestion_rows(cfg, known)
     if not args.all:
         rows = [r for r in rows if r["state"] != "rejected" and not r["verdict"].startswith("fixed")]
     if args.json:
         print(json.dumps(rows, ensure_ascii=False))
         return 0
     for r in rows:
-        weeks = ",".join(w[5:] for w in r["weeks"])
-        print(f"{r['id']}  {r['state']:<8}  {weeks:<12}  {r['verdict']}")
-        cat = r["category"] + " · " if r["category"] else ""
-        src = f" ({', '.join(r['sources'])})" if r["sources"] else ""
-        print(f"    {cat}{r['text'][:_SUGGESTION_CHARS]}{src}")
+        _print_suggestion(r)
         if r["state"] != "proposed":
             src = f" ({r['source']})" if r["source"] else ""
             print(f"    {r['state']} by {r['by']}{src}{': ' + r['note'][:_SUGGESTION_CHARS] if r['note'] else ''}")
     if not rows:
         print("nothing open; --all also lists the fixed and rejected ones")
+    return 0
+
+
+def cmd_decide(args, cfg) -> int:
+    """The suggestions that wait for the owner (kb.decide), or record an answer. accept and reject need a terminal:
+    only a person answers, never an agent in a session."""
+    from kb import decide, ledger
+    if args.answer in ("accept", "reject"):
+        if not args.id:
+            print(f"usage: kb decide {args.answer} <id> [--note TEXT]")
+            return 2
+        if not sys.stdin.isatty():
+            print(f"kb decide {args.answer}: runs only in your own terminal. An agent never answers for you.")
+            return 2
+        state = "accepted" if args.answer == "accept" else "rejected"
+        decide.answer(cfg.root, cfg.kb_dir, cfg.host, args.id, state, args.note or "")
+        print(f"{args.id}: {state}. The next sync pushes it; `kb suggestions --all` shows the decision.")
+        return 0
+    ids = decide.waiting(cfg.root)
+    if args.answer == "later":
+        if not ids:
+            print("nothing waits for you")
+            return 0
+        until = decide.later(cfg.kb_dir, ids, args.days)
+        print(f"new sessions stop asking about these {len(ids)} until {until}, or until a new one arrives")
+        return 0
+    rows = [r for r in _suggestion_rows(cfg, ledger.load(cfg.root)) if r["id"] in set(ids)] if ids else []
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False))
+        return 0
+    if not rows:
+        print("nothing waits for you")
+        return 0
+    for r in rows:
+        _print_suggestion(r)
+    print(f"\n{len(rows)} wait for you. Answer one: kb decide accept|reject <id> [--note TEXT]")
+    until = decide.hidden_until(cfg.kb_dir, ids)
+    print(f"New sessions stop asking until {until}." if until else
+          "To stop new sessions asking for a day: kb decide later [--days N]")
     return 0
 
 
@@ -1066,6 +1116,15 @@ def build_parser() -> argparse.ArgumentParser:
     sg.add_argument("--all", action="store_true", help="also the fixed and the rejected ones")
     sg.add_argument("--json", action="store_true")
     sg.set_defaults(func=cmd_suggestions)
+
+    de = sub.add_parser("decide", help="the retro suggestions that wait for your answer; accept or reject one (only "
+                        "in your own terminal); later: new sessions stop asking for a while")
+    de.add_argument("answer", nargs="?", choices=["accept", "reject", "later"])
+    de.add_argument("id", nargs="?", help="accept, reject: the suggestion id, like s-1a2b3c")
+    de.add_argument("--note", help="accept, reject: why, in one line")
+    de.add_argument("--days", type=int, default=1, help="later: how many days (default 1)")
+    de.add_argument("--json", action="store_true", help="the list as JSON")
+    de.set_defaults(func=cmd_decide)
 
     r = sub.add_parser("recent", help="latest sessions (no subagents)")
     filters(r)
