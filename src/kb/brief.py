@@ -5,15 +5,18 @@ On purpose very little, and no facts that can be out of date:
     is there and reads it with `kb page` only when the task needs it;
   - every suggestion accepted for this project's repo (kb.ledger), one line each: a change the owner wants made;
   - while the first full backfill is not done (auto_sync_pending), one line that says so: the hook starts it again;
+  - when retro suggestions wait for the owner's answer (kb.decide), one line that asks the agent to tell the user,
+    unless the user hid it with `kb decide later`;
   - always, last: one line that the past sessions are searchable with `kb find`. Skills trigger only when the agent
     thinks of them; without this line a project with no page gives the agent no sign that the KB exists. The project is the working directory's, as for
-`kb hint` (kb.hint.projects). Reads three files of the data clone, never the index: it runs before each session.
+`kb hint` (kb.hint.projects). Reads a few small files of the data clone, never the index: it runs before each
+session.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from kb import ledger
+from kb import decide, ledger
 from kb.hint import projects
 from kb.pages import page_rel, parse_page, section
 
@@ -57,8 +60,9 @@ def accepted(root: Path, project: str) -> list:
 
 def build(root, cwd: str, project: str = "", first_sync_pending: bool = False) -> str:
     """The brief for a session in `cwd` (or for `project`): the project part, FIRST_SYNC_LINE while the first full
-    backfill is not done, then KB_LINE."""
-    parts = [_project_part(Path(root), cwd, project), FIRST_SYNC_LINE if first_sync_pending else "", KB_LINE]
+    backfill is not done, the line about the questions that wait for the owner, then KB_LINE."""
+    parts = [_project_part(Path(root), cwd, project), FIRST_SYNC_LINE if first_sync_pending else "",
+             decide.brief_line(root, Path(root) / ".kb"), KB_LINE]
     return "\n".join(p for p in parts if p)
 
 
