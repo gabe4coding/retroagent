@@ -19,6 +19,7 @@ Run `kb --help` for the full list, and add `--help` to any command for its flags
 | `kb show <id>` | Only the part of a session you need (`--turn N --around K`, `--grep PATTERN`). |
 | `kb stats [report]` | Ready-made analytics: overview, projects, agents, outcomes, tags, daily, subagents, errors. `kb stats errors [--since 7d] [--project P]` lists the tool errors that came back in two or more sessions. |
 | `kb suggestions [--all] [--json]` | The changes weekly retros suggested, the decisions on them, and whether the error each one should remove still happens. See [Suggested changes and whether they worked](./pages-routine.mdx#suggested-changes-and-whether-they-worked). |
+| `kb brief [--project P] [--hook]` | What a new session in this project sees at start: a pointer to the project page and the suggestions accepted for its repo, or nothing. See [Brief at session start](#brief-at-session-start). |
 | `kb hint --event error [--hook]` | A past fix for a failed tool call: reads the hook event JSON on stdin, prints one line or nothing. `--hook` prints the hook output JSON. See [Hints when a command fails](#hints-when-a-command-fails). |
 | `kb sql "<SELECT …>" [--width N]` | Read-only SQL on the index (tables: `sessions`, `turns`, `pages`, `memories`). Cells longer than `N` chars (default 80) are cut and end with `…`; `--width 0` never cuts. |
 
@@ -119,6 +120,24 @@ runs `kb cloud install`: it adds a `Stop` and a `SessionEnd` hook to `~/.claude/
   on `main` or on the routine's bootstrap branch. Errors go to `.kb/cloud.log` in the cloud data clone.
 - A session's project comes from its working directory. A cloud session that starts with more than one repository
   works in `/home/user`, so its project is `user`.
+
+## Brief at session start
+
+Optional, off by default. Turn it on with `"brief": true` in the [config](./configuration.mdx). Then the
+`SessionStart` hook (`bin/kb-hook`) runs `kb brief --hook` before it starts the sync, and the session gets at most:
+
+```text
+Project page of demo: `kb page demo` (2 open threads, 1 error → fix). Read it when the task needs it.
+Changes the owner accepted for the demo repo (`kb suggestions`):
+- [s-1a2b3c] Rules · wait for CI with a watch command, not sleep
+```
+
+On purpose, it holds no facts from the page: they can be out of date, and the agent reads the page with `kb page`
+when the task needs it. The second part lists only suggestions with an `accepted` decision whose `repo` is this
+project (see [Suggested changes](./pages-routine.mdx#suggested-changes-and-whether-they-worked)). With no page and
+nothing accepted, it prints nothing. The whole brief stays under 1,200 characters. It reads three files of the data
+clone and never the index, so it adds no wait. Run `kb brief` (or `kb brief --project P`) to see what a session in
+that project would get before you turn it on.
 
 ## Hints when a command fails
 

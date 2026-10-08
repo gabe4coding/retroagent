@@ -1,11 +1,13 @@
 """The suggestion ledger: every change a weekly retro suggested, what the owner decided, and whether it worked.
 
 A retro's "## Suggested changes" bullets start with an id in brackets:
-  - [new] <category> · <the change: which file, check, command or tool> · signature "<error signature>" (<short>)
+  - [new] <category> · <the change: which file, check, command or tool> · repo "<project>" ·
+    signature "<error signature>" (<short>)
   - [s-1a2b3c] <…>                 the same problem as an earlier suggestion, which came back
 `kb pages finish` gives each [new] bullet its id (s- and 6 hex digits) and records every bullet in
-pages/suggestions.json, which only finish writes. The signature is optional: it is the `kb stats errors` signature of
-the error the change should remove, and finish refuses one that no session has.
+pages/suggestions.json, which only finish writes. Both named parts are optional. repo is the project whose repo the
+change goes in (`kb brief` shows an accepted one in that project's sessions). signature is the `kb stats errors`
+signature of the error the change should remove; finish refuses one that no session has.
 
 Decisions are in pages/decisions.json. The pages routine writes them from the evidence in the sessions, and
 `kb pages finish` checks and commits them:
@@ -40,6 +42,7 @@ SETTLE_DAYS = 7              # an applied suggestion is "fixed" when its error w
 _ID = re.compile(r"^s-[0-9a-f]{6}$")
 _ITEM = re.compile(r"^- \[(new|s-[0-9a-f]{6})\]\s*(.*)$")
 _SIGNATURE = re.compile(r'\s*·?\s*signature\s+"([^"]*)"', re.I)
+_REPO = re.compile(r'\s*·?\s*repo\s+"([^"]*)"', re.I)
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -59,12 +62,16 @@ def items(body: str) -> list:
         signature = sig.group(1).strip() if sig else ""
         if sig:
             text = (text[: sig.start()] + text[sig.end():]).strip()
+        rp = _REPO.search(text)
+        repo = rp.group(1).strip() if rp else ""
+        if rp:
+            text = (text[: rp.start()] + text[rp.end():]).strip()
         head = text.split(" · ", 1)[0].strip().strip("*").strip()
         category = next((c for c in CATEGORIES if c.casefold() == head.casefold()), "")
         if category:
             text = text.split(" · ", 1)[1].strip() if " · " in text else ""
         out.append({"line": i, "id": m.group(1) if m else "", "category": category, "text": text,
-                    "signature": signature, "sources": ref.shorts if ref else []})
+                    "signature": signature, "repo": repo, "sources": ref.shorts if ref else []})
     return out
 
 
@@ -124,7 +131,7 @@ def record(ledger: dict, week: str, found: list) -> dict:
         weeks = sorted(set(e.get("weeks", [])) | {week})
         if week == weeks[-1] or not e:            # the newest retro's wording wins
             e = {"category": it["category"], "text": it["text"], "signature": it["signature"],
-                 "sources": it["sources"]}
+                 "repo": it.get("repo", ""), "sources": it["sources"]}
         out[it["id"]] = {**e, "weeks": weeks}
     return dict(sorted(out.items()))
 
@@ -254,7 +261,7 @@ def report(ledger: dict, decided: dict, seen: dict, today: dt.date) -> list:
             verdict += "; give the decision a date to measure it"
         out.append({"id": sid, "state": state, "weeks": e["weeks"], "category": e.get("category", ""),
                     "text": e.get("text", ""), "signature": sig, "verdict": verdict, "note": d.get("note", ""),
-                    "source": d.get("source", ""), "by": d.get("by", ""),
+                    "source": d.get("source", ""), "by": d.get("by", ""), "repo": e.get("repo", ""),
                     "sources": e.get("sources", []), "_rank": rank})
     out.sort(key=lambda r: (r["weeks"][-1], r["id"]), reverse=True)        # newest first within a rank
     out.sort(key=lambda r: (r["_rank"], -len(r["weeks"])))

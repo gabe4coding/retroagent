@@ -141,3 +141,21 @@ def test_hint_hook_hands_the_event_to_kb_and_always_exits_0(tmp_path):
     marker.unlink()
     p = subprocess.run([str(hook)], env={**env, "KB_CHILD": "1"}, input="{}", capture_output=True, text=True, timeout=5)
     assert p.returncode == 0 and not marker.exists()
+
+
+def test_hook_prints_the_brief_first_only_when_it_is_on(tmp_path):
+    hook, marker, root, env = _hook_env(tmp_path)
+    kb = hook.parent / "kb"
+    kb.write_text(f"#!/bin/sh\necho \"$@\" >> '{marker}'\n[ \"$1\" = brief ] && cat && echo BRIEF\nexit 0\n")
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"brief": True}))
+    (root / ".kb").mkdir()
+    (root / ".kb/last-ok").touch()                      # debounced: no sync, the brief still comes
+    p = subprocess.run([str(hook)], env={**env, "KB_CONFIG": str(cfg)}, input='{"cwd": "/w/demo"}',
+                       capture_output=True, text=True, timeout=5)
+    assert p.returncode == 0 and p.stdout == '{"cwd": "/w/demo"}BRIEF\n'
+    assert marker.read_text() == "brief --hook\n"
+    cfg.write_text(json.dumps({"brief": False}))
+    p = subprocess.run([str(hook)], env={**env, "KB_CONFIG": str(cfg)}, input="{}", capture_output=True, text=True,
+                       timeout=5)
+    assert p.stdout == "" and marker.read_text() == "brief --hook\n"
