@@ -3,7 +3,7 @@
 # Usage: scripts/test [--all] [pytest args]   (-q is already on: another -q hides the summary line with the counts)
 #   default: the fast tests only (no processes started; a few seconds)
 #   --all:   also the tests marked slow (real git, gitleaks, install.sh; about a minute)
-# KB_TEST_PYTHON picks another interpreter: a path, or a version that uv finds or installs (CI uses 3.9 and 3.13).
+# KB_TEST_PYTHON picks another interpreter: a path, or a version that uv finds or installs (CI uses 3.9 and 3.13 on Linux).
 cd "$(dirname "$0")/.." || exit 1
 exec uv run --no-project --python "${KB_TEST_PYTHON:-/usr/bin/python3}" --with pytest --with pytest-xdist -- \
     python -m pytest -q -n auto --maxprocesses=8 "$@"
