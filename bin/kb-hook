@@ -3,7 +3,8 @@
 # `--auto` makes kb do nothing unless auto_sync is true in the config (see `kb enable`).
 # First `kb brief --hook` prints a short brief for the session's project (src/kb/brief.py: a pointer to its page, the
 # suggestions accepted for its repo); "brief": false in the config turns it off. Skips everything when KB_CHILD=1 (our
-# own headless summary calls) and when no data repo is set up yet; starts no sync when the last one finished less than
+# own headless summary calls). With no data repo set up yet (the plugin was just installed), it prints only one line that
+# asks the agent to offer the setup skill, unless "brief" is false. Starts no sync when the last one finished less than
 # debounce_minutes ago.
 [ "${KB_CHILD:-}" = "1" ] && exit 0
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -18,7 +19,11 @@ if [ -z "$ROOT" ] && [ -f "$CFG" ]; then
 fi
 [ -n "$ROOT" ] || ROOT="$HOME/.retroagent-data"
 case "$ROOT" in "~"*) ROOT="$HOME${ROOT#\~}" ;; esac
-[ -e "$ROOT/.git" ] || exit 0
+if [ ! -e "$ROOT/.git" ]; then
+  grep -q '"brief"[[:space:]]*:[[:space:]]*false' "$CFG" 2>/dev/null && exit 0
+  printf '%s\n' '{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "The retroagent plugin is installed but not set up: its `kb` CLI cannot search past sessions yet. At a natural pause, tell the user in one line that the retroagent setup skill (/retroagent:setup in Claude Code) sets it up. Do not start the setup without the user."}}'
+  exit 0
+fi
 DEBOUNCE=""
 [ -f "$CFG" ] && DEBOUNCE=$(sed -n 's/.*"debounce_minutes"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$CFG" | head -n 1)
 DEBOUNCE="${DEBOUNCE:-10}"
