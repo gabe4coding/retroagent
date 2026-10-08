@@ -1,7 +1,7 @@
 """Configuration: ~/.config/retroagent/config.json (every key optional). KB_CONFIG / KB_ROOT override.
 
-An install from before the rename keeps working: when the new file does not exist, ~/.config/sessions-kb/config.json
-is read (and changed by `kb enable` / `kb disable`) instead.
+If ~/.config/retroagent/config.json does not exist but ~/.config/sessions-kb/config.json does, kb reads and changes
+that older file. sessions-kb is the old name of the project.
 """
 from __future__ import annotations
 
@@ -54,7 +54,8 @@ class Config:
     cloud_import: bool = False                  # this machine imports the cloud sessions' inbox (`kb cloud import`)
     cloud_host: str = "cloud"                   # the host the imported cloud sessions are written under
     hints: bool = True                          # `kb hint`: a past fix when a tool call fails (kb.hint)
-    hint_semantic_min: float = 0.80             # cosine a semantic hint needs (embeddinggemma scores are compressed)
+    # Cosine a semantic hint needs. The model's scores fall in a narrow range, so a small change shows many more hints.
+    hint_semantic_min: float = 0.80
     hint_keyword_min: int = 3                   # shared words a keyword hint needs
     brief: bool = True                          # SessionStart hook: `kb brief` (page pointer, accepted suggestions)
 
@@ -81,12 +82,13 @@ def _read(p: Path) -> dict:
     return raw
 
 
-def _bool(raw: dict, key: str, default: bool, bad: bool) -> bool:
-    """A bool from the config. Missing or null gives `default`; a value that is not a bool gives `bad` (the safe side)."""
+def _bool(raw: dict, key: str, default: bool, if_invalid: bool) -> bool:
+    """A bool from the config. Missing or null gives `default`. A value that is not a bool gives `if_invalid` (the
+    safe side)."""
     v = raw.get(key)
     if v is None:
         return default
-    return v if isinstance(v, bool) else bad
+    return v if isinstance(v, bool) else if_invalid
 
 
 def _int(raw: dict, key: str, default: int) -> int:
@@ -174,20 +176,21 @@ def load(path: str | None = None) -> Config:
     if _text(raw, "codex_home"):
         cfg.codex_home = expand(raw["codex_home"])
     cfg.exclude_cwd_globs = _list(raw, "exclude_cwd_globs", cfg.exclude_cwd_globs)
-    cfg.auto_sync = _bool(raw, "auto_sync", True, bad=False)                       # absent: old configs keep syncing
-    cfg.skip_headless_single_prompt = _bool(raw, "skip_headless_single_prompt", True, bad=True)
-    cfg.require_gitleaks = _bool(raw, "require_gitleaks", False, bad=True)
+    cfg.auto_sync = _bool(raw, "auto_sync", True, if_invalid=False)          # absent: old configs keep syncing
+    cfg.skip_headless_single_prompt = _bool(raw, "skip_headless_single_prompt", True, if_invalid=True)
+    cfg.require_gitleaks = _bool(raw, "require_gitleaks", False, if_invalid=True)
     cfg.gitleaks_path = _text(raw, "gitleaks_path")
     cfg.branch = _text(raw, "branch") or cfg.branch
     cfg.raw_settle_hours = _int(raw, "raw_settle_hours", cfg.raw_settle_hours)
-    cfg.auto_update = _bool(raw, "auto_update", False, bad=False)
-    cfg.embed = _bool(raw, "embed", False, bad=False)
+    cfg.auto_update = _bool(raw, "auto_update", False, if_invalid=False)
+    cfg.embed = _bool(raw, "embed", False, if_invalid=False)
     cfg.embed_url = _text(raw, "embed_url").rstrip("/")
     cfg.embed_sync_seconds = _int(raw, "embed_sync_seconds", cfg.embed_sync_seconds)
-    cfg.cloud_import = _bool(raw, "cloud_import", False, bad=False)
+    cfg.cloud_import = _bool(raw, "cloud_import", False, if_invalid=False)
     cfg.cloud_host = slug(_text(raw, "cloud_host") or cfg.cloud_host)
-    cfg.hints = _bool(raw, "hints", True, bad=False)
+    cfg.hints = _bool(raw, "hints", True, if_invalid=False)
     cfg.hint_semantic_min = _float(raw, "hint_semantic_min", cfg.hint_semantic_min)
+    # 0 counts as unset and gives the default
     cfg.hint_keyword_min = _int(raw, "hint_keyword_min", cfg.hint_keyword_min) or cfg.hint_keyword_min
-    cfg.brief = _bool(raw, "brief", True, bad=False)
+    cfg.brief = _bool(raw, "brief", True, if_invalid=False)
     return cfg

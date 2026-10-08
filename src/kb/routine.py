@@ -1,20 +1,29 @@
-"""The steps the cloud routine runs around Claude's writing (the routine follows scripts/pages-routine.md):
+"""The steps the cloud routine runs around Claude's writing. The routine follows scripts/pages-routine.md.
 
   kb pages start    pick the branch (main, or the bootstrap branch until the first build is merged), build the index
   kb pages plan     what to write this run: project pages and weekly retros, from the sessions changed since the
-                    watermark in pages/.state.json (printed as JSON and kept in .kb/pages-plan.json for finish)
+                    watermark (printed as JSON and kept in .kb/pages-plan.json for finish)
   kb pages digest   compact input for one page: the memories agents kept, then one block per session (summary,
                     decisions, outcome, files, PRs)
   kb pages finish   check the pages, move the watermark, commit with [skip ci], push
   kb pages due      for the trigger workflow: is there anything to write? (no LLM, about a second)
 
-A memory file (memories/<host>/…, copied by kb sync) that is added, changed or removed counts as a change of its
-project, like a session. Claude Code's MEMORY.md files are only indexes of the other memories and are left out.
+Everything that needs no judgement is decided here. Claude only writes the pages.
 
-Everything that needs no judgement is decided here; Claude only writes the pages. The routine's commits change only
-pages/ and carry [skip ci], so they never start the trigger workflow (.github/workflows/pages-trigger.yml), which fires
-the routine only when `due` says so and min_hours_between_fires have passed since its last fire: routine runs are
-counted per day.
+Terms:
+- watermark: the commit sha in pages/.state.json ("sha") that the last finished run planned from. The next run reads
+  only what changed after it.
+- memory change: a memory file (memories/<host>/…, copied by kb sync) that is added, changed or removed. It counts as
+  a change of its project, like a session. Claude Code's MEMORY.md files only index the other memories, so they are
+  left out.
+- grown session: a session that a page cites and that ended after the page was written. The page saw only its start.
+- uncited session: a session that worked in a project with a page, but that the page does not cite.
+
+When the routine runs:
+- The routine's commits change only pages/ and carry [skip ci]. So they never start the trigger workflow
+  (.github/workflows/pages-trigger.yml).
+- The workflow fires the routine only when `kb pages due` says there is work.
+- It fires the routine at most once every min_hours_between_fires hours, because routine runs are counted per day.
 """
 from __future__ import annotations
 
@@ -54,10 +63,22 @@ DEFAULTS = {
     "bootstrap_branch": "claude/pages-bootstrap",
 }
 _AT_LEAST_ONE = ("stale_days", "stale_days_current", "stale_days_threads", "max_current_bullets", "max_open_threads")
-SINCE_MARGIN = dt.timedelta(days=2)      # time fallback: a commit made before the last run but pushed after it counts
+# The "since" mode of _changes reads the commits made after (last run - SINCE_MARGIN). The margin also catches a
+# commit that was made before the last run but pushed after it.
+SINCE_MARGIN = dt.timedelta(days=2)
 DIGEST_CHARS = 150_000
 MEMORY_CHARS = 2_500                     # text of one memory in a digest; longer ones are cut (kb memory reads it all)
 MEMORY_DIGEST_CHARS = 40_000             # memories in one digest; past this the rest is listed one line each
+_FIRST_PROMPT_CHARS = 400                # first prompt shown
+_DIGEST_FILES = 8                        # files listed per session
+_MEMORY_LINE_CHARS = 200                 # one-line memory description
+_SKIP_IDS_SHOWN = 5                      # ids per error
+_REPORT_LINE_CHARS = 120                 # undated/moved bullet text
+REVIEW = "@review-threads"               # in a project's todo: its open threads were never all checked
+# Parent links followed up from a subagent to find its top-level session. A session still deeper is skipped.
+_SUBAGENT_DEPTH = 5
+# kb sync summarizes only top-level sessions with this many user turns or more. Keep it equal to the rule in sync.py.
+_SUMMARY_MIN_USER_TURNS = 2
 _UTC = dt.timezone.utc
 
 
@@ -90,8 +111,12 @@ def load_settings(root) -> dict:
         else:
             ok = isinstance(value, want) and bool(value)
         if not ok:
-            what = "a list of text" if want is list else "a whole number of at least 1" if key in _AT_LEAST_ONE \
-                else want.__name__
+            if want is list:
+                what = "a list of text"
+            elif key in _AT_LEAST_ONE:
+                what = "a whole number of at least 1"
+            else:
+                what = want.__name__
             raise PagesError(f"{CONFIG_REL}: {key} must be {what}")
         out[key] = value
     return out
@@ -217,18 +242,20 @@ _DATE_LINE = re.compile(r"^[+-]modified: ")
 def _date_only(root, base: str, head: str) -> set:
     """The memory files whose every changed line between base and head is their `modified` front matter line."""
     out = _git(root, "diff", "-U0", "--no-renames", "--no-color", base, head, "--", "memories/").stdout
-    files, path, ok = set(), None, False
+    files, path, only_date_changed = set(), None, False
+    # A file is judged when the next "diff --git" header starts. The extra header at the end makes the last file judged
+    # too.
     for line in out.splitlines() + ["diff --git end"]:
         if line.startswith("diff --git "):
-            if path and ok:
+            if path and only_date_changed:
                 files.add(path)
-            path, ok = None, True
+            path, only_date_changed = None, True
         elif line.startswith("+++ b/"):
             path = line[6:]
         elif line.startswith(("+++ ", "--- ")):
             continue
         elif line.startswith(("+", "-")) and not _DATE_LINE.match(line):
-            ok = False
+            only_date_changed = False
     return files
 
 
@@ -249,7 +276,16 @@ def _removed_memory(root, head: str, path: str):
 
 
 def _changes(root, state, head: str):
-    """(mode, base, paths): the session files changed since the watermark; paths None means every session."""
+    """(mode, base, paths): the session files changed since the watermark. paths None means every session.
+
+    The mode says how the changes were found:
+    - bootstrap: there is no state file yet (the first build). Every session; base is "".
+    - incremental: the watermark is an ancestor of HEAD. The sessions added or changed between the watermark and HEAD;
+      base is the watermark sha.
+    - since: the watermark is not in the history (a squash merge, a rewritten history), but the state has a last_run
+      time. The sessions of the commits made since last_run minus SINCE_MARGIN; base is that time.
+    - rebuild: the state has no usable watermark and no last_run. Every session; base is "".
+    """
     if state is None:
         return "bootstrap", "", None
     sha = state.get("sha") if isinstance(state.get("sha"), str) else ""
@@ -314,10 +350,10 @@ def make_plan(root, idx: Index, settings, now=None) -> dict:
     root = Path(root)
     now = now or dt.datetime.now(_UTC)
     tz = zone(settings["timezone"])
-    state = load_state(root)
-    st = state or {}
+    state = load_state(root)             # None before the first build: _changes needs to know that
     head = _git(root, "rev-parse", "HEAD").stdout.strip()
     mode, base, paths = _changes(root, state, head)
+    state = state or {}
 
     rows = [dict(r) for r in idx.db.execute(
         "SELECT id, short, project, parent, started, ended, summary, user_turns, md_path, cwd, files, prs FROM sessions")]
@@ -328,24 +364,8 @@ def make_plan(root, idx: Index, settings, now=None) -> dict:
     else:
         by_path = {r["md_path"]: r for r in rows}
         changed = [by_path[p] for p in sorted(paths) if p in by_path]
-    changed += [by_id[i] for i in _strings(st.get("waiting")) if i in by_id]
-
-    # a subagent counts as a change of its parent; a session with no summary yet waits for one, for a while, unless
-    # it will never get one (kb sync summarizes only sessions with 2 prompts or more)
-    wait = dt.timedelta(hours=settings["summary_wait_hours"])
-    ready, waiting = {}, []
-    for r in changed:
-        for _ in range(5):               # a subagent of a subagent counts for the top-level session
-            if r is None or not r["parent"]:
-                break
-            r = by_id.get(r["parent"])
-        if r is None or r["parent"] or r["id"] in ready or r["id"] in waiting:
-            continue
-        t = _parse(r["ended"] or r["started"])
-        if not r["summary"] and (r["user_turns"] or 0) >= 2 and t is not None and now - t < wait:
-            waiting.append(r["id"])
-        else:
-            ready[r["id"]] = r
+    changed += [by_id[i] for i in _strings(state.get("waiting")) if i in by_id]
+    ready, waiting = _ready_and_waiting(changed, by_id, now, dt.timedelta(hours=settings["summary_wait_hours"]))
 
     # memories: {path: {ref, project}} of those in the index; removed ones are read from git
     memories = {r["path"]: {"ref": r["ref"], "project": r["project"]}
@@ -361,15 +381,37 @@ def make_plan(root, idx: Index, settings, now=None) -> dict:
 
     grown = _grown(root, top, set(waiting))
     uncited = _uncited(root, top, set(waiting))
-    projects, left_projects, todo = _plan_projects(root, top, ready, st, settings, changed_memories, memory, grown,
+    projects, left_projects, todo = _plan_projects(root, top, ready, state, settings, changed_memories, memory, grown,
                                                    uncited)
-    retros, left_weeks = _plan_retros(root, top, ready, st, settings, tz, now, grown)
+    retros, left_weeks = _plan_retros(root, top, ready, state, settings, tz, now, grown)
     plan = {"version": 1, "mode": mode, "base": base, "head": head, "branch": gitops.current_branch(root),
             "created": _iso(now), "projects": projects, "retros": retros,
             "pending": {"projects": left_projects, "weeks": left_weeks}, "waiting": sorted(waiting)}
     saved = {**plan, "todo": todo}       # what each planned project was for: finish keeps it pending if not written
     atomic_write(root / ".kb" / PLAN_FILE, (json.dumps(saved, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
     return plan
+
+
+def _ready_and_waiting(changed: list, by_id: dict, now, wait):
+    """({id: row} of the top-level sessions ready to be written about, [ids] of those that wait for a summary).
+
+    A subagent counts as a change of its top-level session. A session with no summary yet waits up to `wait` after it
+    ended, unless it will never get a summary."""
+    ready, waiting = {}, []
+    for r in changed:
+        for _ in range(_SUBAGENT_DEPTH):
+            if r is None or not r["parent"]:
+                break
+            r = by_id.get(r["parent"])
+        if r is None or r["parent"] or r["id"] in ready or r["id"] in waiting:
+            continue
+        last_activity = _parse(r["ended"] or r["started"])
+        will_get_summary = (r["user_turns"] or 0) >= _SUMMARY_MIN_USER_TURNS
+        if not r["summary"] and will_get_summary and last_activity is not None and now - last_activity < wait:
+            waiting.append(r["id"])
+        else:
+            ready[r["id"]] = r
+    return ready, waiting
 
 
 def _eligible(project: str, counts: dict, settings) -> bool:
@@ -384,13 +426,16 @@ def _eligible(project: str, counts: dict, settings) -> bool:
     return True
 
 
-def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, changed_memories=(), memory=None,
+def _plan_projects(root: Path, top: list, ready: dict, state: dict, settings, changed_memories=(), memory=None,
                    grown=None, uncited=None):
-    """Project items, what stays pending, and what changed in each planned project. What changed in a project is a set
-    of session short ids and memory paths (they start with "memories/"); pending keeps both in one list. A memory whose
-    file and old version are both gone is dropped. grown (_grown): sessions a page cites that went on after it was
-    written; they are planned again, and an item lists them as "grown". uncited (_uncited): sessions that worked in a
-    project with a page, which the page does not cite; an item lists those of other projects as "related"."""
+    """(project items to write, {project: todo} that stays pending, {project: todo} of each planned project).
+
+    A project's todo is the set of what changed in it. It holds session short ids, memory paths (they start with
+    "memories/") and the REVIEW marker. Only the first batch_projects projects, most recent activity first, are
+    planned this run. The others stay pending for later runs.
+
+    grown and uncited are {page rel: {short}} from _grown and _uncited. Their sessions are planned again. An item lists
+    the grown ones as "grown", and the uncited ones of other projects as "related"."""
     memory = memory or (lambda path: None)
     grown, uncited = grown or {}, uncited or {}
     counts, latest, members = {}, {}, {}
@@ -399,7 +444,19 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
         counts[p] = counts.get(p, 0) + 1
         latest[p] = max(latest.get(p, ""), r["started"] or "")
         members.setdefault(p, []).append(r)
-    pend = st.get("pending") if isinstance(st.get("pending"), dict) else {}
+    todo = _collect_todo(root, ready, state, changed_memories, memory, grown, uncited)
+    todo = {p: s for p, s in todo.items() if s and _eligible(p, counts, settings)}  # the config may have changed
+    order = sorted(todo, key=lambda p: (latest.get(p, ""), p), reverse=True)        # most recent activity first
+    batch = order[: settings["batch_projects"]]
+    started = {r["short"]: r["started"] or "" for r in top}
+    items = [_project_item(root, p, todo[p], top, members, started, memory, grown) for p in batch]
+    return items, {p: sorted(todo[p]) for p in order[len(batch):]}, {p: sorted(todo[p]) for p in batch}
+
+
+def _collect_todo(root: Path, ready: dict, state: dict, changed_memories, memory, grown: dict, uncited: dict) -> dict:
+    """{project: todo}: the pending todo of the state, plus this run's changes. A memory whose file and old version are
+    both gone is dropped."""
+    pend = state.get("pending") if isinstance(state.get("pending"), dict) else {}
     old = pend.get("projects") if isinstance(pend.get("projects"), dict) else {}
     todo = {p: set(_strings(v)) for p, v in old.items()}
     for r in ready.values():
@@ -408,7 +465,7 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
         for rel, shorts in found.items():
             if rel.startswith("pages/projects/"):
                 todo.setdefault(rel[len("pages/projects/"):-3], set()).update(shorts)
-    for p in _threads_to_review(root, st):
+    for p in _threads_to_review(root, state):
         todo.setdefault(p, set()).add(REVIEW)
     for path in changed_memories:
         m = memory(path)
@@ -416,45 +473,39 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
             todo.setdefault(m["project"], set()).add(path)
     for p in todo:
         todo[p] = {e for e in todo[p] if not e.startswith("memories/") or memory(e)}
-    todo = {p: s for p, s in todo.items() if s and _eligible(p, counts, settings)}  # the config may have changed
-    order = sorted(todo, key=lambda p: (latest.get(p, ""), p), reverse=True)        # most recent activity first
-    batch = order[: settings["batch_projects"]]
-    started = {r["short"]: r["started"] or "" for r in top}
-    items = []
-    for p in batch:
-        rel = page_rel("project", p)
-        if (root / rel).is_file():
-            shorts = [e for e in todo[p] if not e.startswith("memories/") and e != REVIEW]
-            item = {"name": p, "page": rel, "action": "update",
-                    "sessions": sorted(shorts, key=lambda s: (started.get(s, ""), s))}
-            paths = sorted(e for e in todo[p] if e.startswith("memories/"))
-            kept = [e for e in paths if not _removed(memory(e))]
-            if kept:
-                item["memories"] = kept
-            gone = sorted({memory(e)["ref"] for e in paths if _removed(memory(e))})
-            if gone:
-                item["memories_removed"] = gone
-            if grown.get(rel):
-                item["grown"] = sorted(grown[rel] & set(shorts), key=lambda s: (started.get(s, ""), s))
-            if REVIEW in todo[p]:
-                item["review_threads"] = True
-            other = {r["short"] for r in top if r["short"] in shorts and r["project"] != p}
-            if other:
-                item["related"] = sorted(other, key=lambda s: (started.get(s, ""), s))
-            items.append(item)
-        else:                            # a new page is written from the whole history of the project
-            items.append({"name": p, "page": rel, "action": "create",
-                          "sessions": [r["short"] for r in sorted(members[p], key=lambda r: (r["started"] or "", r["id"]))]})
-    return items, {p: sorted(todo[p]) for p in order[len(batch):]}, {p: sorted(todo[p]) for p in batch}
+    return todo
 
 
-REVIEW = "@review-threads"                  # in a project's todo: its open threads were never all checked
+def _project_item(root: Path, p: str, todo: set, top: list, members: dict, started: dict, memory, grown: dict) -> dict:
+    """The plan item of one project: an update of its page with what is in todo, or a new page."""
+    rel = page_rel("project", p)
+    if not (root / rel).is_file():       # a new page is written from the whole history of the project
+        return {"name": p, "page": rel, "action": "create",
+                "sessions": [r["short"] for r in sorted(members[p], key=lambda r: (r["started"] or "", r["id"]))]}
+    shorts = [e for e in todo if not e.startswith("memories/") and e != REVIEW]
+    item = {"name": p, "page": rel, "action": "update",
+            "sessions": sorted(shorts, key=lambda s: (started.get(s, ""), s))}
+    paths = sorted(e for e in todo if e.startswith("memories/"))
+    kept = [e for e in paths if not _removed(memory(e))]
+    if kept:
+        item["memories"] = kept
+    gone = sorted({memory(e)["ref"] for e in paths if _removed(memory(e))})
+    if gone:
+        item["memories_removed"] = gone
+    if grown.get(rel):
+        item["grown"] = sorted(grown[rel] & set(shorts), key=lambda s: (started.get(s, ""), s))
+    if REVIEW in todo:
+        item["review_threads"] = True
+    other = {r["short"] for r in top if r["short"] in shorts and r["project"] != p}
+    if other:
+        item["related"] = sorted(other, key=lambda s: (started.get(s, ""), s))
+    return item
 
 
-def _threads_to_review(root: Path, st: dict) -> list:
+def _threads_to_review(root: Path, state: dict) -> list:
     """The projects whose page has open threads but was never written or reviewed since every update checks all open
     threads against all sessions (state "threads_reviewed"): each is planned once for that review."""
-    done = set(_strings(st.get("threads_reviewed")))
+    done = set(_strings(state.get("threads_reviewed")))
     out = []
     for path in sorted((root / "pages" / "projects").glob("*.md")):
         if path.stem in done:
@@ -497,49 +548,55 @@ def _json_list(text) -> list:
 
 
 def _projects_of(top: list, names: set) -> dict:
-    """{session id: projects with a page it worked in}. A session works in its own project and in every project whose
-    repo it changed files in or opened a PR in. A project's repo folders are learned from its sessions' working
-    folders named after it (~/Repositories/docs), never from a folder name alone (docs/ in another repo is not the
-    docs project); a cloud session's repos are the folders of /home/user. A PR's repo maps to a project by name, or by
-    the project whose sessions opened most PRs in it (repo plain → project plainwright)."""
+    """{session id: the projects with a page that the session worked in}. names: the projects with a page.
+
+    - A session works in its own project.
+    - It also works in every project whose repo it changed files in or opened a PR in.
+    - A project's repo folders are the working folders of its sessions that are named after it (~/Repositories/alpha).
+    - A folder name alone is not enough: alpha/ inside another repo is not the alpha project.
+    - For a cloud session, the repos are the folders of /home/user.
+    - A PR's repo maps to the project with the same name.
+    - Else it maps to the project whose sessions opened the most PRs in it (repo alpha → project alpha-app).
+    """
     from kb.setup import CLOUD_HOME
-    lower = {n.lower(): n for n in names}
-    roots, votes = {}, {}
+    name_by_lower = {n.lower(): n for n in names}
+    repo_dir_to_project, pr_repo_votes = {}, {}
     for r in top:
         cwd = os.path.normpath(r["cwd"] or "/")
         if r["project"] in names and os.path.basename(cwd).lower() == r["project"].lower():
-            roots.setdefault(cwd, r["project"])
+            repo_dir_to_project.setdefault(cwd, r["project"])
         for url in _json_list(r["prs"]):
             m = _PR.search(url)
             if m and r["project"] in names:
-                c = votes.setdefault(slug(m.group(1)), {})
-                c[r["project"]] = c.get(r["project"], 0) + 1
-    repos = {repo: max(c, key=lambda p: (c[p], p)) for repo, c in votes.items()}
+                counts = pr_repo_votes.setdefault(slug(m.group(1)), {})
+                counts[r["project"]] = counts.get(r["project"], 0) + 1
+    repos = {repo: max(counts, key=lambda p: (counts[p], p)) for repo, counts in pr_repo_votes.items()}
     out = {}
     for r in top:
         found = {r["project"]} & names
         cwd = os.path.normpath(r["cwd"] or "/")
         for f in _json_list(r["files"]):
             path = os.path.normpath(f if f.startswith("/") else os.path.join(cwd, f))
-            found.update(p for root_dir, p in roots.items() if path.startswith(root_dir + "/"))
+            found.update(p for root_dir, p in repo_dir_to_project.items() if path.startswith(root_dir + "/"))
             if cwd == CLOUD_HOME:
                 parts = os.path.relpath(path, CLOUD_HOME).split("/")
-                if len(parts) >= 2 and parts[0].lower() in lower:
-                    found.add(lower[parts[0].lower()])
+                if len(parts) >= 2 and parts[0].lower() in name_by_lower:
+                    found.add(name_by_lower[parts[0].lower()])
         for url in _json_list(r["prs"]):
             m = _PR.search(url)
             repo = slug(m.group(1)) if m else ""
-            if repo in lower or repo in repos:
-                found.add(lower.get(repo) or repos[repo])
+            if repo in name_by_lower or repo in repos:
+                found.add(name_by_lower.get(repo) or repos[repo])
         if found:
             out[r["id"]] = found
     return out
 
 
 def _uncited(root: Path, top: list, waiting=()) -> dict:
-    """{page rel: {short}} of the sessions that worked in a project with a page (_projects_of) and that its page does
-    not cite: the page is brought in line with the data, whatever the folder a session started in. A session still
-    waiting for its summary is left for later."""
+    """Uncited sessions: those that worked in a project with a page (_projects_of), but that its page does not cite.
+
+    Returns {page rel: {short}}. The page is then brought in line with the data, whatever folder a session started in.
+    A session still waiting for its summary is left for later."""
     folder = root / "pages" / "projects"
     cited = {path.stem: set(_page_meta(path)[0]) for path in sorted(folder.glob("*.md"))} if folder.is_dir() else {}
     out, shorts = {}, {r["id"]: r["short"] for r in top}
@@ -552,10 +609,11 @@ def _uncited(root: Path, top: list, waiting=()) -> dict:
 
 
 def _grown(root: Path, top: list, waiting=()) -> dict:
-    """{page rel: {short}} of the sessions each project page and retro cites that ended after the page was written:
-    the page saw only their start (it was written while they ran, or a run skipped their new part). Every page is
-    checked, not only those of the sessions changed since the watermark, so a gap left by an earlier run is found.
-    A session still waiting for its summary is left for later."""
+    """Grown sessions: those a project page or retro cites that ended after the page was written.
+
+    Returns {page rel: {short}}. The page saw only their start: it was written while they ran, or a run skipped their
+    new part. Every page is checked, not only those of the sessions changed since the watermark. So a gap left by an
+    earlier run is found too. A session still waiting for its summary is left for later."""
     ended = {r["short"]: r["ended"] or "" for r in top if r["id"] not in waiting}
     out = {}
     for folder in ("projects", "retro"):
@@ -569,13 +627,13 @@ def _grown(root: Path, top: list, waiting=()) -> dict:
     return out
 
 
-def _plan_retros(root: Path, top: list, ready: dict, st: dict, settings, tz, now, grown=None):
+def _plan_retros(root: Path, top: list, ready: dict, state: dict, settings, tz, now, grown=None):
     weeks = {}
     for r in top:
         w = week_of(r["started"], tz)
         if w:
             weeks.setdefault(w, []).append(r)
-    pend = st.get("pending") if isinstance(st.get("pending"), dict) else {}
+    pend = state.get("pending") if isinstance(state.get("pending"), dict) else {}
     todo = {w for w in _strings(pend.get("weeks")) if WEEK_RE.match(w)}
     late = dt.timedelta(days=settings["retro_late_days"])
     for w in closed_weeks(now, tz, settings):
@@ -603,11 +661,11 @@ def _plan_retros(root: Path, top: list, ready: dict, st: dict, settings, tz, now
 
 def due(plan: dict, settings) -> dict:
     """Whether the routine has anything to write, from a plan (make_plan). For the trigger workflow."""
-    n, m = len(plan["projects"]), len(plan["retros"])
+    projects, retros = len(plan["projects"]), len(plan["retros"])
     left = len(plan["pending"]["projects"]) + len(plan["pending"]["weeks"])
-    reason = (f"{n} project page{'s' * (n != 1)} and {m} retro{'s' * (m != 1)} to write" if n or m
-              else f"nothing to write ({len(plan['waiting'])} sessions waiting for a summary)")
-    return {"due": bool(n or m), "reason": reason, "mode": plan["mode"], "pending_after": left,
+    reason = (f"{projects} project page{'s' * (projects != 1)} and {retros} retro{'s' * (retros != 1)} to write"
+              if projects or retros else f"nothing to write ({len(plan['waiting'])} sessions waiting for a summary)")
+    return {"due": bool(projects or retros), "reason": reason, "mode": plan["mode"], "pending_after": left,
             "min_hours_between_fires": settings["min_hours_between_fires"]}
 
 
@@ -619,14 +677,16 @@ def _block(r: dict, subagents: int) -> str:
     if r["summary"]:
         out.append("summary: " + " ".join(r["summary"].split()))
     else:
-        out.append("summary: (none yet) · first prompt: " + " ".join((r["first_prompt"] or "").split())[:400])
+        first_prompt = " ".join((r["first_prompt"] or "").split())
+        out.append("summary: (none yet) · first prompt: " + first_prompt[:_FIRST_PROMPT_CHARS])
     out += [f"- decision: {d}" for d in json.loads(r["decisions"] or "[]")]
     tags = json.loads(r["tags"] or "[]")
     if tags:
         out.append("tags: " + ", ".join(tags))
     files = json.loads(r["files"] or "[]")
     if files:
-        out.append("files: " + ", ".join(files[:8]) + (f" (+{len(files) - 8})" if len(files) > 8 else ""))
+        out.append("files: " + ", ".join(files[:_DIGEST_FILES])
+                   + (f" (+{len(files) - _DIGEST_FILES})" if len(files) > _DIGEST_FILES else ""))
     out += [f"pr: {p}" for p in json.loads(r["prs"] or "[]")]
     if subagents:
         out.append(f"subagents: {subagents}")
@@ -672,8 +732,8 @@ def _memory_section(mems: list) -> list:
         block = _memory_block(m)
         if used + len(block) > MEMORY_DIGEST_CHARS:
             out.append(f"{len(mems) - i} more memories (read one with kb memory <path>):\n" + "\n".join(
-                f"- {x['ref']} · {x['type'] or '-'} · {' '.join((x['description'] or '').split())[:200]} "
-                f"[{x['path']}]" for x in mems[i:]))
+                f"- {x['ref']} · {x['type'] or '-'} · "
+                f"{' '.join((x['description'] or '').split())[:_MEMORY_LINE_CHARS]} [{x['path']}]" for x in mems[i:]))
             break
         out.append(block)
         used += len(block)
@@ -762,14 +822,70 @@ def check_page(root, rel: str, settings) -> list:
 
 
 def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None) -> dict:
-    """Check the written pages, date the bullets of the project pages and move the stale ones to History
-    (kb.freshness), set their updated time and session count, record the new state, commit, push. Raises PagesError when something is wrong.
+    """Check and complete the pages this run wrote, then commit and push them. Raises PagesError on a problem.
 
-    index_path: the index `kb pages plan` updated (default <root>/.kb/index.sqlite). Without it no bullet gets a date.
+    1. Check that the plan still matches HEAD and the branch (_load_checked_plan).
+    2. Check every changed file, the retro suggestions, the decisions and the skips (_check_changes).
+    3. Date the bullets of the written project pages and move the stale ones to History (kb.freshness). Number the
+       suggestions of the written retros (kb.ledger). Set each page's updated time and session count
+       (_rewrite_written_pages).
+    4. Put each planned page that was not written back to pending, with what it was planned for, unless it is named
+       in skip (_next_pending).
+    5. Record the new state (it moves the watermark), commit and push. When nothing changed, do nothing.
 
-    A planned page that was not written goes back to pending with what it was planned for (unless named in skip)."""
+    index_path: the index `kb pages plan` updated (default <root>/.kb/index.sqlite). Without it no bullet gets a
+    date."""
     root = Path(root)
     now = now or dt.datetime.now(_UTC)
+    plan, branch = _load_checked_plan(root, settings, push)
+    changes = _status(root)
+    index_path = Path(index_path) if index_path else root / ".kb" / "index.sqlite"
+    known = ledger.load(root)
+    decided = _check_changes(root, plan, settings, skip, changes, known, index_path)
+
+    written = {rel for _, rel in changes if rel != ledger.DECISIONS_REL}
+    suggestions, undated, moved = _rewrite_written_pages(root, written, settings, now, known, index_path)
+    if suggestions != known:
+        ledger.save(root, suggestions)
+    if decided is not None:
+        ledger.save_decisions(root, decided)
+    pending, returned = _next_pending(plan, written, skip)
+    old = load_state(root) or {}
+    reviewed = set(_strings(old.get("threads_reviewed")))        # every written project page had its threads checked
+    reviewed |= {Path(r).stem for r in written if r.startswith("pages/projects/")}
+    reviewed |= {i["name"] for i in plan["projects"] if i.get("review_threads") and i["name"] in skip}
+    state = {"version": 1, "sha": plan["head"], "last_run": _iso(now), "mode": plan["mode"],
+             "pending": pending, "waiting": plan["waiting"], "threads_reviewed": sorted(reviewed)}
+    result = {"branch": branch, "projects": sorted(r for r in written if r.startswith("pages/projects/")),
+              "retros": sorted(r for r in written if r.startswith("pages/retro/")), "returned": returned,
+              "undated": undated, "moved": moved, "decisions": decided is not None, "committed": False, "push": ""}
+    nothing_changed = not (
+        written                                       # pages were written
+        or decided is not None                        # pages/decisions.json changed
+        or plan["projects"] or plan["retros"]         # the plan had pages to write (even if they were skipped)
+        or pending != old.get("pending")              # the pending list changed
+        or plan["waiting"] != old.get("waiting")      # the sessions that wait for a summary changed
+        or state["threads_reviewed"] != sorted(_strings(old.get("threads_reviewed")))  # more threads reviewed
+        or not old                                    # no state yet: the first run records one
+    )
+    if nothing_changed:
+        return result                    # keep the watermark, no empty commit
+
+    atomic_write(root / STATE_REL, (json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+                 .encode("utf-8"))
+    _git(root, "add", "-A", "--", "pages/")
+    projects, retros = len(result["projects"]), len(result["retros"])
+    more = ", decisions" if decided is not None else ""
+    _git(root, "commit", "--quiet", "-m",
+         f"pages: {projects} project page{'s' * (projects != 1)}, {retros} retro{'s' * (retros != 1)}{more} [skip ci]")
+    result["committed"] = True
+    if push:
+        result["push"] = _push(root, branch)
+    return result
+
+
+def _load_checked_plan(root: Path, settings, push: bool):
+    """(plan, branch): the saved plan, after a check that HEAD, the branch and the push target still fit it."""
     try:
         plan = json.loads((root / ".kb" / PLAN_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -783,8 +899,11 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
     if push and branch == settings["branch"] and not _has_state(root, f"origin/{branch}"):
         raise PagesError(f"the first build goes to {settings['bootstrap_branch']} and reaches {branch} through a pull "
                          "request; run `kb pages start`")
+    return plan, branch
 
-    changes = _status(root)
+
+def _check_changes(root: Path, plan: dict, settings, skip, changes: list, known: dict, index_path: Path):
+    """The decisions to write (None when decisions.json did not change). Raises PagesError with every problem found."""
     problems = []
     for code, rel in changes:
         if not rel.startswith("pages/"):
@@ -800,8 +919,6 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
             problems.append(f"{rel}: only .md pages may be written")
         else:
             problems += check_page(root, rel, settings)
-    index_path = Path(index_path) if index_path else root / ".kb" / "index.sqlite"
-    known = ledger.load(root)
     decided = None
     if not problems:
         problems += _check_suggestions(root, sorted(rel for _, rel in changes), known, index_path)
@@ -811,22 +928,29 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
     problems += _check_skips(root, plan, skip, {rel for _, rel in changes})
     if problems:
         raise PagesError("refusing to commit:\n  " + "\n  ".join(problems))
+    return decided
 
-    written = {rel for _, rel in changes if rel != ledger.DECISIONS_REL}
+
+def _rewrite_written_pages(root: Path, written: set, settings, now, known: dict, index_path: Path):
+    """(suggestions, undated, moved): write into each written page the facts finish knows better than the writer.
+
+    These are the bullet dates, the stale bullets moved to History, the retro suggestion ids, the updated time and the
+    session count."""
     undated, moved = [], []
     suggestions = dict(known)
     idx = Index(index_path) if index_path.is_file() else None
     try:
-        for rel in sorted(written):      # the facts finish knows better than the writer: when, how many sessions
+        for rel in sorted(written):
             path = root / rel
             text = path.read_bytes().decode("utf-8", errors="replace")
             meta, body = parse_page(text)
             if meta["kind"] == "project":
                 body, missing = freshness.stamp(body, freshness.index_lookup(idx) if idx else lambda ref: "")
-                undated += [f"{rel}: {line[:120]}" for line in missing]
+                undated += [f"{rel}: {line[:_REPORT_LINE_CHARS]}" for line in missing]
                 body, gone = freshness.sweep(body, settings["stale_days"], settings["stale_days_current"],
                                              settings["stale_days_threads"])
-                moved += [f"{rel}: {line[2:122]}" for line in gone]
+                # drop the leading "- " of each moved History line, then keep _REPORT_LINE_CHARS characters
+                moved += [f"{rel}: {line[2:2 + _REPORT_LINE_CHARS]}" for line in gone]
             else:
                 body, found = ledger.assign(body, meta["name"], suggestions)
                 suggestions = ledger.record(suggestions, meta["name"], found)
@@ -835,10 +959,11 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
     finally:
         if idx:
             idx.close()
-    if suggestions != known:
-        ledger.save(root, suggestions)
-    if decided is not None:
-        ledger.save_decisions(root, decided)
+    return suggestions, undated, moved
+
+
+def _next_pending(plan: dict, written: set, skip):
+    """(pending, returned): the plan's pending lists, plus each planned page that was not written and not skipped."""
     pending = {"projects": dict(plan["pending"]["projects"]), "weeks": list(plan["pending"]["weeks"])}
     returned = []
     todo = plan.get("todo") if isinstance(plan.get("todo"), dict) else {}
@@ -851,31 +976,7 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
         if item["page"] not in written and item["week"] not in skip and item["week"] not in pending["weeks"]:
             pending["weeks"].append(item["week"])
             returned.append(item["week"])
-    old = load_state(root) or {}
-    reviewed = set(_strings(old.get("threads_reviewed")))        # every written project page had its threads checked
-    reviewed |= {Path(r).stem for r in written if r.startswith("pages/projects/")}
-    reviewed |= {i["name"] for i in plan["projects"] if i.get("review_threads") and i["name"] in skip}
-    state = {"version": 1, "sha": plan["head"], "last_run": _iso(now), "mode": plan["mode"],
-             "pending": pending, "waiting": plan["waiting"], "threads_reviewed": sorted(reviewed)}
-    result = {"branch": branch, "projects": sorted(r for r in written if r.startswith("pages/projects/")),
-              "retros": sorted(r for r in written if r.startswith("pages/retro/")), "returned": returned,
-              "undated": undated, "moved": moved, "decisions": decided is not None, "committed": False, "push": ""}
-    planned = plan["projects"] or plan["retros"]
-    if not (written or decided is not None or planned or pending != old.get("pending") or plan["waiting"] != old.get("waiting")
-            or state["threads_reviewed"] != sorted(_strings(old.get("threads_reviewed"))) or not old):
-        return result                    # nothing happened: keep the watermark, no empty commit
-
-    atomic_write(root / STATE_REL, (json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
-                 .encode("utf-8"))
-    _git(root, "add", "-A", "--", "pages/")
-    n, m = len(result["projects"]), len(result["retros"])
-    more = ", decisions" if decided is not None else ""
-    _git(root, "commit", "--quiet", "-m",
-         f"pages: {n} project page{'s' * (n != 1)}, {m} retro{'s' * (m != 1)}{more} [skip ci]")
-    result["committed"] = True
-    if push:
-        result["push"] = _push(root, branch)
-    return result
+    return pending, returned
 
 
 def _check_skips(root: Path, plan: dict, skip, changed: set) -> list:
@@ -890,8 +991,9 @@ def _check_skips(root: Path, plan: dict, skip, changed: set) -> list:
         new = [s for s in item["sessions"] if s not in cited]
         late = item.get("grown", [])
         if new or late:
-            why = (f"{len(new)} planned session(s) it does not cite ({', '.join(new[:5])})" if new else
-                   f"session(s) that went on after it was written ({', '.join(late[:5])}; read them with `kb show`)")
+            why = (f"{len(new)} planned session(s) it does not cite ({', '.join(new[:_SKIP_IDS_SHOWN])})" if new else
+                   f"session(s) that went on after it was written ({', '.join(late[:_SKIP_IDS_SHOWN])}; "
+                   "read them with `kb show`)")
             out.append(f"{item['page']}: cannot be skipped, it misses {why}; update it")
     return out
 

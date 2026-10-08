@@ -90,7 +90,9 @@ def routine_files(code: str, timezone: str = "") -> dict:
 
 # ---- one commit on top of the remote branch, pushed
 
-def _plumb(root, env, *args) -> str:
+def _git_on_temp_index(root, env, *args) -> str:
+    """Run one git command with env, whose GIT_INDEX_FILE is a temporary index, so the clone's own index is never
+    touched. Returns its stripped output; raises SetupError when it fails."""
     p = gitops._run(["git", "-C", str(root), *args], gitops.DEFAULT_TIMEOUT, f"git {args[0]}", root=root, env=env)
     if p.returncode != 0:
         raise SetupError(f"git {' '.join(args[:2])}: {(p.stderr or p.stdout).strip()}")
@@ -114,26 +116,26 @@ def _build(root, base: str, files: dict, message: str, tmp: Path):
     is already there (or present and not to be replaced)."""
     env = dict(gitops._env(root, network=False), GIT_INDEX_FILE=str(tmp / "index"))
     if base:
-        _plumb(root, env, "read-tree", base)
+        _git_on_temp_index(root, env, "read-tree", base)
     else:
-        _plumb(root, env, "read-tree", "--empty")
+        _git_on_temp_index(root, env, "read-tree", "--empty")
     written = []
     for rel, (data, replace) in sorted(files.items()):
-        old = _plumb(root, env, "ls-files", "-s", "--", rel)
+        old = _git_on_temp_index(root, env, "ls-files", "-s", "--", rel)
         if old and not replace:
             continue
         blob_file = tmp / "blob"
         blob_file.write_bytes(data)
-        blob = _plumb(root, env, "hash-object", "-w", str(blob_file))
+        blob = _git_on_temp_index(root, env, "hash-object", "-w", str(blob_file))
         if old and old.split()[1] == blob:
             continue
-        _plumb(root, env, "update-index", "--add", "--cacheinfo", f"100644,{blob},{rel}")
+        _git_on_temp_index(root, env, "update-index", "--add", "--cacheinfo", f"100644,{blob},{rel}")
         written.append(rel)
     if not written:
         return None, []
-    tree = _plumb(root, env, "write-tree")
+    tree = _git_on_temp_index(root, env, "write-tree")
     parents = ["-p", base] if base else []
-    sha = _plumb(root, env, "-c", "commit.gpgsign=false", "commit-tree", tree, *parents, "-m", message)
+    sha = _git_on_temp_index(root, env, "-c", "commit.gpgsign=false", "commit-tree", tree, *parents, "-m", message)
     return sha, written
 
 
@@ -227,10 +229,10 @@ def routine(root, branch: str = "main", code: str = "", model: str = ROUTINE_MOD
 
 
 CLOUD_HOME = "/home/user"           # where a cloud session clones its repositories
-# Hosts a cloud environment must allow (Custom network, defaults included) for `kb embed --install`: the model on
-# Hugging Face (it redirects to a regional CDN host) and the llama.cpp runtime on GitHub releases (github.com
-# redirects to one of the two githubusercontent hosts). A cloud test on 2026-10-07 got HTTP 403 for every GitHub
-# download until the GitHub hosts were listed.
+# Hosts a cloud environment must allow (Custom network, defaults included) for `kb embed --install`:
+# - the model on Hugging Face, which redirects to a regional CDN host;
+# - the llama.cpp runtime on GitHub releases. github.com redirects to one of the two githubusercontent hosts.
+# A GitHub download that is not allowed fails with HTTP 403.
 CLOUD_HOSTS = ("huggingface.co", "*.hf.co", "github.com", "release-assets.githubusercontent.com",
                "objects.githubusercontent.com")
 
@@ -332,9 +334,11 @@ def refresh_plugins() -> list:
     if shutil.which("codex"):
         p = subprocess.run(["python3", str(CODE_ROOT / "scripts" / "codex_marketplace.py"), str(CODE_ROOT)],
                            capture_output=True, text=True, timeout=60)
-        mp = p.stdout.strip().splitlines()[-1].replace("marketplace: ", "") if p.returncode == 0 and p.stdout else ""
-        cmd = ["codex", "plugin", "add", f"retroagent@{mp}"]
-        if not mp or subprocess.call(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        # the script's last line is "marketplace: <name>": the Codex marketplace that now lists retroagent
+        last_line = p.stdout.strip().splitlines()[-1] if p.returncode == 0 and p.stdout else ""
+        marketplace = last_line.replace("marketplace: ", "")
+        cmd = ["codex", "plugin", "add", f"retroagent@{marketplace}"]
+        if not marketplace or subprocess.call(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL, timeout=300) != 0:
             failed.append(" ".join(cmd))
     return failed
