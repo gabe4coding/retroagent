@@ -24,7 +24,7 @@ from pathlib import Path
 
 from kb import freshness, gitops, ledger
 from kb.index import Index, connect_readonly, parse_memory
-from kb.pages import WEEK_RE, page_rel, parse_page, set_fields
+from kb.pages import WEEK_RE, page_rel, parse_page, section, set_fields
 from kb.redact import redact
 from kb.stats import signature_sessions
 from kb.util import atomic_write, short_id
@@ -44,11 +44,13 @@ DEFAULTS = {
     "max_page_chars": 40000,
     "stale_days": freshness.STALE_DAYS,  # an aging bullet this much older than the page's newest moves to History
     "stale_days_current": freshness.STALE_DAYS_CURRENT,   # the same for "Current state"
+    "max_current_bullets": 10,           # "Current state" of a written page: past this, finish asks to compact it
+    "max_open_threads": 8,               # the same for "Open threads"
     "min_hours_between_fires": 3,        # the trigger workflow fires the routine at most this often
     "branch": "main",
     "bootstrap_branch": "claude/pages-bootstrap",
 }
-_AT_LEAST_ONE = ("stale_days", "stale_days_current")
+_AT_LEAST_ONE = ("stale_days", "stale_days_current", "max_current_bullets", "max_open_threads")
 SINCE_MARGIN = dt.timedelta(days=2)      # time fallback: a commit made before the last run but pushed after it counts
 DIGEST_CHARS = 150_000
 MEMORY_CHARS = 2_500                     # text of one memory in a digest; longer ones are cut (kb memory reads it all)
@@ -577,7 +579,7 @@ def check_page(root, rel: str, settings) -> list:
     """Problems that stop a page from being committed (empty when it is fine)."""
     text = (Path(root) / rel).read_bytes().decode("utf-8", errors="replace")
     try:
-        meta, _ = parse_page(text)
+        meta, body = parse_page(text)
     except ValueError as e:
         return [f"{rel}: {e}"]
     out = []
@@ -589,6 +591,13 @@ def check_page(root, rel: str, settings) -> list:
     found = redact(text)[1]
     if found:
         out.append(f"{rel}: looks like it holds a secret ({', '.join(sorted(found))}); remove it")
+    if meta["kind"] == "project":
+        for heading, key, how in (("Current state", "max_current_bullets", "one bullet per area, as it is now"),
+                                  ("Open threads", "max_open_threads", "close the finished ones")):
+            n = sum(1 for line in (section(body, heading) or "").splitlines() if line.startswith("- "))
+            if n > settings[key]:
+                out.append(f"{rel}: {n} bullets in \"{heading}\", the limit is {settings[key]}; {how}, and move "
+                           "the rest to History")
     return out
 
 
