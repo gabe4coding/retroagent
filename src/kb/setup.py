@@ -276,7 +276,7 @@ The first `kb find` in a session starts a background fill: it imports the vector
 (vectors/ in {data}) and starts the model. Until it is done, `kb find` uses BM25 alone. Your machines must have
 semantic search on (`kb embed`) and have synced, or there are no vectors to import.
 
-After each answer, a hook pushes the session's slim, redacted transcript to inbox/ on the session's branch of {data}.
+After each answer, a hook pushes the session's slim, redacted transcript to inbox/ on a branch of its own in {data}.
 The sync of the machine from step 5 imports it as host `cloud` (summaries and vectors included) and then deletes
 that branch.
 """

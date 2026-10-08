@@ -104,8 +104,9 @@ A cloud container is deleted after its session, with its transcript. The setup s
 runs `kb cloud install`: it adds a `Stop` and a `SessionEnd` hook to `~/.claude/settings.json` in the container.
 
 - After each answer, the hook starts `kb cloud push` in the background. It slims and redacts the transcript and its
-  subagents, like a raw copy, and commits them as `inbox/claude/<encoded cwd>/<id>.jsonl.gz` on the branch of the data
-  clone: the session's own `claude/…` branch. It never pushes to `main`, and it does not touch the working tree.
+  subagents, like a raw copy, and commits them as `inbox/claude/<encoded cwd>/<id>.jsonl.gz` on a branch of the data
+  repo: the data clone's `claude/…` branch when the session made one, else `claude/inbox-<short id>` (a cloud session
+  starts every repo on a detached HEAD). It never pushes to `main`, and it does not touch the working tree.
 - On one machine, run `kb cloud import --on`. Each sync of that machine then fetches every branch, copies the inbox
   files into `.kb/cloud/`, and processes them as the sessions of host `cloud`: markdown, raw copy, summary, catalog
   and vectors, as for its own sessions. `kb find`, `kb page` and the pages routine see them like any other session.
