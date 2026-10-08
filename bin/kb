@@ -12,6 +12,7 @@ CODE=$(cd "$(dirname "$self")/.." && pwd)
 case "$CODE" in
   */plugins/cache/*)
     CFG="${KB_CONFIG:-$HOME/.config/retroagent/config.json}"
+    # sessions-kb is the old name of retroagent: old installs keep their config there.
     [ -n "${KB_CONFIG:-}" ] || [ -f "$CFG" ] || CFG="$HOME/.config/sessions-kb/config.json"
     CLONE=""
     [ -f "$CFG" ] && CLONE=$(sed -n 's/.*"code"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -n 1)

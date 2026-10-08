@@ -6,13 +6,20 @@ Launch:  scripts/search-eval/run.py                      cases.local.jsonl, vari
          scripts/search-eval/run.py --cases FILE --limit 20
          scripts/search-eval/run.py --variant v3 --search scripts/search-eval/embed_search.py
 
-Each case is {"id", "tags", "query", "expected": [...], "kind"?}. kind "session" (default): expected holds session id
-prefixes, and a hit matches when its id, or its parent's id (a subagent of the expected session), starts with one.
-kind "page" or "memory": expected holds paths, scored against Index.find_pages / find_memories. Metrics per case: recall@5 (headline),
-recall@10, reciprocal rank. Only session hits are scored (Index.find), not the pages and memories `kb find` prints
-first. --search FILE scores another search instead: FILE defines make_search(idx, flow) returning
-search(query, limit, kind) -> rows (id and parent for sessions, path for pages and memories). Reads the index read-only; no model call, no cost. Writes .claude/hillclimb/kb-find/<variant>/ in the layout
-the claude-api report builders read (results.jsonl, traces/, errors.jsonl). Python 3.9, stdlib only.
+Cases: each case is {"id", "tags", "query", "expected": [...], "kind"?}.
+- kind "session" (the default): expected holds session id prefixes. A hit matches when its id starts with one, or
+  its parent's id does (a subagent of the expected session). Only session hits are scored (Index.find), not the
+  pages and memories that `kb find` prints first.
+- kind "page" or "memory": expected holds paths, scored against Index.find_pages or Index.find_memories.
+
+Metrics per case: recall@5 (the headline), recall@10 and reciprocal rank.
+
+Custom search: --search FILE scores another search instead. FILE defines make_search(idx, flow), which returns
+search(query, limit, kind) -> rows. A row has id and parent for a session, path for a page or a memory.
+
+Output: it reads the index read-only, with no model call and no cost. It writes .claude/hillclimb/kb-find/<variant>/
+in the layout that the claude-api report builders read (results.jsonl, traces/, errors.jsonl).
+Python 3.9, stdlib only.
 """
 from __future__ import annotations
 

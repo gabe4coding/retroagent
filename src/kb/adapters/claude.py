@@ -36,8 +36,12 @@ def agent_id(path) -> str:
 
 
 def _mark_shared(units) -> None:
-    """A resumed or forked session copies its parent's subagents, so one agent-<id>.jsonl can sit under several
-    sessions. Each of them learns the others (unit.shared) and watches their files (unit.related)."""
+    """Mark the subagents that several sessions hold a copy of.
+
+    A resumed or forked session copies its parent's subagents. So one agent-<id>.jsonl can sit under several
+    sessions. For each such subagent, every holder gets all the copies in unit.shared. Every holder also gets the
+    other holders' main transcripts and copies in unit.related, so a change to any of them changes its fingerprint.
+    """
     holders = defaultdict(dict)                     # agent id -> {main transcript: copy}
     for u in units:
         for p in u.paths[1:]:
@@ -47,7 +51,9 @@ def _mark_shared(units) -> None:
             copies = holders[aid]
             if len(copies) > 1:
                 u.shared[aid] = dict(sorted(copies.items()))
-                u.related += [x for main, copy in sorted(copies.items()) if main != u.main for x in (main, copy)]
+                for main, copy in sorted(copies.items()):
+                    if main != u.main:
+                        u.related += [main, copy]
         u.related = list(dict.fromkeys(u.related))
 
 
@@ -58,17 +64,21 @@ def owner_order(copies: dict) -> list:
     in any copy, is the one that started it; a resumed or forked session is named later or never. Sessions that no
     record names come last. Equal times go by session id. Every holder reads the same files, so all agree.
     """
-    ids = {Path(main).stem: main for main in copies}
-    first = {}
+    main_by_session_id = {Path(main).stem: main for main in copies}
+    first_seen = {}                                 # session id -> earliest timestamp of a record that names it
     for copy in copies.values():
         try:
             for rec in iter_records(copy, Counter()):
                 sid, ts = rec.get("sessionId"), rec.get("timestamp")
-                if isinstance(sid, str) and sid in ids and isinstance(ts, str) and ts and ts < first.get(sid, "~"):
-                    first[sid] = ts
+                # "~" sorts after every ISO timestamp, so the first timestamp seen for a session always wins.
+                if (isinstance(sid, str) and sid in main_by_session_id and isinstance(ts, str) and ts
+                        and ts < first_seen.get(sid, "~")):
+                    first_seen[sid] = ts
         except OSError:                             # gone since discover: it names nobody
             continue
-    return [ids[k] for k in sorted(ids, key=lambda k: (k not in first, first.get(k, ""), k))]
+    # Named sessions first (False sorts before True), earliest first; then by session id.
+    order = sorted(main_by_session_id, key=lambda k: (k not in first_seen, first_seen.get(k, ""), k))
+    return [main_by_session_id[k] for k in order]
 
 
 def text_of(content) -> str:
@@ -154,13 +164,109 @@ def _apply_result(tc, part: dict, tool_use_result, single: bool) -> None:
         tc.subagent_note = first_line(text)
 
 
+def _read_user_record(rec: dict, s: Session, ts: str, current, calls: dict):
+    """Add one user record: tool results go to their calls, a human prompt becomes a user turn.
+
+    Returns the open assistant turn, or None when the next assistant text starts a new turn.
+    """
+    content = (rec.get("message") or {}).get("content")
+    results = [p for p in content if isinstance(p, dict) and p.get("type") == "tool_result"] \
+        if isinstance(content, list) else []
+    if results:
+        for part in results:
+            tid = part.get("tool_use_id")
+            _apply_result(calls.get(tid) if isinstance(tid, str) else None, part,
+                          rec.get("toolUseResult"), len(results) == 1)
+        return current
+    if not _is_human_prompt(rec):
+        if _is_external_event(rec) and not rec.get("isMeta"):
+            return None                 # what the assistant says next answers the event, not the last prompt
+        return current
+    raw = text_of(content)
+    if raw.lstrip().startswith(INTERRUPT_MARK):
+        return current
+    text = clean_user_text(raw)
+    if not text and _has_image(content):
+        text = "[image]"
+    if text:
+        s.add_turn("user", ts, [text])
+        return None
+    return current
+
+
+def _read_assistant_record(rec: dict, s: Session, ts: str, current, calls: dict, edits: list, skipped: Counter):
+    """Add the text and tool calls of one assistant record to the open assistant turn. Returns that turn.
+
+    An error stops the record, as in _parse, but the turn it opened stays open: the next record adds to it.
+    """
+    msg = rec.get("message") or {}
+    model = _str(msg.get("model"))
+    if model == "<synthetic>":
+        return current
+    if model and not s.model:
+        s.model = model
+    try:
+        for part in msg.get("content") or []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                text = str(part.get("text") or "").strip()
+                if text:
+                    current = current or s.add_turn("assistant", ts)
+                    current.items.append(text)
+            elif part.get("type") == "tool_use":
+                current = current or s.add_turn("assistant", ts)
+                name, inp = str(part.get("name") or ""), part.get("input") or {}
+                tc = ToolCall(name=tool_name(name), arg=short_arg(name, inp, s.cwd), diff=diff_stat(name, inp))
+                current.items.append(tc)
+                tid = part.get("id")
+                if isinstance(tid, str) and tid:
+                    calls[tid] = tc
+                path_in = inp.get("file_path") or inp.get("notebook_path") if isinstance(inp, dict) else None
+                if name in EDIT_TOOLS and path_in:
+                    edits.append((rel_path(str(path_in), s.cwd), tc))
+    except Exception as e:                      # the same count as the except in _parse
+        skipped[f"<error:{type(e).__name__}>"] += 1
+    return current
+
+
+def _read_title_record(rec: dict, kind: str, s: Session, titles: dict) -> bool:
+    """Read a title or PR link record. Returns False for a record kind it does not know."""
+    if kind == "custom-title":
+        titles["custom"] = _str(rec.get("customTitle"))
+    elif kind == "ai-title":
+        titles["ai"] = _str(rec.get("aiTitle"))
+    elif kind == "agent-name":
+        titles["agent"] = _str(rec.get("agentName"))
+    elif kind == "pr-link":
+        url = rec.get("prUrl")
+        if isinstance(url, str) and url and url not in s.prs:
+            s.prs.append(url)
+    else:
+        return False
+    return True
+
+
+def _finish(s: Session, relocated: str, titles: dict, stamps: list, edits: list, skipped: Counter) -> None:
+    """Set the fields that need the whole transcript: cwd, times, project, edited files, title, skipped counts."""
+    if relocated:
+        s.cwd = relocated
+    s.started = min(stamps) if stamps else ""
+    s.ended = max(stamps) if stamps else ""
+    s.project = project_from_cwd(s.cwd)
+    # A failed edit changed nothing; a call that never got a result still counts.
+    s.files = list(dict.fromkeys(rel for rel, tc in edits if tc.status != "error" and not is_scratch_path(rel)))
+    s.title = titles.get("custom") or titles.get("ai") or titles.get("agent") or s.first_prompt() or "(untitled)"
+    s.skipped = dict(skipped)
+
+
 def _parse(path, session_id: str, parent: str = ""):
     """Parse one transcript. Returns (Session, {tool_use_id: ToolCall})."""
     skipped: Counter = Counter()
     s = Session(id=session_id, agent="claude", source_paths=[str(path)], parent=parent)
     titles, stamps, calls, edits = {}, [], {}, []
     relocated = ""
-    current = None
+    current = None                              # the open assistant turn: new assistant items go there
     for rec in iter_records(path, skipped):
         try:
             if rec.get("entrypoint") == "sdk-cli":      # what `claude -p` and the Agent SDK write
@@ -174,79 +280,16 @@ def _parse(path, session_id: str, parent: str = ""):
             if _str(rec.get("gitBranch")) and rec["gitBranch"] != "HEAD":
                 s.branch = rec["gitBranch"]
             if kind == "user":
-                content = (rec.get("message") or {}).get("content")
-                results = [p for p in content if isinstance(p, dict) and p.get("type") == "tool_result"] \
-                    if isinstance(content, list) else []
-                if results:
-                    for part in results:
-                        tid = part.get("tool_use_id")
-                        _apply_result(calls.get(tid) if isinstance(tid, str) else None, part,
-                                      rec.get("toolUseResult"), len(results) == 1)
-                    continue
-                if not _is_human_prompt(rec):
-                    if _is_external_event(rec) and not rec.get("isMeta"):
-                        current = None          # what the assistant says next answers the event, not the last prompt
-                    continue
-                raw = text_of(content)
-                if raw.lstrip().startswith(INTERRUPT_MARK):
-                    continue
-                text = clean_user_text(raw)
-                if not text and _has_image(content):
-                    text = "[image]"
-                if text:
-                    s.add_turn("user", ts, [text])
-                    current = None
+                current = _read_user_record(rec, s, ts, current, calls)
             elif kind == "assistant":
-                msg = rec.get("message") or {}
-                model = _str(msg.get("model"))
-                if model == "<synthetic>":
-                    continue
-                if model and not s.model:
-                    s.model = model
-                for part in msg.get("content") or []:
-                    if not isinstance(part, dict):
-                        continue
-                    if part.get("type") == "text":
-                        text = str(part.get("text") or "").strip()
-                        if text:
-                            current = current or s.add_turn("assistant", ts)
-                            current.items.append(text)
-                    elif part.get("type") == "tool_use":
-                        current = current or s.add_turn("assistant", ts)
-                        name, inp = str(part.get("name") or ""), part.get("input") or {}
-                        tc = ToolCall(name=tool_name(name), arg=short_arg(name, inp, s.cwd), diff=diff_stat(name, inp))
-                        current.items.append(tc)
-                        tid = part.get("id")
-                        if isinstance(tid, str) and tid:
-                            calls[tid] = tc
-                        path_in = inp.get("file_path") or inp.get("notebook_path") if isinstance(inp, dict) else None
-                        if name in EDIT_TOOLS and path_in:
-                            edits.append((rel_path(str(path_in), s.cwd), tc))
-            elif kind == "custom-title":
-                titles["custom"] = _str(rec.get("customTitle"))
-            elif kind == "ai-title":
-                titles["ai"] = _str(rec.get("aiTitle"))
-            elif kind == "agent-name":
-                titles["agent"] = _str(rec.get("agentName"))
-            elif kind == "pr-link":
-                url = rec.get("prUrl")
-                if isinstance(url, str) and url and url not in s.prs:
-                    s.prs.append(url)
+                current = _read_assistant_record(rec, s, ts, current, calls, edits, skipped)
             elif kind == "relocated":
                 relocated = _str(rec.get("relocatedCwd")) or relocated
-            else:
+            elif not _read_title_record(rec, kind, s, titles):
                 skipped[str(kind)] += 1
         except Exception as e:                  # one odd record must not lose the whole session
             skipped[f"<error:{type(e).__name__}>"] += 1
-    if relocated:
-        s.cwd = relocated
-    s.started = min(stamps) if stamps else ""
-    s.ended = max(stamps) if stamps else ""
-    s.project = project_from_cwd(s.cwd)
-    # A failed edit changed nothing; a call that never got a result still counts.
-    s.files = list(dict.fromkeys(rel for rel, tc in edits if tc.status != "error" and not is_scratch_path(rel)))
-    s.title = titles.get("custom") or titles.get("ai") or titles.get("agent") or s.first_prompt() or "(untitled)"
-    s.skipped = dict(skipped)
+    _finish(s, relocated, titles, stamps, edits, skipped)
     return s, calls
 
 
