@@ -408,6 +408,8 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
         for rel, shorts in found.items():
             if rel.startswith("pages/projects/"):
                 todo.setdefault(rel[len("pages/projects/"):-3], set()).update(shorts)
+    for p in _threads_to_review(root, st):
+        todo.setdefault(p, set()).add(REVIEW)
     for path in changed_memories:
         m = memory(path)
         if m:
@@ -422,7 +424,7 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
     for p in batch:
         rel = page_rel("project", p)
         if (root / rel).is_file():
-            shorts = [e for e in todo[p] if not e.startswith("memories/")]
+            shorts = [e for e in todo[p] if not e.startswith("memories/") and e != REVIEW]
             item = {"name": p, "page": rel, "action": "update",
                     "sessions": sorted(shorts, key=lambda s: (started.get(s, ""), s))}
             paths = sorted(e for e in todo[p] if e.startswith("memories/"))
@@ -434,6 +436,8 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
                 item["memories_removed"] = gone
             if grown.get(rel):
                 item["grown"] = sorted(grown[rel] & set(shorts), key=lambda s: (started.get(s, ""), s))
+            if REVIEW in todo[p]:
+                item["review_threads"] = True
             other = {r["short"] for r in top if r["short"] in shorts and r["project"] != p}
             if other:
                 item["related"] = sorted(other, key=lambda s: (started.get(s, ""), s))
@@ -442,6 +446,26 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
             items.append({"name": p, "page": rel, "action": "create",
                           "sessions": [r["short"] for r in sorted(members[p], key=lambda r: (r["started"] or "", r["id"]))]})
     return items, {p: sorted(todo[p]) for p in order[len(batch):]}, {p: sorted(todo[p]) for p in batch}
+
+
+REVIEW = "@review-threads"                  # in a project's todo: its open threads were never all checked
+
+
+def _threads_to_review(root: Path, st: dict) -> list:
+    """The projects whose page has open threads but was never written or reviewed since every update checks all open
+    threads against all sessions (state "threads_reviewed"): each is planned once for that review."""
+    done = set(_strings(st.get("threads_reviewed")))
+    out = []
+    for path in sorted((root / "pages" / "projects").glob("*.md")):
+        if path.stem in done:
+            continue
+        try:
+            body = parse_page(path.read_text(encoding="utf-8", errors="replace"))[1]
+        except (OSError, ValueError):
+            continue
+        if any(line.startswith("- ") for line in (section(body, "Open threads") or "").splitlines()):
+            out.append(path.stem)
+    return out
 
 
 def _removed(m) -> bool:
@@ -827,15 +851,18 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
         if item["page"] not in written and item["week"] not in skip and item["week"] not in pending["weeks"]:
             pending["weeks"].append(item["week"])
             returned.append(item["week"])
-    state = {"version": 1, "sha": plan["head"], "last_run": _iso(now), "mode": plan["mode"],
-             "pending": pending, "waiting": plan["waiting"]}
     old = load_state(root) or {}
+    reviewed = set(_strings(old.get("threads_reviewed")))        # every written project page had its threads checked
+    reviewed |= {Path(r).stem for r in written if r.startswith("pages/projects/")}
+    reviewed |= {i["name"] for i in plan["projects"] if i.get("review_threads") and i["name"] in skip}
+    state = {"version": 1, "sha": plan["head"], "last_run": _iso(now), "mode": plan["mode"],
+             "pending": pending, "waiting": plan["waiting"], "threads_reviewed": sorted(reviewed)}
     result = {"branch": branch, "projects": sorted(r for r in written if r.startswith("pages/projects/")),
               "retros": sorted(r for r in written if r.startswith("pages/retro/")), "returned": returned,
               "undated": undated, "moved": moved, "decisions": decided is not None, "committed": False, "push": ""}
     planned = plan["projects"] or plan["retros"]
     if not (written or decided is not None or planned or pending != old.get("pending") or plan["waiting"] != old.get("waiting")
-            or not old):
+            or state["threads_reviewed"] != sorted(_strings(old.get("threads_reviewed"))) or not old):
         return result                    # nothing happened: keep the watermark, no empty commit
 
     atomic_write(root / STATE_REL, (json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
