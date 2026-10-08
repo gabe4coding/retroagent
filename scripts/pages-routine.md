@@ -16,9 +16,9 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
 
 - In every step, `kb` stands for `KB_ROOT=<data> <code>/bin/kb` with the two absolute paths from step 0 written out
   (the shell does not keep variables between commands).
-- Write only files under `pages/projects/` and `pages/retro/` of the data repo, and `pages/decisions.json` as step 4b
-  says. Never edit anything else (the code checkout included), never delete a page, never touch `pages/config.json`,
-  `pages/.state.json` or `pages/suggestions.json`.
+- Write only files under `pages/projects/` and `pages/retro/` of the data repo, `pages/decisions.json` as step 4b
+  says and `pages/memory-edits.json` as step 4c says. Never edit anything else (the code checkout included), never
+  delete a page, never touch `pages/config.json`, `pages/.state.json` or `pages/suggestions.json`.
 - Never run `git commit`, `git push`, `git reset`, `git checkout` or `git rebase` yourself. `kb pages finish` checks,
   commits and pushes.
 - Read sessions and memories only through `kb` (`kb pages digest`, `kb summary`, `kb show`, `kb memory`, `kb sql`).
@@ -87,7 +87,7 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
      - A new session **contradicts** it: write the new bullet, and move the old one to History as
        `- superseded <date of the new session> by <short> (<section>): <old text> (<old sources>)`.
      - Two **memories** disagree: follow the newer one (by its `modified` date in the digest), and add an "Open
-       threads" bullet that names both refs, so the owner can delete the old one. Never edit a memory.
+       threads" bullet that names both refs. Note the old one for a memory fix (step 4c). Never edit a memory.
      - Not sure whether it confirms or contradicts: leave the bullet as it is.
      Never write dates into the parentheses: `finish` writes them (`· YYYY-MM-DD`) and replaces any you write.
    - Keep the page true now (on `create` and on every `update`):
@@ -147,6 +147,27 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
    id of the session that shows it, or `memory <ref>`. `finish` writes `date` (from the source) and `by`. Change only
    entries whose `by` is `"routine"` or new ones: the others are the owner's. Never remove an entry. No evidence: no
    entry. An agent's own claim that it "will do" a change is not evidence.
+4c. **Memory fixes.** Once per run, after 4b. The owner's memory files are loaded into every new session of their
+   folder, so a wrong one misleads every session. You saw the memories of this run's pages. Propose a fix for a
+   memory only when the sessions or a newer memory show it, at most 5 per run, most harmful first:
+   - `delete`: a newer memory or session says the opposite, or the memory describes work that is over and no longer
+     guides anything.
+   - `rewrite`: the memory is still useful but part of it is wrong, or its summary line (`description`) says
+     something its own text no longer says. Read it whole first with `kb memory <ref>`. Keep the owner's words and
+     language where they are still true. `text` is the whole new text after the front matter; give `description`
+     only to change the summary line.
+   - `move`: a Claude memory about one project sits in the folder of another (the folder of a parent directory, or
+     an old clone). `folder` is the encoded cwd of the right project: each character that is not a letter or a
+     digit becomes `-` (`/Users/me/src/demo` → `-Users-me-src-demo`). Find the cwd with `kb sql "SELECT DISTINCT
+     cwd FROM sessions WHERE host='<host>' AND project='<project>'"`.
+   Add each one to `pages/memory-edits.json` (a JSON object; create it if missing) under a key of your own:
+   `"new-1": {"ref": "<memory ref>", "kind": "delete|rewrite|move", "why": "<one line>", "sources": ["<short>",
+   "memory <ref>"], "text": "…", "description": "…", "folder": "…"}` (text and description for rewrite, folder for
+   move). `finish` gives it its id and adds the path, host, date and a digest of the memory. Never change or remove
+   an entry that has an id. `finish` refuses a second proposal for the same memory until the memory changes, so an
+   answered or waiting one is never asked again. No secrets: `finish` refuses a memory that holds a redacted one.
+   The owner accepts or rejects each fix with `kb decide` on the machine that owns the host; accepting changes the
+   memory file there.
 5. **Finish.** `kb pages finish`. Add `--skip <name,…>` for planned items you decided not
    to write (for example a project with nothing worth a page, or an update with only memories the page already
    holds), and say why in your final message; without `--skip`, an unwritten page is planned again next run.
@@ -154,8 +175,8 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
    write those pages.
    - If it prints `refusing to commit`, fix the listed pages or decisions and run it again. Never work around it.
    - `"push": "lost"` means another run pushed first. Stop: the next run catches up.
-6. **Report.** End with a short message: branch, pages written, items still pending, push result. In bootstrap, if
-   your tools allow it, keep one pull request from `claude/pages-bootstrap` to `main`: open it as a draft if none is
+6. **Report.** End with a short message: branch, pages written, memory fixes proposed, items still pending, push
+   result. In bootstrap, if your tools allow it, keep one pull request from `claude/pages-bootstrap` to `main`: open it as a draft if none is
    open; when `pending` is empty, mark it ready for review and say that the first build is complete and the owner
    should review and merge it.
 

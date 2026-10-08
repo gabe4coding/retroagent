@@ -20,11 +20,14 @@ is `src/kb` (stdlib only, Python 3.9). `templates/data/` holds the files that `k
 - CI installs gitleaks, so the gitleaks tests also run.
 - CI has no macOS job, because macOS runners cost ten times more. For a change to macOS behavior, run
   `scripts/test --all` on a Mac.
+- The decide mod (`mods/decide`) has its own tests, and CI does not run them. When you change the mod, run
+  `claude plugin validate mods/decide` and `claude plugin test mods/decide`.
 
 ## Releasing plugin changes
 
 When skills or hooks change, increase `version` in `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`.
-Claude Code and Codex keep a cache of plugins per version.
+Claude Code and Codex keep a cache of plugins per version. When the mod changes, increase `version` in
+`mods/decide/.claude-plugin/plugin.json`.
 
 ## More
 

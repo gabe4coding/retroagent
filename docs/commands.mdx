@@ -19,7 +19,7 @@ Run `kb --help` to see all the commands. To see the flags of a command, add `--h
 | `kb show <id>` | Only the part of a session that you need (`--turn N --around K`, `--grep PATTERN`). |
 | `kb stats [report]` | Ready-made analytics: overview, projects, agents, outcomes, tags, daily, subagents, errors. `kb stats errors [--since 7d] [--project P]` lists the tool errors that occur in two or more sessions. |
 | `kb suggestions [--all] [--json]` | The changes that weekly retros suggested, the decisions on them, and if the error that each change targets still occurs. See [Suggested changes and whether they worked](./pages-routine.mdx#suggested-changes-and-whether-they-worked). |
-| `kb decide [accept\|reject <id>] [--note TEXT]` | The suggestions that wait for your answer. Accept or reject one in your own terminal. `kb decide later [--days N]` stops new sessions asking for a while. See [Answer a suggestion](./pages-routine.mdx#answer-a-suggestion). |
+| `kb decide [accept\|reject <id>] [--note TEXT]` | The retro suggestions and memory fixes that wait for your answer. Accept or reject one in your own terminal. `kb decide later [--days N]` stops new sessions asking for a while. See [Answer a suggestion](./pages-routine.mdx#answer-a-suggestion), [Memory fixes](./pages-routine.mdx#memory-fixes) and [Answer in Claude Code](#answer-in-claude-code). |
 | `kb brief [--project P] [--hook]` | What a new session in this project gets at the start: a pointer to the project page, the accepted suggestions for its repo and one line about `kb find`. See [Brief at session start](#brief-at-session-start). |
 | `kb hint --event error [--hook]` | A past fix for a failed tool call. It reads the hook event JSON on stdin and prints one line or nothing. `--hook` prints the hook output JSON. See [Hints when a command fails](#hints-when-a-command-fails). |
 | `kb sql "<SELECT …>" [--width N]` | Read-only SQL on the index (tables: `sessions`, `turns`, `pages`, `memories`). If a cell is longer than `N` characters (default 80), `kb sql` cuts it and adds `…` at the end. `--width 0` never cuts a cell. |
@@ -163,6 +163,27 @@ To see what a session in a project gets, run `kb brief` (or `kb brief --project 
 On a machine where you installed the plugin but did not do the setup, there is no data repo. Then the hook does not
 sync and does not show a brief. It adds only one line that tells the agent to offer the setup skill
 (`/retroagent:setup`) to you. Set `"brief": false` in the config to stop this line.
+
+## Answer in Claude Code
+
+The `retroagent-decide` mod shows the questions of `kb decide` in Claude Code. If questions wait for your answer, a
+band above the prompt says so. **Review** opens a pane with each question, its details and its sources. Each question
+has an **Accept** and a **Reject** button. **Later** hides the band for one day, or until a new question arrives. The
+`/decide` command opens the pane too.
+
+To install the mod, run this command in a terminal on a machine with retroagent:
+
+```sh
+claude plugin install retroagent-decide@retroagent
+```
+
+The mod runs `kb decide`, so it has the same rules. A memory fix shows only on the machine that owns the memory file.
+If `kb` is not on the `PATH` of Claude Code, the mod tries `~/.local/bin/kb`. To use another path, set the `kb` option
+of the plugin.
+
+Mods are an early access feature of Claude Code, and they can be off for your account. If the mod does not load, the
+brief still tells the agent about the waiting questions. The agent then tells you, and you answer with `kb decide` in
+a terminal.
 
 ## Hints when a command fails
 

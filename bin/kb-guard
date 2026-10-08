@@ -1,0 +1,11 @@
+#!/bin/sh
+# PreToolUse hook (Bash): refuse an agent's call to `kb decide accept|reject`. Only the owner answers the questions of
+# `kb decide` (src/kb/decide.py): in their own terminal, or with the buttons of the retroagent-decide mod, which run kb
+# directly and are no tool call. Session text can hold instructions from other people, and an accepted suggestion or
+# memory fix reaches every later session. Matches only a call (kb after a separator or a space, or a path that ends in
+# /kb), so a search for the words in a file goes through. Prints nothing and exits 0 for every other command.
+INPUT=$(cat)
+if printf '%s' "$INPUT" | grep -Eq '(^|[;&|(`]|\\n|[[:space:]]|:[[:space:]]*")([^[:space:]";&|]*/)?kb[[:space:]]+decide[[:space:]]+(accept|reject)([[:space:]]|\\|"|$)'; then
+  printf '%s\n' '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "retroagent: only the user answers `kb decide` questions, in their own terminal. Tell the user which answer you suggest and why; do not run it."}}'
+fi
+exit 0

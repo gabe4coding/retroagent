@@ -1,7 +1,10 @@
 """`kb decide`: the questions that wait for the owner, and the owner's answers.
 
-Today the only questions are the suggestions of the weekly retros (kb.ledger) that have no decision yet ("proposed").
-The owner accepts or rejects each one; an accepted suggestion then shows in the sessions of its repo (`kb brief`).
+Two kinds of questions:
+- a suggestion of the weekly retros (kb.ledger, id s-…) with no decision yet ("proposed"). An accepted suggestion
+  shows in the sessions of its repo (`kb brief`). Every machine lists them.
+- a memory fix the pages routine proposed (kb.memedits, id m-…). Only the machine that owns the memory's host lists
+  it, because accepting it changes that machine's memory file.
 
 Where the answers go:
 - decisions/<host>/answers.jsonl in the data clone: one JSON line per answer (kb.ledger.parse_answer). Only this
@@ -23,7 +26,7 @@ import datetime as dt
 import json
 from pathlib import Path
 
-from kb import ledger
+from kb import ledger, memedits
 from kb.util import atomic_write
 
 BACKUP = "answers.jsonl"                 # in .kb/: the local copy of this host's answers
@@ -38,12 +41,24 @@ def waiting(root) -> list:
     return [sid for sid, _ in sorted(rows, key=lambda r: (r[1]["weeks"][-1], r[0]), reverse=True)]
 
 
+def memory_fixes(root, host: str) -> list:
+    """(id, entry) of the memory fixes that wait for the owner of `host` (kb.memedits.waiting)."""
+    return memedits.waiting(root, host, set(ledger.answers(root)))
+
+
+def all_waiting(root, host: str) -> list:
+    """The ids of every question that waits on this machine: suggestions, then this host's memory fixes."""
+    return waiting(root) + [eid for eid, _ in memory_fixes(root, host)]
+
+
 def answer(root, kb_dir, host: str, sid: str, state: str, note: str = "", now=None) -> dict:
-    """Record the owner's answer for one suggestion and return it. ValueError for an unknown id or state."""
+    """Record the owner's answer for one suggestion or memory fix and return it. ValueError for an unknown id or
+    state. It applies nothing: the caller applies an accepted memory fix first (kb.memedits.apply)."""
     if state not in ledger.ANSWER_STATES:
         raise ValueError(f"answer must be one of {', '.join(ledger.ANSWER_STATES)}")
-    if sid not in ledger.load(root):
-        raise ValueError(f"no suggestion {sid}; `kb decide` lists the ones that wait for you")
+    known = memedits.load(root) if memedits.is_id(sid) else ledger.load(root)
+    if sid not in known:
+        raise ValueError(f"no question {sid}; `kb decide` lists the ones that wait for you")
     now = now or dt.datetime.now(dt.timezone.utc)
     record = {"id": sid, "state": state, "date": now.astimezone().date().isoformat(),
               "at": now.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "note": " ".join(note.split())}
@@ -96,12 +111,16 @@ def hidden_until(kb_dir, ids, today=None) -> str:
     return data["until"] if today < data["until"] and set(ids) <= set(data["ids"]) else ""
 
 
-def brief_line(root, kb_dir, today=None) -> str:
+def brief_line(root, kb_dir, host: str = "", today=None) -> str:
     """The brief's line about the questions that wait for the owner, or ""."""
-    ids = waiting(root)
+    suggestions = waiting(root)
+    fixes = [eid for eid, _ in memory_fixes(root, host)] if host else []
+    ids = suggestions + fixes
     if not ids or hidden_until(kb_dir, ids, today):
         return ""
-    n = len(ids)
-    what = "1 retro suggestion waits" if n == 1 else f"{n} retro suggestions wait"
-    return (f"{what} for the user to accept or reject (`kb decide` lists them). At a natural pause, tell the user in "
-            "one line. Never answer for the user: only they run `kb decide accept|reject`, in their own terminal.")
+    parts = [f"{n} {one if n == 1 else many}" for n, one, many in (
+        (len(suggestions), "retro suggestion", "retro suggestions"), (len(fixes), "memory fix", "memory fixes")) if n]
+    verb = "waits" if len(ids) == 1 else "wait"
+    return (f"{' and '.join(parts)} {verb} for the user to accept or reject (`kb decide` lists them). At a natural "
+            "pause, tell the user in one line. Never answer for the user: only they run `kb decide accept|reject`, "
+            "in their own terminal.")

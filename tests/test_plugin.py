@@ -20,6 +20,10 @@ def test_manifests_agree():
     assert claude["name"] == codex["name"] == market["name"] == "retroagent"
     assert claude["version"] == codex["version"]
     assert market["plugins"][0]["name"] == "retroagent" and market["plugins"][0]["source"] == "./"
+    mod = market["plugins"][1]                          # the mod: its own plugin, so Codex never reads its hooks
+    manifest = json.loads((REPO / mod["source"] / ".claude-plugin/plugin.json").read_text())
+    assert mod["name"] == manifest["name"] == "retroagent-decide"
+    assert json.loads((REPO / mod["source"] / "hooks/hooks.json").read_text()) == {"modules": ["./register.tsx"]}
     hooks = json.loads((PLUGIN / "hooks/hooks.json").read_text())
     assert set(hooks) == {"hooks"}                      # Codex rejects unknown top-level keys
     entry = hooks["hooks"]["SessionStart"][0]
@@ -28,6 +32,33 @@ def test_manifests_agree():
     fail = hooks["hooks"]["PostToolUseFailure"][0]             # Claude Code; Codex has no such event and skips it
     assert "matcher" not in fail and fail["hooks"][0]["command"].endswith('/bin/kb-hint"')
     assert fail["hooks"][0]["timeout"] <= 5
+    guard = hooks["hooks"]["PreToolUse"][0]
+    assert guard["matcher"] == "Bash" and guard["hooks"][0]["command"].endswith('/bin/kb-guard"')
+
+
+@pytest.mark.parametrize("command, denied", [
+    ("kb decide accept s-1a2b3c", True),
+    ("cd /x && ~/.local/bin/kb decide reject m-1a2b3c --yes", True),
+    ("python3 -m kb decide accept s-1a2b3c", True),
+    ("echo a; kb  decide   reject s-1a2b3c", True),
+    ("x=$(kb decide accept s-1a2b3c)", True),
+    ("ls\nkb decide accept s-1a2b3c", True),
+    ("kb decide", False),
+    ("kb decide later --days 2", False),
+    ("kb decide --json", False),
+    ('grep -rn "kb decide accept" docs', False),
+    ("kb decide accepted", False),
+])
+def test_guard_refuses_an_agents_answer(command, denied):
+    event = {"session_id": "x", "tool_name": "Bash", "tool_input": {"command": command.replace("\\n", "\n")}}
+    p = subprocess.run([str(PLUGIN / "bin/kb-guard")], input=json.dumps(event), capture_output=True, text=True,
+                       timeout=5)
+    assert p.returncode == 0
+    if denied:
+        out = json.loads(p.stdout)["hookSpecificOutput"]
+        assert out["permissionDecision"] == "deny" and "only the user" in out["permissionDecisionReason"]
+    else:
+        assert p.stdout == ""
 
 
 def _hook_env(tmp_path):

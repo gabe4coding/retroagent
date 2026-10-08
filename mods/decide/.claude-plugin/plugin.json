@@ -1,0 +1,19 @@
+{
+  "name": "retroagent-decide",
+  "version": "0.1.0",
+  "description": "A band above the Claude Code prompt when retro suggestions or memory fixes wait for your answer, and a pane to accept or reject each one (kb decide).",
+  "author": {
+    "name": "gabe4coding"
+  },
+  "repository": "https://github.com/gabe4coding/retroagent",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "kb": {
+      "type": "string",
+      "title": "kb command",
+      "description": "The kb command of retroagent. When it does not start, the mod tries ~/.local/bin/kb.",
+      "default": "kb"
+    }
+  }
+}
