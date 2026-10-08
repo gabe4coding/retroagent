@@ -567,3 +567,20 @@ def test_enable_updates_switches_auto_update_only(tmp_path, monkeypatch, capsys)
     assert code == 0 and "automatic code updates enabled" in out
     assert json.loads(cfg.read_text()) == {"auto_sync": False, "auto_update": True}
     assert run(capsys, "disable", "updates")[0] == 0 and json.loads(cfg.read_text())["auto_update"] is False
+
+
+def test_suggestions(kb_env, capsys):
+    from kb import ledger
+    code, out = run(capsys, "suggestions")
+    assert code == 0 and out.startswith("no suggestions yet")
+    (kb_env / "pages").mkdir(exist_ok=True)
+    ledger.save(kb_env, {
+        "s-000001": {"category": "Rules", "text": "wait for CI with a watch", "signature": "", "sources": ["a0000001"],
+                     "weeks": ["2026-W40"]},
+        "s-000002": {"category": "", "text": "dropped idea", "signature": "", "sources": [], "weeks": ["2026-W40"]}})
+    (kb_env / ledger.DECISIONS_REL).write_text(json.dumps({"s-000002": {"state": "rejected"}}))
+    code, out = run(capsys, "suggestions")
+    assert code == 0 and "s-000001  proposed  W40" in out and "Rules · wait for CI with a watch (a0000001)" in out
+    assert "s-000002" not in out
+    code, out = run(capsys, "suggestions", "--all", "--json")
+    assert [r["id"] for r in json.loads(out)] == ["s-000001", "s-000002"]

@@ -17,7 +17,8 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
 - In every step, `kb` stands for `KB_ROOT=<data> <code>/bin/kb` with the two absolute paths from step 0 written out
   (the shell does not keep variables between commands).
 - Write only files under `pages/projects/` and `pages/retro/` of the data repo. Never edit anything else (the code
-  checkout included), never delete a page, never touch `pages/config.json` or `pages/.state.json`.
+  checkout included), never delete a page, never touch `pages/config.json`, `pages/.state.json`,
+  `pages/suggestions.json` or `pages/decisions.json`.
 - Never run `git commit`, `git push`, `git reset`, `git checkout` or `git rebase` yourself. `kb pages finish` checks,
   commits and pushes.
 - Read sessions and memories only through `kb` (`kb pages digest`, `kb summary`, `kb show`, `kb memory`, `kb sql`).
@@ -82,14 +83,25 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
    - `kb pages digest --since <since> --until <until>`
    - Numbers: `kb sql "SELECT project, COUNT(*) AS sessions, SUM(user_turns) AS prompts
      FROM sessions WHERE parent='' AND started >= '<since>' AND started < '<until>' GROUP BY project ORDER BY sessions
-     DESC"` and the same with `GROUP BY agent, outcome`.
+     DESC"` and the same with `GROUP BY agent, outcome`. A session with no summary has no outcome: most are
+     one-prompt sessions the sync does not summarize. Show them as their own "no summary" row, not as a bad outcome.
    - The digest starts with the memories made that week. `feedback` memories are corrections the owner gave: use
      them as evidence in "Friction" and "Suggested changes".
    - Find friction with the method of `<code>/skills/kb-retro/SKILL.md` (steps 3 and 4), with
      `started >= '<since>' AND started < '<until>'` instead of the last 7 days, and at most 8 sessions looked at
      closer.
+   - `kb suggestions --all` once per run: the changes earlier retros suggested, the owner's decisions, and whether
+     the error each one should remove still happens.
    - Write "Suggested changes" with the categories of that skill (step 5). The repos the sessions worked in are not
      checked out here, so you cannot do its step 6: name the file or check to look at, and do not claim it is missing.
+     Each bullet starts with an id in brackets (format below):
+     - The same problem as a suggestion of `kb suggestions` (same error, same root cause): its id, like `[s-1a2b3c]`.
+       Rank it higher when it is still happening, and higher again when it "came back" after it was applied: then the
+       bullet says why the applied change did not work. Never suggest again a rejected one.
+     - A new problem: `[new]`. `finish` gives it an id.
+     - When the change should remove a tool error, add `signature "<signature>"` with the text of the `signature`
+       column of `kb stats errors`, unchanged: `kb suggestions` uses it to measure whether the change worked. `finish`
+       refuses a signature that no session has.
    - Write the retro in the format below. `update` means sessions of that week arrived late: rewrite the page with
      all of them.
 5. **Finish.** `kb pages finish`. Add `--skip <name,…>` for planned items you decided not
@@ -175,6 +187,11 @@ sources: ["<short>", "<short>"]
 - <2 to 5 bullets, root cause, not symptom> (<short>)
 
 ## Suggested changes
-- <1 to 3 changes to the agent's environment, most severe first: category, the change (which file, check, command or
-  tool), linked to evidence> (<short>)
+- [new] <category> · <the change: which file, check, command or tool, linked to evidence> · signature "<signature>" (<short>)
+- [s-1a2b3c] <category> · <an earlier suggestion that is still happening or came back, and why> (<short>)
 ```
+
+1 to 3 bullets, most severe first. The signature part is optional.
+
+`finish` replaces each `[new]` with an id and records the bullets in `pages/suggestions.json` (never edit it). The
+owner records decisions in `pages/decisions.json` (never edit it either).
