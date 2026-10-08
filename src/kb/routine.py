@@ -620,9 +620,11 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
     for code, rel in changes:
         if not rel.startswith("pages/"):
             problems.append(f"{rel}: outside pages/")
-        elif rel in (CONFIG_REL, STATE_REL, ledger.SUGGESTIONS_REL, ledger.DECISIONS_REL):
-            owner = rel in (CONFIG_REL, ledger.DECISIONS_REL)
-            problems.append(f"{rel}: only {'the owner' if owner else '`kb pages finish`'} writes it")
+        elif rel in (CONFIG_REL, STATE_REL, ledger.SUGGESTIONS_REL):
+            problems.append(f"{rel}: only {'the owner' if rel == CONFIG_REL else '`kb pages finish`'} writes it")
+        elif rel == ledger.DECISIONS_REL:
+            if "D" in code:
+                problems.append(f"{rel}: the routine never deletes it")
         elif "D" in code:
             problems.append(f"{rel}: the routine never deletes pages")
         elif not rel.endswith(".md"):
@@ -631,12 +633,16 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
             problems += check_page(root, rel, settings)
     index_path = Path(index_path) if index_path else root / ".kb" / "index.sqlite"
     known = ledger.load(root)
+    decided = None
     if not problems:
         problems += _check_suggestions(root, sorted(rel for _, rel in changes), known, index_path)
+        if any(rel == ledger.DECISIONS_REL for _, rel in changes):
+            more, decided = _check_decisions(root, known, index_path)
+            problems += more
     if problems:
         raise PagesError("refusing to commit:\n  " + "\n  ".join(problems))
 
-    written = {rel for _, rel in changes}
+    written = {rel for _, rel in changes if rel != ledger.DECISIONS_REL}
     undated, moved = [], []
     suggestions = dict(known)
     idx = Index(index_path) if index_path.is_file() else None
@@ -660,6 +666,8 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
             idx.close()
     if suggestions != known:
         ledger.save(root, suggestions)
+    if decided is not None:
+        ledger.save_decisions(root, decided)
     pending = {"projects": dict(plan["pending"]["projects"]), "weeks": list(plan["pending"]["weeks"])}
     returned = []
     todo = plan.get("todo") if isinstance(plan.get("todo"), dict) else {}
@@ -677,9 +685,9 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
     old = load_state(root) or {}
     result = {"branch": branch, "projects": sorted(r for r in written if r.startswith("pages/projects/")),
               "retros": sorted(r for r in written if r.startswith("pages/retro/")), "returned": returned,
-              "undated": undated, "moved": moved, "committed": False, "push": ""}
+              "undated": undated, "moved": moved, "decisions": decided is not None, "committed": False, "push": ""}
     planned = plan["projects"] or plan["retros"]
-    if not (written or planned or pending != old.get("pending") or plan["waiting"] != old.get("waiting")
+    if not (written or decided is not None or planned or pending != old.get("pending") or plan["waiting"] != old.get("waiting")
             or not old):
         return result                    # nothing happened: keep the watermark, no empty commit
 
@@ -687,8 +695,9 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
                  .encode("utf-8"))
     _git(root, "add", "-A", "--", "pages/")
     n, m = len(result["projects"]), len(result["retros"])
+    more = ", decisions" if decided is not None else ""
     _git(root, "commit", "--quiet", "-m",
-         f"pages: {n} project page{'s' * (n != 1)}, {m} retro{'s' * (m != 1)} [skip ci]")
+         f"pages: {n} project page{'s' * (n != 1)}, {m} retro{'s' * (m != 1)}{more} [skip ci]")
     result["committed"] = True
     if push:
         result["push"] = _push(root, branch)
@@ -709,6 +718,31 @@ def _check_suggestions(root: Path, rels: list, known: dict, index_path: Path) ->
         finally:
             con.close()
     return [p for rel, body in bodies.items() for p in ledger.check(rel, body, known, signatures)]
+
+
+def _check_decisions(root: Path, known: dict, index_path: Path):
+    """(problems, the decisions to write) for the routine's change of pages/decisions.json (kb.ledger)."""
+    rel = ledger.DECISIONS_REL
+    text = (root / rel).read_bytes().decode("utf-8", errors="replace")
+    found = redact(text)[1]
+    if found:
+        return [f"{rel}: looks like it holds a secret ({', '.join(sorted(found))}); remove it"], None
+    try:
+        new = json.loads(text)
+    except ValueError as e:
+        return [f"{rel}: not valid JSON ({e})"], None
+    shown = _git(root, "show", f"HEAD:{rel}", check=False)
+    try:
+        old = json.loads(shown.stdout) if shown.returncode == 0 else None
+    except ValueError:
+        old = None                       # a broken committed file: every entry counts as the routine's new one
+    if not index_path.is_file():
+        return [f"{rel}: no index to check the sources; run `kb pages plan` first"], None
+    idx = Index(index_path)
+    try:
+        return ledger.check_decisions(old, new, known, freshness.index_lookup(idx))
+    finally:
+        idx.close()
 
 
 def _push(root, branch: str) -> str:

@@ -8,7 +8,8 @@ your prompts, file paths and the output of your tools.
 
 - `sessions/<host>/`, `raw/<host>/`, `catalog/<host>/`, `memories/<host>/` — written by `kb sync` on the machine that
   owns `<host>`. Never edit them by hand.
-- `pages/` — written by the cloud routine. Only `pages/config.json` and `pages/decisions.json` are yours to edit.
+- `pages/` — written by the cloud routine. Only `pages/config.json` is yours to edit, and your own entries of
+  `pages/decisions.json`.
 - `.github/workflows/pages-trigger.yml` — fires the routine; `kb setup routine` writes it.
 
 Read it with `kb` (`kb --help`), not by opening files. Set up a machine with the `retroagent:setup` skill, or see the

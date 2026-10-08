@@ -7,8 +7,8 @@
   kb summary <id>      summary, decisions, outcome, files, PRs, subagents of one session
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
   kb hint --event error  a past fix for a failed tool call (the PostToolUseFailure hook runs it; "hints": true)
-  kb suggestions       the changes weekly retros suggested, your decisions (pages/decisions.json), and whether
-                       the error each one should remove still happens
+  kb suggestions       the changes weekly retros suggested, the decisions on them (pages/decisions.json), and
+                       whether the error each one should remove still happens
   kb stats [report]    ready-made analytics (errors: tool errors that came back); kb sql "<SELECT …>" for custom ones
   kb sync | backfill | status | reindex   maintenance
   kb embed             turn on semantic search: kb installs and runs a local embedding model (--status, --off)
@@ -504,8 +504,9 @@ def cmd_suggestions(args, cfg) -> int:
         cat = r["category"] + " · " if r["category"] else ""
         src = f" ({', '.join(r['sources'])})" if r["sources"] else ""
         print(f"    {cat}{r['text'][:200]}{src}")
-        if r["note"]:
-            print(f"    note: {r['note'][:200]}")
+        if r["state"] != "proposed":
+            src = f" ({r['source']})" if r["source"] else ""
+            print(f"    {r['state']} by {r['by']}{src}{': ' + r['note'][:200] if r['note'] else ''}")
     if not rows:
         print("nothing open; --all also lists the fixed and rejected ones")
     return 0
@@ -988,7 +989,7 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--no-push", action="store_true", help="finish: commit but do not push")
     ps.set_defaults(func=cmd_pages)
 
-    sg = sub.add_parser("suggestions", help="the changes weekly retros suggested, your decisions, and whether the "
+    sg = sub.add_parser("suggestions", help="the changes weekly retros suggested, the decisions on them, and whether the "
                         "error each one should remove still happens")
     sg.add_argument("--all", action="store_true", help="also the fixed and the rejected ones")
     sg.add_argument("--json", action="store_true")
