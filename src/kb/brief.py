@@ -1,4 +1,4 @@
-"""`kb brief`: what a new session in a project sees at start (the SessionStart hook, with "brief": true).
+"""`kb brief`: what a new session in a project sees at start (the SessionStart hook; off with "brief": false).
 
 On purpose very little, and no facts that can be out of date:
   - a pointer to the project page, with how many open threads and errors → fixes it has, so the agent knows the page

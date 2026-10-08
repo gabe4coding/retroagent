@@ -123,7 +123,7 @@ runs `kb cloud install`: it adds a `Stop` and a `SessionEnd` hook to `~/.claude/
 
 ## Brief at session start
 
-Optional, off by default. Turn it on with `"brief": true` in the [config](./configuration.mdx). Then the
+On by default; turn it off with `"brief": false` in the [config](./configuration.mdx). The
 `SessionStart` hook (`bin/kb-hook`) runs `kb brief --hook` before it starts the sync, and the session gets at most:
 
 ```text
@@ -137,11 +137,11 @@ when the task needs it. The second part lists only suggestions with an `accepted
 project (see [Suggested changes](./pages-routine.mdx#suggested-changes-and-whether-they-worked)). With no page and
 nothing accepted, it prints nothing. The whole brief stays under 1,200 characters. It reads three files of the data
 clone and never the index, so it adds no wait. Run `kb brief` (or `kb brief --project P`) to see what a session in
-that project would get before you turn it on.
+that project gets.
 
 ## Hints when a command fails
 
-Optional, off by default. Turn it on with `"hints": true` in the [config](./configuration.mdx). When a tool call
+On by default; turn it off with `"hints": false` in the [config](./configuration.mdx). When a tool call
 fails in Claude Code, the `PostToolUseFailure` hook (`bin/kb-hint`) runs `kb hint --event error`. It can add one line
 to the agent's context:
 
