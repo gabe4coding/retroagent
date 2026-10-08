@@ -506,6 +506,10 @@ def test_due(tmp_path, monkeypatch, capsys):
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps({"root": str(root), "host": "h"}))
     monkeypatch.setenv("KB_CONFIG", str(cfg))
+    # The CLI plans at the real time. Pin it to NOW: else b0000003 stops waiting for its summary once
+    # summary_wait_hours have passed since it ended, and the routine becomes due.
+    make_plan = routine.make_plan
+    monkeypatch.setattr(routine, "make_plan", lambda *args, **kwargs: make_plan(*args, **{**kwargs, "now": NOW}))
     from kb.cli import main
     assert main(["pages", "due"]) == 1 and json.loads(capsys.readouterr().out)["due"] is False
 
