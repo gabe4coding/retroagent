@@ -31,7 +31,7 @@ id. A prefix must have 4 characters at least.
 | Command | What it does |
 | --- | --- |
 | `kb sync --now` | Sync the local sessions now, then commit and push. For a faster sync, add `--no-summaries`. |
-| `kb backfill` | Process every pending session now. `--summaries` also writes every missing summary. |
+| `kb backfill` | Process every pending session now. `--summaries` also writes every missing summary. `--recent DAYS` processes only the sessions of the last `DAYS` days and does not push: search works before the long first push. |
 | `kb status` | The last sync, the pending sessions, the summary backlog, gitleaks, the cloud import (when it is on) and the last run of the pages routine. |
 | `kb reindex` | Build the local index again. While a sync runs, `kb reindex` only updates the index. |
 | `kb embed` | Enable [semantic search](#semantic-search) and embed the new items. Other flags: `--status`, `--stop`, `--off`, `--remove`, `--rebuild`. `--install` only downloads the files and enables the feature (for a cloud setup script). `--quiet` imports and embeds the missing items without output, and only when the feature is on. |
@@ -40,7 +40,7 @@ id. A prefix must have 4 characters at least.
 | `kb repair` | Use it when every sync fails to pull. See [Troubleshooting](./troubleshooting.mdx). |
 | `kb update` | Pull the retroagent code and refresh the plugins. |
 | `kb cloud import [--on \| --off]` | Show or change the import of [cloud sessions](#capture-cloud-sessions) on this machine (one machine only). `kb cloud push \| hook \| install` run in the cloud. |
-| `kb setup init \| routine \| cloud \| check` | Prepare the data repo, the pages routine and [cloud environments](#in-cloud-sessions-and-routines). The `setup` skill runs these steps. |
+| `kb setup init \| routine \| cloud \| check \| gitleaks \| repo-check` | Prepare the data repo, the pages routine and [cloud environments](#in-cloud-sessions-and-routines). `gitleaks` downloads a pinned gitleaks if there is none. `repo-check URL` shows if git can get to the data repo and if the repo is private. The `setup` skill runs these steps. |
 | `kb pages start \| plan \| digest \| finish \| due` | The steps of the pages routine. See [Pages routine](./pages-routine.mdx). |
 
 ## Semantic search

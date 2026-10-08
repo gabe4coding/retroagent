@@ -12,8 +12,9 @@
 #   --force-host   skip the check that sessions/<host> belongs to another machine, and take the id of its
 #                  committed marker (use it on the machine that already wrote those sessions, once, to claim them:
 #                  after a new clone or a lost .kb/machine-id).
-# Does: data clone, config file, Claude plugin, Codex plugin, ~/.local/bin/kb, index. Automatic syncs stay off
-# (auto_sync=false) until you run `kb enable`.
+# Does: data clone, gitleaks (a pinned download when there is none), config file, Claude plugin, Codex plugin,
+# ~/.local/bin/kb, index. Automatic syncs stay off (auto_sync=false) until the first full `kb backfill` succeeds or
+# you run `kb enable`.
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -149,6 +150,15 @@ if [ -z "$GITLEAKS" ]; then
   done
   IFS=$OLD_IFS
 fi
+# none: download the pinned release (checked by sha256) into ~/.cache/retroagent/gitleaks
+if [ -z "$GITLEAKS" ] && [ "${KB_INSTALL_NO_FETCH:-}" != 1 ]; then
+  if OUT=$("$HERE/bin/kb" setup gitleaks 2>&1) && GOT=$(printf '%s\n' "$OUT" | tail -n 1) && [ -x "$GOT" ]; then
+    GITLEAKS=$GOT
+    say "gitleaks: downloaded to $GITLEAKS (pinned, sha256 checked)"
+  else
+    say "gitleaks: WARNING could not download it: $(printf '%s' "$OUT" | tail -n 1)"
+  fi
+fi
 if [ -z "$GITLEAKS" ]; then
   say "gitleaks: WARNING not found; install it (brew install gitleaks) and run install.sh again. Without it only the built-in redaction protects the pushed data, and gitleaks is not required yet."
 fi
@@ -174,7 +184,8 @@ data["root"] = root
 data["host"] = host
 data["code"] = code                                 # plugin caches run this clone (bin/kb)
 if not isinstance(data.get("auto_sync"), bool):
-    data["auto_sync"] = False                       # the owner turns it on with `kb enable`
+    data["auto_sync"] = False                       # on after the first full backfill, or with `kb enable`
+    data["auto_sync_pending"] = True                # kb.sync: the first full backfill turns auto_sync on
 data.setdefault("skip_headless_single_prompt", True)
 data.setdefault("branch", "main")
 if gitleaks:
@@ -186,6 +197,7 @@ with open(path, "w", encoding="utf-8") as fh:
 print("config: wrote %s (host=%s, root=%s)" % (path, host, root))
 PY
 AUTO=$(python3 -c 'import json, sys; print("true" if json.load(open(sys.argv[1])).get("auto_sync") is True else "false")' "$CFG")
+PENDING=$(python3 -c 'import json, sys; print("true" if json.load(open(sys.argv[1])).get("auto_sync_pending") is True else "false")' "$CFG")
 
 # 8. The data repo's base files (README.md, AGENTS.md, …): only those it lacks, in one pushed commit
 if OUT=$(KB_ROOT="$ROOT" "$HERE/bin/kb" setup init 2>&1); then
@@ -202,8 +214,25 @@ fi
 git -C "$ROOT" rev-parse -q --verify HEAD >/dev/null 2>&1 \
   || die "the data repo has no commit yet, so the sync cannot work; fix the error above and run install.sh again"
 
-# 9. Claude Code plugin (from this clone of the code)
+# 9. Claude Code plugin (from this clone of the code). A "retroagent" marketplace from GitHub (the
+#    `/plugin marketplace add gabe4coding/retroagent` path) blocks the add by its name, and the update then refreshes
+#    the GitHub copy: replace it with this clone, so the plugin, the shell and Codex run one copy.
 if command -v claude >/dev/null 2>&1; then
+  SRC=$(claude plugin marketplace list --json 2>/dev/null | python3 -c 'import json, sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    rows = []
+rows = rows.get("marketplaces", []) if isinstance(rows, dict) else rows
+for m in rows if isinstance(rows, list) else []:
+    if isinstance(m, dict) and m.get("name") == "retroagent":
+        print(m.get("source") or ""); break' 2>/dev/null || true)
+  case "$SRC" in
+    ""|directory) ;;
+    *) if claude plugin marketplace remove retroagent >/dev/null 2>&1; then
+         say "claude: replaced the retroagent marketplace ($SRC) with $HERE"
+       fi ;;
+  esac
   if claude plugin marketplace add "$HERE" >/dev/null 2>&1 || claude plugin marketplace update retroagent >/dev/null 2>&1; then
     say "claude: marketplace retroagent ready"
   else
@@ -257,9 +286,14 @@ fi
 if [ ! -d "$HOSTDIR" ]; then
   say ""
   say "Next steps (host '$HOST'; nothing is committed or pushed until you run them):"
-  say "  1. kb backfill                 process every session now and make the first data push"
-  say "  2. kb backfill --summaries     write the summaries (slow; uses your Claude quota)"
-  [ "$AUTO" = true ] || say "  3. kb enable                   let the SessionStart hook sync automatically"
+  say "  1. kb backfill --recent 14     the sessions of the last 14 days, in about a minute: kb find works then"
+  say "  2. kb backfill                 every other session and the first data push"
+  say "  3. kb backfill --summaries     write the summaries (slow; uses your Claude quota)"
+  if [ "$AUTO" != true ] && [ "$PENDING" = true ]; then
+    say "  Automatic syncs start when step 2 is done (kb disable keeps them off)."
+  elif [ "$AUTO" != true ]; then
+    say "  4. kb enable                   let the SessionStart hook sync automatically"
+  fi
 elif [ "$AUTO" != true ]; then
   say ""
   say "Next step: kb enable            let the SessionStart hook sync automatically (host '$HOST' already has sessions)"

@@ -136,12 +136,13 @@ def raw_due(cfg, newest: float, clock=time.time) -> bool:
     return not cfg.raw_settle_hours or clock() - newest >= cfg.raw_settle_hours * 3600
 
 
-def pending_units(cfg, state, now: bool = False, clock=time.time) -> list:
+def pending_units(cfg, state, now: bool = False, clock=time.time, max_age_days=None) -> list:
     """The units to process, newest first, as (unit, fingerprint, raw copy due now).
 
     A unit is skipped when its fingerprint is the one the state recorded as done. Without `now`, a unit changed in
     the last quiet_minutes is skipped: the session may still be running. A unit whose markdown is current and whose
-    raw copy waits is skipped until the raw copy is due."""
+    raw copy waits is skipped until the raw copy is due. With `max_age_days`, a unit not changed in that many days is
+    skipped (`kb backfill --recent`: the fast first part of the first sync)."""
     ready = []
     for unit in claude.discover(cfg.claude_dir) + codex.discover(cfg.codex_dirs):
         try:
@@ -154,6 +155,8 @@ def pending_units(cfg, state, now: bool = False, clock=time.time) -> list:
         if state.raw_pending.get(unit.key) == fingerprint and not due:
             continue
         if not now and clock() - newest < cfg.quiet_minutes * 60:
+            continue
+        if max_age_days is not None and clock() - newest > max_age_days * 86400:
             continue
         ready.append((newest, unit, fingerprint, due))
     ready.sort(key=lambda item: item[0], reverse=True)     # newest first; equal times keep the discovery order
@@ -677,14 +680,14 @@ def cloud_waiting(cloud_cfg, state, clock=time.time) -> bool:
 
 # ---------------------------------------------------------------- the run
 
-def _process_lanes(cfg, lanes, state, idx, report, lock, months, now, dry_run, picker, clock) -> None:
+def _process_lanes(cfg, lanes, state, idx, report, lock, months, now, dry_run, picker, clock, max_age_days=None) -> None:
     """Step 5: write the markdown and raw copies of the changed units of every lane."""
     titles = codex.load_titles(cfg.codex_home)
     seen = set()
     processed = 0
     for lane_cfg in lanes:
         paths_by_id = idx.paths_by_id(lane_cfg.host) if idx is not None else {}
-        for unit, fingerprint, raw_due_now in pending_units(lane_cfg, state, now, clock):
+        for unit, fingerprint, raw_due_now in pending_units(lane_cfg, state, now, clock, max_age_days):
             processed += 1
             lock.touch()
             process_unit(lane_cfg, state, report, unit, fingerprint, titles, seen, months[lane_cfg.host],
@@ -719,8 +722,11 @@ def _record_success(cfg, state, report) -> None:
 
 
 def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default", sample: int = 0,
-             runner=subprocess.run, clock=time.time) -> Report:
-    """One sync run; the module docstring lists its steps. Every problem goes into the returned Report."""
+             runner=subprocess.run, clock=time.time, max_age_days=None, push: bool = True) -> Report:
+    """One sync run; the module docstring lists its steps. Every problem goes into the returned Report.
+
+    `max_age_days` processes only the units changed in that many days, and `push=False` commits without a push:
+    together they are `kb backfill --recent`, so search works before the long first push."""
     report = Report()
     lock = Lock(cfg.kb_dir / "lock")
     if not lock.acquire():
@@ -746,7 +752,7 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
             lanes = [cfg] + ([cloud_cfg] if cloud_cfg is not None else [])
             months = {lane_cfg.host: set() for lane_cfg in lanes}
             picker = SamplePicker(sample) if dry_run and sample > 0 else None
-            _process_lanes(cfg, lanes, state, idx, report, lock, months, now, dry_run, picker, clock)
+            _process_lanes(cfg, lanes, state, idx, report, lock, months, now, dry_run, picker, clock, max_age_days)
             skip_cwd = lambda cwd: excluded(cfg, cwd)
             if dry_run:
                 report.memories = memories.sync_memories(cfg, None, report, skip_cwd, dry_run=True)
@@ -768,7 +774,7 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
                 machine.claim(cfg.root, lane_cfg.host, machine_id)
             if git_ok:
                 commit_own(cfg, state, report)
-                if remote:
+                if remote and push:
                     publish(cfg, idx, state, report)
                     if inbox_done and not report.errors and not cloud_waiting(cloud_cfg, state, clock):
                         report.errors += cloud.delete_branches(cfg.root, inbox_done)
