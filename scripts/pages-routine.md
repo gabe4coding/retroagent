@@ -53,14 +53,19 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
 2. **Plan.** `kb pages plan`, once per run (save its output to a file if you need it
    again; `finish` uses the saved plan). It prints JSON: `projects` and `retros` to write in this run (each with
    `page`, `action` create or update, and the `sessions` short ids; a project `update` can also have `memories`, the
-   paths of memory files added or changed, and `memories_removed`, the refs of memory files deleted), plus what stays
-   `pending` for later runs. If both lists are empty, go to step 4b.
+   paths of memory files added or changed, and `memories_removed`, the refs of memory files deleted; an `update` of a
+   project or a retro can have `grown`, the sessions the page already cites that went on after it was written), plus
+   what stays `pending` for later runs. If both lists are empty, go to step 4b.
 3. **Project pages.** For each item in `projects`:
    - `create`: `kb pages digest --project <name>`. It starts with every memory of the
      project, then the sessions.
      `update`: read the current page file, then `kb pages digest --only <short,short,…>
      --memories <path,path,…>` with the item's `sessions` and `memories` (leave out a flag whose list is missing or
      empty).
+   - `grown`: the page saw only the start of these sessions. Their digest lines may be out of date or empty (a
+     one-prompt run has no summary): read what happened after the page was written with `kb show <short> --grep
+     "<regex>" --around 1` or `kb show <short>`, and update the page with it. Never treat a session as covered
+     because the page already cites it.
    - `memories_removed`: the owner or an agent deleted these memories, so their facts no longer hold. Remove or
      correct every bullet that cites `(memory <ref>)` for them, unless a session still supports it.
    - When the digest is not enough for an important point, look closer, at most 5 times per page:
@@ -121,7 +126,7 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
 4b. **Decisions.** Once per run, after the retros: `kb suggestions --all --json`. For each suggestion whose `state`
    is `proposed` or `accepted`, look for evidence in the sessions since it was first suggested (`kb find "<words of
    the change>" --since <its first week's Monday>`, at most 3 sessions looked at closer with `kb summary` or
-   `kb show`):
+   `kb show`; the `grown` sessions of the plan too, as their new part may hold the change):
    - `applied`: a session made the change (a commit, a merged PR or an edit of the named file, check or hook).
    - `accepted`: the owner asked for the change in their own words (`--role user --no-subagents`).
    - `rejected`: the owner said no to it in their own words, or a `feedback` memory says not to do it.
@@ -131,8 +136,10 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
    entries whose `by` is `"routine"` or new ones: the others are the owner's. Never remove an entry. No evidence: no
    entry. An agent's own claim that it "will do" a change is not evidence.
 5. **Finish.** `kb pages finish`. Add `--skip <name,…>` for planned items you decided not
-   to write (for example a project with nothing worth a page), and say why in your final message; without `--skip`,
-   an unwritten page is planned again next run.
+   to write (for example a project with nothing worth a page, or an update with only memories the page already
+   holds), and say why in your final message; without `--skip`, an unwritten page is planned again next run.
+   `finish` refuses to skip an `update` that has a planned session the page does not cite, or a `grown` session:
+   write those pages.
    - If it prints `refusing to commit`, fix the listed pages or decisions and run it again. Never work around it.
    - `"push": "lost"` means another run pushed first. Stop: the next run catches up.
 6. **Report.** End with a short message: branch, pages written, items still pending, push result. In bootstrap, if
