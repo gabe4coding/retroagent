@@ -46,10 +46,13 @@ def claim(root, host: str, mine: str) -> None:
         atomic_write(marker_path(root, host), (mine + "\n").encode("utf-8"))
 
 
-def owned_by_another(root, host: str, mine: str, branch: str) -> bool:
-    """True if a marker for `host` differs from `mine`: the one in the working tree, or (on `branch`) the one the
-    upstream has as of the last fetch, which a clone that has not pulled yet does not have in its files."""
-    seen = [read_marker(root, host)]
+def owned_by_another(root, host: str, machine_id: str, branch: str) -> bool:
+    """True if a marker for `host` holds an id other than `machine_id`.
+
+    Two markers are checked. The first is the one in the working tree. The second, only when the clone is on
+    `branch`, is the upstream's marker as of the last fetch: a clone that has not pulled yet lacks it in its files.
+    """
+    markers = [read_marker(root, host)]
     if gitops.current_branch(root) == branch:
-        seen.append(gitops.upstream_text(root, f"sessions/{host}/{MARKER}").strip())
-    return any(m and m != mine for m in seen)
+        markers.append(gitops.upstream_text(root, f"sessions/{host}/{MARKER}").strip())
+    return any(m and m != machine_id for m in markers)

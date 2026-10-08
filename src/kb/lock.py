@@ -9,10 +9,12 @@ from pathlib import Path
 
 
 class Lock:
-    """Held while this object has the lock file open and flock'ed. The file is never deleted.
+    """An exclusive lock, held while this object has the lock file open and flock'ed. The file is never deleted.
 
-    A crashed or killed holder cannot leave a stale lock: the kernel releases it. The file content
-    ({"pid", "started"}) is informational only. `stale_seconds` is accepted for compatibility and unused.
+    The operating system holds the lock until release() or until the process exits. So a crashed or killed holder
+    cannot leave a stale lock, and nothing has to refresh it.
+    The file content ({"pid", "started"}) is for people only; the code never reads it.
+    `stale_seconds` is accepted so old callers still work, but it is ignored.
     """
 
     def __init__(self, path, stale_seconds: int = 1800):
@@ -45,7 +47,7 @@ class Lock:
         return True
 
     def touch(self) -> None:
-        """No-op: a held flock cannot go stale. Kept so long runs can keep calling it."""
+        """Does nothing: a held flock cannot go stale. Long runs still call it, so it stays."""
 
     def release(self) -> None:
         if not self.held:

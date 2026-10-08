@@ -1,18 +1,26 @@
-"""Cloud sessions: a Claude Code cloud container is deleted after its session, so its transcripts reach the KB through
-the data repo.
+"""Cloud sessions: bring the transcripts of Claude Code cloud sessions into the KB through the data repo.
 
-In a cloud session (a Stop hook that `kb cloud install` puts in ~/.claude/settings.json; the cloud setup script runs it):
-  kb cloud push   slim and redact the session's transcript and its subagents (kb.slimraw) and commit them with git
-                  plumbing as inbox/claude/<encoded cwd>/<id>.jsonl.gz (+ <id>/subagents/…) on a branch of the data
-                  repo, never the sync branch: the data clone's claude/… branch when the session made one, else
-                  claude/inbox-<short id> (a cloud session starts every repo on a detached HEAD). The working tree is
-                  not touched, and the cloud owns no host.
+A cloud container is deleted after its session, so its transcripts must leave it before that.
+
+Terms:
+- slim: a small, gzipped transcript copy. Bulky records and images are dropped, long strings are cut and secrets are
+  redacted (kb.slimraw).
+- git plumbing: low-level git commands that make a commit without touching the working tree.
+
+In a cloud session, a Stop hook runs `kb cloud push`. `kb cloud install` puts the hook in ~/.claude/settings.json;
+the cloud setup script runs that. `kb cloud push`:
+- slims the session's transcript and its subagents;
+- commits them with git plumbing as inbox/claude/<encoded cwd>/<id>.jsonl.gz (and <id>/subagents/...);
+- commits on a branch of the data repo, never on the sync branch. That is the data clone's claude/... branch when
+  the session made one, else claude/inbox-<short id>. A cloud session starts every repo on a detached HEAD.
+The working tree is not touched, and the cloud owns no host.
 
 On the one machine that imports them (cloud_import on, `kb cloud import --on`), each sync:
-  fetches, copies the inbox files of every remote branch into .kb/cloud/claude/ (laid out like ~/.claude/projects),
-  and processes them as the sessions of host `cloud` (cloud_host): markdown, raw copies, summaries, catalog and
-  vectors, as for its own sessions. This machine then owns sessions/cloud (kb.machine), so a second importer stops.
-  After a clean push it deletes each branch whose only change since the sync branch is inbox/ and whose inbox files
+- fetches, and copies the inbox files of every remote branch into .kb/cloud/claude/ (laid out like
+  ~/.claude/projects);
+- processes them as the sessions of host `cloud` (cloud_host): markdown, raw copies, summaries, catalog and vectors,
+  as for its own sessions. This machine then owns sessions/cloud (kb.machine), so a second importer stops;
+- after a clean push, deletes each branch whose only change since the sync branch is in inbox/ and whose inbox files
   are all imported.
 """
 from __future__ import annotations
@@ -112,23 +120,24 @@ def push(cfg, transcript: str) -> str:
     done_file = cfg.kb_dir / "cloud-pushed.json"
     try:
         try:
-            done = json.loads(done_file.read_text(encoding="utf-8"))
+            pushed_fingerprints = json.loads(done_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            done = {}
+            pushed_fingerprints = {}
         line = "nothing new"
         for _ in range(PUSH_ROUNDS):
             files = session_files(transcript)
-            fp = _fingerprint(files)
-            if done.get(transcript) == fp:
+            fingerprint = _fingerprint(files)
+            if pushed_fingerprints.get(transcript) == fingerprint:
                 break
             if _headless(cfg, Path(transcript), files):
                 return "skipped: a headless run with one prompt (the sync would skip it too)"
+            # True is setup.publish's replace flag: each file replaces the one on the branch.
             data = {rel: (slim("claude", [src])[0], True) for rel, src in files.items()}
-            res = setup.publish(root, data, f"inbox: cloud session {short_id(Path(transcript).stem)}", branch,
-                                start=cfg.branch)
-            done[transcript] = fp
-            atomic_write(done_file, json.dumps(done, indent=1).encode("utf-8"))
-            line = f"pushed {len(res['written'])} file(s) to {branch}" if res["written"] else "nothing new"
+            result = setup.publish(root, data, f"inbox: cloud session {short_id(Path(transcript).stem)}", branch,
+                                   start=cfg.branch)
+            pushed_fingerprints[transcript] = fingerprint
+            atomic_write(done_file, json.dumps(pushed_fingerprints, indent=1).encode("utf-8"))
+            line = f"pushed {len(result['written'])} file(s) to {branch}" if result["written"] else "nothing new"
         return line
     finally:
         lock.release()
@@ -169,6 +178,8 @@ def install(kb_exe: str, settings=SETTINGS) -> str:
         groups = hooks.setdefault(event, [])
         if not any(h.get("command") == command for g in groups if isinstance(g, dict)
                    for h in g.get("hooks", []) if isinstance(h, dict)):
+            # timeout: seconds Claude Code gives the hook. The hook only starts a background `kb cloud push` and
+            # returns.
             groups.append({"hooks": [{"type": "command", "command": command, "timeout": 10}]})
     atomic_write(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
     return str(path)
@@ -185,6 +196,7 @@ def lane(cfg):
 
 def _branches(root, sync_branch: str) -> list:
     """(name, tip) of every remote branch but the sync branch."""
+    # strip=3: refs/remotes/origin/<name> -> <name>
     out = gitops.git(root, "for-each-ref", "--format=%(refname:strip=3) %(objectname)", "refs/remotes/origin/").stdout
     pairs = [line.split(" ", 1) for line in out.splitlines() if " " in line]
     return [(name, sha) for name, sha in pairs if name not in ("HEAD", sync_branch)]
@@ -218,12 +230,48 @@ def _blob(root, blob: str) -> bytes:
     return p.stdout
 
 
-def import_inbox(cfg, ccfg) -> tuple:
-    """Fetch, then copy every branch's inbox files into ccfg.claude_dir. Transcripts only grow, so a copy replaces the
-    local file only when it extends it; the copies of a file are tried smallest first. A copy the local file starts
-    with is older (the branch of the newer one may be gone): it is skipped. A copy that neither extends the local file
-    nor is longer is reported, and no branch with that file is deleted.
-    Returns (files written, errors, branches to delete after a clean push: [(name, tip)])."""
+def _collect_copies(root, sync_branch: str) -> tuple:
+    """The inbox files of every remote branch but the sync branch.
+
+    Returns (copies, branches_with_inbox). copies is {inbox path: {blob: (size, tip, branch name)}}; a blob found on
+    several branches is listed once, with the first branch. branches_with_inbox is [(name, tip, {path: (blob, size)})].
+    """
+    copies, branches_with_inbox = {}, []
+    for name, tip in _branches(root, sync_branch):
+        blobs = _inbox_blobs(root, tip)
+        if blobs:
+            branches_with_inbox.append((name, tip, blobs))
+        for path, (blob, size) in blobs.items():
+            copies.setdefault(path, {}).setdefault(blob, (size, tip, name))
+    return copies, branches_with_inbox
+
+
+def _import_one(root, blob: str, target: Path) -> str:
+    """Write one copy of an inbox file to `target` when it is newer than the local file.
+
+    Returns "older" (the local file already starts with this copy), "diverged" (the copy does not extend the local
+    file and is not longer), "written", or "unchanged" (the bytes on disk were the same)."""
+    data = gzip.decompress(_blob(root, blob))
+    try:
+        local_bytes = target.read_bytes()
+    except FileNotFoundError:
+        local_bytes = b""
+    if local_bytes.startswith(data):        # the same copy, or an older one
+        return "older"
+    if not data.startswith(local_bytes) and len(data) <= len(local_bytes):
+        return "diverged"
+    return "written" if atomic_write(target, data) else "unchanged"
+
+
+def import_inbox(cfg, cloud_cfg) -> tuple:
+    """Fetch, then copy every branch's inbox files into cloud_cfg.claude_dir.
+
+    Transcripts only grow, so for each copy of a file:
+    - skip a copy the local file already starts with: it is older (the branch of the newer copy may be gone);
+    - write a copy that extends the local file, or is longer than it;
+    - report anything else, keep the local file, and keep every branch that has that file.
+    Returns (files written, errors, branches to delete after a clean push: [(name, tip)]).
+    """
     root = cfg.root
     gitops.git(root, "fetch", "--quiet", "--prune", "origin", timeout=gitops.PULL_TIMEOUT)
     seen_file = cfg.kb_dir / "cloud-inbox.json"
@@ -231,33 +279,24 @@ def import_inbox(cfg, ccfg) -> tuple:
         seen = json.loads(seen_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         seen = {}
-    copies, per_branch = {}, []
-    for name, tip in _branches(root, cfg.branch):
-        blobs = _inbox_blobs(root, tip)
-        if blobs:
-            per_branch.append((name, tip, blobs))
-        for path, (blob, size) in blobs.items():
-            copies.setdefault(path, {}).setdefault(blob, (size, tip, name))
-    written, errors, failed = 0, [], set()
+    copies, branches_with_inbox = _collect_copies(root, cfg.branch)
+    written, errors, failed_paths = 0, [], set()
     for path in sorted(copies):
-        target = ccfg.claude_dir / path[len(INBOX) + 1:-len(".gz")]
-        for blob, (_, tip, name) in sorted(copies[path].items(), key=lambda c: (c[1][0], c[0])):
+        target = cloud_cfg.claude_dir / path[len(INBOX) + 1:-len(".gz")]
+        # Smallest copy first, then by blob id for a stable order: each larger copy can then extend the one before.
+        for blob, (_, tip, name) in sorted(copies[path].items(), key=lambda item: (item[1][0], item[0])):
             if seen.get(path) == blob:
                 continue
             try:
-                data = gzip.decompress(_blob(root, blob))
-                try:
-                    have = target.read_bytes()
-                except FileNotFoundError:
-                    have = b""
-                if have.startswith(data):        # the same copy, or an older one
+                outcome = _import_one(root, blob, target)
+                if outcome == "older":
                     continue
-                if not data.startswith(have) and len(data) <= len(have):
+                if outcome == "diverged":
                     errors.append(f"cloud: {path}: the copy on {name} does not extend the one imported before; "
                                   f"kept that one")
-                    failed.add(path)
+                    failed_paths.add(path)
                     continue
-                if atomic_write(target, data):
+                if outcome == "written":
                     written += 1
                     # the push's time, not now: the sync's quiet period then counts from the session's last activity
                     when = int(gitops.git(root, "show", "-s", "--format=%ct", tip).stdout.strip() or 0)
@@ -265,12 +304,12 @@ def import_inbox(cfg, ccfg) -> tuple:
                         os.utime(target, (when, when))
             except (OSError, EOFError, ValueError, gitops.GitError) as e:     # one bad file must not stop the others
                 errors.append(f"cloud: {path}: {type(e).__name__}: {' '.join(str(e).split())[:200]}")
-                failed.add(path)
+                failed_paths.add(path)
                 continue
             seen[path] = blob
     atomic_write(seen_file, (json.dumps(seen, indent=1, sort_keys=True) + "\n").encode("utf-8"))
-    done = [(name, tip) for name, tip, blobs in per_branch
-            if not failed.intersection(blobs) and _only_inbox(root, tip, cfg.branch)]
+    done = [(name, tip) for name, tip, blobs in branches_with_inbox
+            if not failed_paths.intersection(blobs) and _only_inbox(root, tip, cfg.branch)]
     return written, errors, done
 
 
@@ -285,9 +324,9 @@ def delete_branches(root, branches) -> list:
     return errors
 
 
-def taken(cfg, ccfg) -> str:
+def taken(cfg, cloud_cfg) -> str:
     """Why this machine must not import (another machine owns the cloud host), else ''."""
-    if machine.owned_by_another(cfg.root, ccfg.host, machine.local_id(cfg.kb_dir), cfg.branch):
-        return (f"cloud: host '{ccfg.host}' belongs to another machine; only one machine imports cloud sessions "
+    if machine.owned_by_another(cfg.root, cloud_cfg.host, machine.local_id(cfg.kb_dir), cfg.branch):
+        return (f"cloud: host '{cloud_cfg.host}' belongs to another machine; only one machine imports cloud sessions "
                 f"(turn it off here: kb cloud import --off)")
     return ""
