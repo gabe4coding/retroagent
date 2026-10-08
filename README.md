@@ -41,10 +41,11 @@
 
 Two repos are involved: this one (the code, public) and your **data repo** (private, yours). The code never holds data.
 
-https://github.com/user-attachments/assets/c4393042-e8bf-405b-bb41-e45f9df83a7c
+https://github.com/user-attachments/assets/9d586f2c-7839-443a-b75b-120dd6eeacd0
 
-<p align="center"><sub>retroagent, explained in 3.5 minutes: the sync, the two repos, search with <code>kb</code>,
-project pages, and weekly retros that propose changes to your agent's environment.</sub></p>
+<p align="center"><sub>retroagent, explained in 4.5 minutes: the sync, the two repos, cloud sessions, search with
+<code>kb</code> by words or by meaning, project pages, hints when a command fails, and weekly retros that propose
+changes to your agent's environment.</sub></p>
 
 ## Quick start
 
