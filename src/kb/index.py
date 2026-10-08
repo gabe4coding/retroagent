@@ -1,5 +1,18 @@
-"""Local SQLite FTS5 index, built only from committed markdown (so it covers every host after a pull): the sessions,
-the memories each machine copies under memories/, and the pages the cloud routine writes under pages/."""
+"""The local search index: one SQLite file with full-text search (FTS5) over the markdown in the data clone.
+
+It is built only from the markdown files in git. After a pull, it covers the sessions of every machine. It holds:
+- sessions (from sessions/), with one row per turn,
+- memories (the memory files each machine copies under memories/),
+- pages (the project pages and retros the pages routine writes under pages/).
+
+The index is disposable: it never syncs, and update() rebuilds it from the markdown when its schema changes.
+
+Terms:
+- signature: "<mtime_ns>:<size>" of a markdown file. A new signature means the file changed and is read again.
+- winner and duplicate: several files can hold the same session id (a session copied to another host). The most
+  complete file wins and fills the sessions row. The others are duplicates: the dups table remembers them, so they
+  are not parsed again, and one of them takes over when the winner goes away.
+"""
 from __future__ import annotations
 
 import json
@@ -48,14 +61,16 @@ SCHEMA = (
   path UNINDEXED, name, description, body, tokenize='porter unicode61')""",
 )
 _TABLES = ("sessions_fts", "turns_fts", "sessions", "turns", "dups", "pages_fts", "pages", "memories_fts", "memories")
-_COLUMNS = 24
+_COLUMNS = 24                # number of columns of the sessions table: keep it equal to the CREATE TABLE above
 MIN_PREFIX = 4               # shortest id prefix get() accepts (an exact full id may be shorter)
 SQL_TIMEOUT = 10.0           # seconds a run_sql query may take
 SNIPPET_CHARS = 200          # longest snippet find() returns
 FUSE_POOL = 50               # hits each ranking gives to the fusion when a dense ranking is passed
 RRF_K = 60                   # reciprocal rank fusion constant
-_INT64 = 2 ** 63
-_LEAN = "id, agent, host, project, started, title, parent"
+_INT64 = 2 ** 63             # SQLite stores an INTEGER in 64 bits: a value must be in [-_INT64, _INT64)
+_SESSION_LIST_COLUMNS = "id, agent, host, project, started, title, parent"   # the columns of a session in a list
+_FIRST_PROMPT_CHARS = 500    # characters of the first user prompt kept in the sessions row (and searched)
+_LOOKUP_ROWS = 6             # rows a name or prefix lookup reads: enough to list the candidates of an ambiguous name
 _SESSION_SNIPPET = "snippet(sessions_fts, -1, '«', '»', '…', 10)"
 _PAGE_SNIPPET = "snippet(pages_fts, 3, '«', '»', '…', 12)"
 _PAGE_ROW = "p.path, p.kind, p.name, p.title, p.updated, p.sessions"
@@ -176,15 +191,16 @@ def fts_queries(text: str) -> list:
     words of the AND and OR queries (never from the phrase or a quoted part), unless nothing else is left."""
     text = text or ""
     pieces = _QUOTED.split(text)                    # odd items were inside quotes
-    parts = []                                      # (FTS5 phrase, is a single stopword)
+    terms = []                                      # (FTS5 phrase, is a single stopword)
     for i, piece in enumerate(pieces):
-        for p in [piece] if i % 2 else _TERM.findall(piece):
+        inside_quotes = i % 2 == 1
+        for p in [piece] if inside_quotes else _TERM.findall(piece):
             phrase = _phrase(p)
             if phrase:
-                parts.append((phrase, not i % 2 and p.strip(".-/").lower() in _STOPWORDS))
-    if not parts:
+                terms.append((phrase, not inside_quotes and p.strip(".-/").lower() in _STOPWORDS))
+    if not terms:
         return []
-    kept = [p for p, stop in parts if not stop] or [p for p, _ in parts]
+    kept = [p for p, stop in terms if not stop] or [p for p, _ in terms]
     return list(dict.fromkeys([_phrase(text), " ".join(kept), " OR ".join(kept)]))
 
 
@@ -219,14 +235,20 @@ def connect_readonly(path) -> sqlite3.Connection:
         return _probe(uri + "&immutable=1")
 
 
-def _ahead(a: tuple, b: tuple) -> bool:
-    """Of two files with the same session id, (turns, ended, path) each: a wins with more turns, then a later end,
-    then the first sorted path."""
-    if a[0] != b[0]:
-        return a[0] > b[0]
-    if a[1] != b[1]:
-        return a[1] > b[1]
-    return a[2] < b[2]
+def _beats(new: tuple, current: tuple) -> bool:
+    """True when file `new` wins over file `current`. Both hold the same session id.
+
+    rank = (turns, ended, path). More turns win, then a later end, then the first path in sort order."""
+    if new[0] != current[0]:
+        return new[0] > current[0]
+    if new[1] != current[1]:
+        return new[1] > current[1]
+    return new[2] < current[2]
+
+
+def _rank_of(row, path: str) -> tuple:
+    """The rank (turns, ended, path) of a sessions or dups row."""
+    return row["turns"] or 0, row["ended"] or "", path
 
 
 class Index:
@@ -333,14 +355,29 @@ class Index:
                 files[rel] = (md, f"{st.st_mtime_ns}:{st.st_size}")
         return files
 
+    # Sessions: each session id has one winner file, which fills its sessions row. Other files with the same id are
+    # duplicates, remembered in the dups table (see the module docstring and _beats).
+
     def _update(self, files: dict) -> int:
+        """Bring the sessions in step with the files. Returns the number of session ids that changed."""
         known = {r["md_path"]: (r["id"], r["md_sig"])
                  for r in self.db.execute("SELECT id, md_path, md_sig FROM sessions")}
         dups = {r["md_path"]: (r["id"], r["md_sig"]) for r in self.db.execute("SELECT md_path, id, md_sig FROM dups")}
         touched, freed = set(), set()           # session ids changed / ids whose row was removed in this run
+        self._ingest_changed(files, known, dups, touched, freed)
+        self._drop_removed(files, known, dups, touched, freed)
+        self._promote_duplicates(files, touched, freed)
+        self._recheck_winners(files, touched, freed)
+        return len(touched)
+
+    def _ingest_changed(self, files: dict, known: dict, dups: dict, touched: set, freed: set) -> None:
+        """Read each file that is new or has a new signature."""
         for rel in sorted(files):
             if (known.get(rel) or dups.get(rel) or (None, None))[1] != files[rel][1]:
                 self._ingest(rel, files, touched, freed)
+
+    def _drop_removed(self, files: dict, known: dict, dups: dict, touched: set, freed: set) -> None:
+        """Remove the sessions and the duplicates whose file is gone."""
         for rel, (sid, _) in known.items():
             if rel not in files and self._delete(sid, only_path=rel):
                 touched.add(sid)
@@ -348,25 +385,29 @@ class Index:
         for rel in dups:
             if rel not in files:
                 self.db.execute("DELETE FROM dups WHERE md_path=?", (rel,))
-        for sid in sorted(freed):               # a duplicate file takes over from a removed winner
+
+    def _promote_duplicates(self, files: dict, touched: set, freed: set) -> None:
+        """A duplicate file takes over from a removed winner: the most complete one that can be read."""
+        for sid in sorted(freed):
             if self.db.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone():
                 continue
             for rel in self._dups(sid):
                 if rel in files and self._ingest(rel, files, touched, freed) == "own":
                     break
+
+    def _recheck_winners(self, files: dict, touched: set, freed: set) -> None:
+        """A winner that changed may now lose to a remembered duplicate: compare it with the best one."""
         with_dups = {r[0] for r in self.db.execute("SELECT DISTINCT id FROM dups")}
-        for sid in sorted(touched & with_dups):  # a winner that changed may now lose to a remembered duplicate
-            row = self.db.execute("SELECT md_path, turns, ended FROM sessions WHERE id=?", (sid,)).fetchone()
-            if row is None:
+        for sid in sorted(touched & with_dups):
+            winner = self.db.execute("SELECT md_path, turns, ended FROM sessions WHERE id=?", (sid,)).fetchone()
+            if winner is None:
                 continue
             for rel in self._dups(sid):
                 if rel in files:
                     best = self.db.execute("SELECT turns, ended FROM dups WHERE md_path=?", (rel,)).fetchone()
-                    if _ahead((best["turns"] or 0, best["ended"] or "", rel),
-                              (row["turns"] or 0, row["ended"] or "", row["md_path"])):
+                    if _beats(_rank_of(best, rel), _rank_of(winner, winner["md_path"])):
                         self._ingest(rel, files, touched, freed)
                     break
-        return len(touched)
 
     def _dups(self, sid: str) -> list:
         """Paths of the files that lost to the winner of this session id, the most complete first."""
@@ -384,23 +425,24 @@ class Index:
         sid = meta["id"]
         self.db.execute("SAVEPOINT ingest")
         try:
-            row = self.db.execute("SELECT md_path, turns, ended FROM sessions WHERE id=?", (sid,)).fetchone()
-            owner = row["md_path"] if row else None
-            mine = (meta.get("turns") or 0, meta.get("ended") or "", rel)
-            gone = set()
-            stale = self.db.execute("SELECT id FROM sessions WHERE md_path=?", (rel,)).fetchone()
-            if stale and stale["id"] != sid:
-                self._delete(stale["id"])
-                gone.add(stale["id"])
-            # several files with the same id (a session copied to another host): the most complete one wins
-            theirs = (row["turns"] or 0, row["ended"] or "", owner) if row else None
-            if owner not in (None, rel) and owner in files and _ahead(theirs, mine):
-                self.db.execute("INSERT OR REPLACE INTO dups VALUES (?,?,?,?,?)", (rel, sig, sid, *mine[:2]))
+            winner = self.db.execute("SELECT md_path, turns, ended FROM sessions WHERE id=?", (sid,)).fetchone()
+            winner_path = winner["md_path"] if winner else None
+            new_rank = (meta.get("turns") or 0, meta.get("ended") or "", rel)
+            removed_ids = set()
+            # this file held another session id before: that session's row goes
+            previous = self.db.execute("SELECT id FROM sessions WHERE md_path=?", (rel,)).fetchone()
+            if previous and previous["id"] != sid:
+                self._delete(previous["id"])
+                removed_ids.add(previous["id"])
+            # another file that still exists wins this id now: compare the two
+            has_rival = winner_path not in (None, rel) and winner_path in files
+            if has_rival and _beats(_rank_of(winner, winner_path), new_rank):
+                self.db.execute("INSERT OR REPLACE INTO dups VALUES (?,?,?,?,?)", (rel, sig, sid, *new_rank[:2]))
                 result = "dup"
             else:
-                if owner not in (None, rel) and owner in files:    # this file beats the current owner, which now loses
+                if has_rival:                   # this file beats the current winner, which becomes a duplicate
                     self.db.execute("INSERT OR REPLACE INTO dups VALUES (?,?,?,?,?)",
-                                    (owner, files[owner][1], sid, row["turns"] or 0, row["ended"] or ""))
+                                    (winner_path, files[winner_path][1], sid, *_rank_of(winner, winner_path)[:2]))
                 self._delete(sid)
                 self._insert(meta, turns, rel, sig)
                 self.db.execute("DELETE FROM dups WHERE md_path=?", (rel,))
@@ -411,8 +453,8 @@ class Index:
             self.errors.append((rel, _why(e)))
             return "skip"
         self.db.execute("RELEASE ingest")
-        touched.update(gone)
-        freed.update(gone)
+        touched.update(removed_ids)
+        freed.update(removed_ids)
         if result == "own":
             touched.add(sid)
         return result
@@ -430,7 +472,7 @@ class Index:
         return True
 
     def _insert(self, m: dict, turns: list, rel: str, sig: str) -> None:
-        first = next((t["text"] for t in turns if t["role"] == "user"), "")[:500]
+        first = next((t["text"] for t in turns if t["role"] == "user"), "")[:_FIRST_PROMPT_CHARS]
         js = lambda v: json.dumps(v or [], ensure_ascii=False)
         row = (m["id"], m.get("agent", ""), m.get("host", ""), m.get("project", ""), m.get("cwd", ""),
                m.get("branch", ""), m.get("started", ""), m.get("ended", ""), m.get("model", ""),
@@ -549,16 +591,18 @@ class Index:
         f = f or Filters()
         if limit <= 0 or not (query or "").strip():
             return []
-        k = max(200, limit * 20, FUSE_POOL)
+        # Many more candidates than asked: _candidates cuts the session-field list and the turn list to `pool` each,
+        # then adds up the two scores of a session. A large pool keeps a session in both lists, so its sum is right.
+        pool = max(200, limit * 20, FUSE_POOL)
         queries = [query] if raw else fts_queries(query)
         ranked = {}
         if len(queries) > 1:                           # [phrase, AND, OR]: the phrase is a strong signal on its own
-            for c in self._candidates(queries[0], f, k, raw):
+            for c in self._candidates(queries[0], f, pool, raw):
                 ranked.setdefault(c["id"], c)
             queries = queries[1:]
         cands = []
         for q in queries:
-            cands = self._candidates(q, f, k, raw)
+            cands = self._candidates(q, f, pool, raw)
             if len(ranked) + len(cands) >= limit:
                 break
         for c in cands:
@@ -567,14 +611,14 @@ class Index:
         if dense is None:
             return [self._hit(c) for c in lexical[:limit]]
         by_id = {c["id"]: c for c in lexical[:FUSE_POOL]}
-        hits = (self._hit(by_id[k]) if k in by_id else self._dense_hit(k)
-                for k in fuse([c["id"] for c in lexical[:FUSE_POOL]], dense, limit))
+        hits = (self._hit(by_id[sid]) if sid in by_id else self._dense_hit(sid)
+                for sid in fuse([c["id"] for c in lexical[:FUSE_POOL]], dense, limit))
         return [h for h in hits if h is not None]
 
     def _dense_hit(self, sid: str):
         """A session only the embedding ranking found: its summary's start stands in for a snippet. None when the
         session is no longer in the index (its vector is older)."""
-        row = self.db.execute(f"SELECT {_LEAN}, summary FROM sessions WHERE id=?", (sid,)).fetchone()
+        row = self.db.execute(f"SELECT {_SESSION_LIST_COLUMNS}, summary FROM sessions WHERE id=?", (sid,)).fetchone()
         if row is None:
             return None
         d = dict(row)
@@ -608,16 +652,20 @@ class Index:
             raise
 
     def _candidates(self, q: str, f: Filters, k: int, raw: bool) -> list:
-        """Sessions matching q, best first. Score = session bm25 + best turn bm25 (negative: lower is better)."""
+        """Sessions matching q, best first. Score = session bm25 + best turn bm25 (negative: lower is better).
+
+        Each row also keeps the FTS rowid of its session match and of its best turn, so _hit() can make the snippet."""
         where, params = self._where(f)
         best = {}
         # session fields (title, summary, …) have no role, so a role filter matches turns only
+        # bm25 weights, one per sessions_fts column: id 0, title 10, summary 5, tags 5, decisions 5, first_prompt 2
         for r in [] if f.role else self._fts(
                 "SELECT sessions_fts.rowid AS rid, sessions_fts.id AS id, "
                 "bm25(sessions_fts, 0.0, 10.0, 5.0, 5.0, 5.0, 2.0) AS r "
                 "FROM sessions_fts JOIN sessions s ON s.id = sessions_fts.id "
                 f"WHERE sessions_fts MATCH ?{where} ORDER BY r, sessions_fts.id LIMIT ?", [q] + params + [k], raw):
-            best[r["id"]] = {"id": r["id"], "q": q, "score": r["r"], "srid": r["rid"], "trid": None, "turn": None}
+            best[r["id"]] = {"id": r["id"], "q": q, "score": r["r"], "session_fts_rowid": r["rid"],
+                             "turn_fts_rowid": None, "turn": None}
         # best turn of each session, so one long session cannot fill the list
         join, role = ("JOIN turns tu ON tu.rowid = turns_fts.rowid ", " AND tu.role = ?") if f.role else ("", "")
         for r in self._fts(
@@ -629,21 +677,23 @@ class Index:
                 [q] + params + ([f.role] if f.role else []) + [k], raw):
             b = best.get(r["id"])
             if b is None:
-                best[r["id"]] = {"id": r["id"], "q": q, "score": r["r"], "srid": None, "trid": r["rid"],
-                                 "turn": r["n"]}
+                best[r["id"]] = {"id": r["id"], "q": q, "score": r["r"], "session_fts_rowid": None,
+                                 "turn_fts_rowid": r["rid"], "turn": r["n"]}
             else:
                 b["score"] += r["r"]
-                b["trid"], b["turn"] = r["rid"], r["n"]
+                b["turn_fts_rowid"], b["turn"] = r["rid"], r["n"]
         return sorted(best.values(), key=lambda b: (b["score"], b["id"]))
 
     def _hit(self, c: dict) -> dict:
         """Lean result row. The snippet is made only here, for the sessions that are returned."""
-        if c["trid"] is not None:
-            sql, rid = f"SELECT {_TURN_SNIPPET} FROM turns_fts WHERE turns_fts MATCH ? AND rowid = ?", c["trid"]
+        if c["turn_fts_rowid"] is not None:
+            sql = f"SELECT {_TURN_SNIPPET} FROM turns_fts WHERE turns_fts MATCH ? AND rowid = ?"
+            rid = c["turn_fts_rowid"]
         else:
-            sql, rid = f"SELECT {_SESSION_SNIPPET} FROM sessions_fts WHERE sessions_fts MATCH ? AND rowid = ?", c["srid"]
+            sql = f"SELECT {_SESSION_SNIPPET} FROM sessions_fts WHERE sessions_fts MATCH ? AND rowid = ?"
+            rid = c["session_fts_rowid"]
         snip = self.db.execute(sql, (c["q"], rid)).fetchone()
-        row = self.db.execute(f"SELECT {_LEAN} FROM sessions WHERE id=?", (c["id"],)).fetchone()
+        row = self.db.execute(f"SELECT {_SESSION_LIST_COLUMNS} FROM sessions WHERE id=?", (c["id"],)).fetchone()
         return {**dict(row), "snippet": _short(snip[0] if snip else ""), "turn": c["turn"]}
 
     @staticmethod
@@ -658,21 +708,23 @@ class Index:
         if limit <= 0 or not (query or "").strip():
             return []
         where, params = self._page_where(project)
-        want, limit = limit, (FUSE_POOL if dense is not None else limit)
+        wanted = limit
+        pool = FUSE_POOL if dense is not None else wanted      # the fusion needs a longer BM25 ranking
         ranked = {}
         for q in [query] if raw else fts_queries(query):
+            # bm25 weights, one per pages_fts column: path 0, name 5, title 5, body 1
             for r in self._fts(
                     f"SELECT {_PAGE_ROW}, {_PAGE_SNIPPET} AS snippet, bm25(pages_fts, 0.0, 5.0, 5.0, 1.0) AS r "
                     f"FROM pages_fts JOIN pages p ON p.rowid = pages_fts.rowid WHERE pages_fts MATCH ?{where} "
-                    "ORDER BY r, p.path LIMIT ?", [q] + params + [limit], raw):
+                    "ORDER BY r, p.path LIMIT ?", [q] + params + [pool], raw):
                 ranked.setdefault(r["path"], {**{k: r[k] for k in r.keys() if k != "r"},
                                               "snippet": _short(r["snippet"])})
-            if len(ranked) >= limit:
+            if len(ranked) >= pool:
                 break
         if dense is None:
-            return list(ranked.values())[:limit]
+            return list(ranked.values())[:wanted]
         rows = []
-        for path in fuse(list(ranked)[:limit], dense, want):
+        for path in fuse(list(ranked)[:pool], dense, wanted):
             if path in ranked:
                 rows.append(ranked[path])
             else:
@@ -696,7 +748,7 @@ class Index:
             if rows:
                 raise AmbiguousId([r["path"] for r in rows])
         rows = self.db.execute(f"SELECT {_PAGE_ROW} FROM pages p WHERE substr(lower(p.name), 1, ?) = lower(?) "
-                               "ORDER BY p.name LIMIT 6", (len(name), name)).fetchall()
+                               f"ORDER BY p.name LIMIT {_LOOKUP_ROWS}", (len(name), name)).fetchall()
         if len(rows) > 1:
             raise AmbiguousId([r["name"] for r in rows])
         return dict(rows[0]) if rows else None
@@ -718,21 +770,23 @@ class Index:
         if limit <= 0 or not (query or "").strip():
             return []
         where, params = self._memory_where(f or Filters())
-        want, limit = limit, (FUSE_POOL if dense is not None else limit)
+        wanted = limit
+        pool = FUSE_POOL if dense is not None else wanted      # the fusion needs a longer BM25 ranking
         ranked = {}
         for q in [query] if raw else fts_queries(query):
+            # bm25 weights, one per memories_fts column: path 0, name 5, description 5, body 1
             for r in self._fts(
                     f"SELECT {_MEMORY_ROW}, {_MEMORY_SNIPPET} AS snippet, bm25(memories_fts, 0.0, 5.0, 5.0, 1.0) AS r "
                     f"FROM memories_fts JOIN memories m ON m.rowid = memories_fts.rowid WHERE memories_fts MATCH ?"
-                    f"{where} ORDER BY r, m.path LIMIT ?", [q] + params + [limit], raw):
+                    f"{where} ORDER BY r, m.path LIMIT ?", [q] + params + [pool], raw):
                 ranked.setdefault(r["path"], {**{k: r[k] for k in r.keys() if k != "r"},
                                               "snippet": _short(r["snippet"])})
-            if len(ranked) >= limit:
+            if len(ranked) >= pool:
                 break
         if dense is None:
-            return list(ranked.values())[:limit]
+            return list(ranked.values())[:wanted]
         rows = []
-        for path in fuse(list(ranked)[:limit], dense, want):
+        for path in fuse(list(ranked)[:pool], dense, wanted):
             if path in ranked:
                 rows.append(ranked[path])
             else:
@@ -759,14 +813,14 @@ class Index:
             if rows:
                 raise AmbiguousId([r["path"] for r in rows])
         rows = self.db.execute(f"SELECT {_MEMORY_ROW} FROM memories m WHERE substr(lower(m.ref), 1, ?) = lower(?) "
-                               "ORDER BY m.path LIMIT 6", (len(ref), ref)).fetchall()
+                               f"ORDER BY m.path LIMIT {_LOOKUP_ROWS}", (len(ref), ref)).fetchall()
         if len(rows) > 1:
             raise AmbiguousId([r["path"] for r in rows])
         return dict(rows[0]) if rows else None
 
     def recent(self, f: Filters = None, limit: int = 20) -> list:
         where, params = self._where(f or Filters(subagents=False))
-        sql = f"SELECT {_LEAN} FROM sessions s WHERE 1=1{where} ORDER BY started DESC LIMIT ?"
+        sql = f"SELECT {_SESSION_LIST_COLUMNS} FROM sessions s WHERE 1=1{where} ORDER BY started DESC LIMIT ?"
         return [dict(r) for r in self.db.execute(sql, params + [limit])]
 
     def get(self, prefix: str):
@@ -783,7 +837,7 @@ class Index:
             return None
         n = len(prefix)
         rows = self.db.execute("SELECT * FROM sessions WHERE substr(id, 1, ?) = ? OR substr(short, 1, ?) = ? "
-                               "ORDER BY started DESC, id LIMIT 6", (n, prefix, n, prefix)).fetchall()
+                               f"ORDER BY started DESC, id LIMIT {_LOOKUP_ROWS}", (n, prefix, n, prefix)).fetchall()
         if len(rows) > 1:
             raise AmbiguousId([r["id"] for r in rows])
         return dict(rows[0]) if rows else None

@@ -1,4 +1,8 @@
-"""catalog/<host>/<YYYY-MM>.jsonl: one line per session, derived from markdown front matter."""
+"""The catalog: catalog/<host>/<YYYY-MM>.jsonl, one JSON line per session of that month.
+
+Each line comes from the front matter of the session's distilled markdown (the readable sessions/<host>/…/*.md file,
+see kb.distill), plus the paths of the markdown file and of its raw copy (raw/<host>/…).
+"""
 from __future__ import annotations
 
 import json
@@ -9,6 +13,7 @@ from kb.util import atomic_write
 
 FIELDS = ["id", "agent", "host", "project", "cwd", "branch", "started", "ended", "turns", "user_turns", "model",
           "title", "summary", "tags", "outcome", "decisions", "files", "prs", "parent"]
+_FILES_PER_LINE = 10         # edited files listed per catalog line (the markdown front matter keeps more)
 
 
 def write_catalog(root, host: str, months) -> list:
@@ -26,7 +31,7 @@ def write_catalog(root, host: str, months) -> list:
             try:
                 meta, _ = split_front_matter(md.read_text(encoding="utf-8", errors="replace"))
                 row = {k: meta.get(k) for k in FIELDS}
-                row["files"] = (row.get("files") or [])[:10]
+                row["files"] = (row.get("files") or [])[:_FILES_PER_LINE]
                 row["md"] = md.relative_to(root).as_posix()
                 row["raw"] = meta.get("raw", "")
                 json.dumps(row, ensure_ascii=False)    # a value that cannot be written is found here, not later
