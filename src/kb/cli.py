@@ -539,10 +539,6 @@ def cmd_brief(args, cfg) -> int:
         if not args.hook:
             raise
         return 0
-    if not text:
-        if not args.hook:
-            print("(nothing: no project page and no accepted suggestion for this project)")
-        return 0
     if args.hook:
         text = json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}},
                           ensure_ascii=False)
@@ -1029,8 +1025,8 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--no-push", action="store_true", help="finish: commit but do not push")
     ps.set_defaults(func=cmd_pages)
 
-    br = sub.add_parser("brief", help="what a new session in this project sees: the page pointer and the accepted "
-                        "suggestions for its repo")
+    br = sub.add_parser("brief", help="what a new session in this project sees: the page pointer, the accepted "
+                        "suggestions for its repo and a line about `kb find`")
     br.add_argument("--project", help="this project instead of the working directory's")
     br.add_argument("--hook", action="store_true", help="SessionStart hook: event JSON on stdin, hook output JSON; "
                     "nothing with \"brief\": false in the config")
