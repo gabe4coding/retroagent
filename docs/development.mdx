@@ -5,24 +5,27 @@ description: Repo layout, tests and release rules for contributors.
 
 # Development
 
-The whole repo is the plugin (`.claude-plugin/`, `.codex-plugin/`, `bin/`, `hooks/`, `skills/`). The Python package
-is `src/kb` (stdlib only, Python 3.9). `templates/data/` holds the files `kb setup` writes into data repos.
+The full repo is the plugin (`.claude-plugin/`, `.codex-plugin/`, `bin/`, `hooks/`, `skills/`). The Python package
+is `src/kb` (stdlib only, Python 3.9). `templates/data/` holds the files that `kb setup` writes into data repos.
 
 ## Tests
 
 - `scripts/test` runs the fast tests in parallel on `/usr/bin/python3` with pytest from `uv` (a few seconds).
-- `scripts/test --all` adds the tests marked `slow`, which start real git and other processes. Run it before every
-  commit.
-- `KB_TEST_PYTHON=3.9 scripts/test` runs the tests on another Python: a path, or a version that `uv` finds or installs.
-- CI (`.github/workflows/test.yml`) runs `scripts/test --all` on every push to `main` and every pull request, on Linux
-  with Python 3.9 and 3.13. gitleaks is installed, so its tests run too. There is no macOS job (macOS runners cost
-  ten times more): run `scripts/test --all` on a Mac for a change to macOS behavior.
+- `scripts/test --all` adds the tests marked `slow`. These tests start real git and other processes.
+- Before each commit, run `scripts/test --all`.
+- To run the tests on another Python, set `KB_TEST_PYTHON` (for example `KB_TEST_PYTHON=3.9 scripts/test`). The value
+  is a path, or a version that `uv` finds or installs.
+- CI (`.github/workflows/test.yml`) runs `scripts/test --all` on each push to `main` and each pull request. It runs on
+  Linux with Python 3.9 and 3.13.
+- CI installs gitleaks, so the gitleaks tests also run.
+- CI has no macOS job, because macOS runners cost ten times more. For a change to macOS behavior, run
+  `scripts/test --all` on a Mac.
 
 ## Releasing plugin changes
 
-When skills or hooks change, bump `version` in both `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`:
-Claude Code and Codex cache plugins per version.
+When skills or hooks change, increase `version` in `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`.
+Claude Code and Codex keep a cache of plugins per version.
 
 ## More
 
-[`CODING_STANDARDS.md`](../CODING_STANDARDS.md) has the full rules for changing code, tests, skills and docs.
+[`CODING_STANDARDS.md`](../CODING_STANDARDS.md) has the full rules to change code, tests, skills and docs.
