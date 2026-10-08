@@ -723,3 +723,44 @@ def test_a_memory_whose_only_change_is_its_date_changes_nothing(tmp_path):
     item = plan(root, retro_weeks_back=0)["projects"][0]
     assert item["memories"] == ["memories/h/claude/-Users-me-alpha/deploy-gotcha.md"]
     assert routine._date_only(root, head, "HEAD") == set()
+
+
+def test_a_session_that_went_on_after_its_page_was_written_is_planned_again(tmp_path):
+    root = repo(tmp_path / "kb")
+    built(root)                                                   # alpha cites a0000003; written at NOW
+    later = NOW + dt.timedelta(hours=1)
+    put(root, "h/claude/2026/10/2026-10-06_alpha_a0000003.md", "a0000003", project="alpha",
+        started="2026-10-06T10:00:00Z", ended="2026-10-07T09:30:00Z", summary="did more", turns=("go", "did more"))
+    commit(root)
+    item = plan(root, now=later, retro_weeks_back=0)["projects"][0]
+    assert (item["name"], item["sessions"], item["grown"]) == ("alpha", ["a0000003"], ["a0000003"])
+    with pytest.raises(PagesError, match=r"alpha.md: cannot be skipped, it misses session\(s\) that went on"):
+        routine.finish(root, settings(), now=later, push=False, skip=["alpha"])
+    write_alpha(root)                                             # written again: it has seen the whole session
+    assert routine.finish(root, settings(), now=later, push=False)["committed"]
+    assert plan(root, now=later, retro_weeks_back=0)["projects"] == []
+
+
+def test_every_page_is_checked_for_grown_sessions_not_only_the_changed_ones(tmp_path):
+    """A gap an earlier run left (it skipped a session's new part) is found although no session changed since."""
+    root = repo(tmp_path / "kb")
+    built(root)
+    write_page(root, "project", "alpha", sources=["a0000001", "a0000002", "a0000003"], updated="2026-10-06T09:00:00Z")
+    write_retro(root, "2026-W40", ["a0000002"])
+    text = (root / "pages/retro/2026-W40.md").read_text().replace('"2026-10-07T09:00:00Z"', '"2026-09-30T09:00:00Z"')
+    (root / "pages/retro/2026-W40.md").write_text(text)
+    commit(root, "an older run")
+    p = plan(root)
+    assert [(i["name"], i.get("grown")) for i in p["projects"]] == [("alpha", ["a0000003"])]
+    assert [(r["week"], r.get("grown")) for r in p["retros"]] == [("2026-W40", ["a0000002"])]
+
+
+def test_skip_is_refused_for_a_page_that_misses_planned_sessions(tmp_path):
+    root = repo(tmp_path / "kb")
+    built(root)
+    session(root, "a0000004", "alpha", "2026-10-07T08:00:00Z")
+    commit(root)
+    plan(root, retro_weeks_back=0)
+    with pytest.raises(PagesError, match=r"alpha.md: cannot be skipped, it misses 1 planned session\(s\) it does not "
+                                         r"cite \(a0000004\)"):
+        routine.finish(root, settings(), now=NOW, push=False, skip=["alpha"])
