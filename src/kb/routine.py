@@ -357,8 +357,9 @@ def make_plan(root, idx: Index, settings, now=None) -> dict:
             memories[path] = _removed_memory(root, head, path)
         return memories[path]
 
-    projects, left_projects, todo = _plan_projects(root, top, ready, st, settings, changed_memories, memory)
-    retros, left_weeks = _plan_retros(root, top, ready, st, settings, tz, now)
+    grown = _grown(root, top, set(waiting))
+    projects, left_projects, todo = _plan_projects(root, top, ready, st, settings, changed_memories, memory, grown)
+    retros, left_weeks = _plan_retros(root, top, ready, st, settings, tz, now, grown)
     plan = {"version": 1, "mode": mode, "base": base, "head": head, "branch": gitops.current_branch(root),
             "created": _iso(now), "projects": projects, "retros": retros,
             "pending": {"projects": left_projects, "weeks": left_weeks}, "waiting": sorted(waiting)}
@@ -379,11 +380,14 @@ def _eligible(project: str, counts: dict, settings) -> bool:
     return True
 
 
-def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, changed_memories=(), memory=None):
+def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, changed_memories=(), memory=None,
+                   grown=None):
     """Project items, what stays pending, and what changed in each planned project. What changed in a project is a set
     of session short ids and memory paths (they start with "memories/"); pending keeps both in one list. A memory whose
-    file and old version are both gone is dropped."""
+    file and old version are both gone is dropped. grown (_grown): sessions a page cites that went on after it was
+    written; they are planned again, and an item lists them as "grown"."""
     memory = memory or (lambda path: None)
+    grown = grown or {}
     counts, latest, members = {}, {}, {}
     for r in top:
         p = r["project"]
@@ -395,6 +399,9 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
     todo = {p: set(_strings(v)) for p, v in old.items()}
     for r in ready.values():
         todo.setdefault(r["project"], set()).add(r["short"])
+    for rel, shorts in grown.items():
+        if rel.startswith("pages/projects/"):
+            todo.setdefault(rel[len("pages/projects/"):-3], set()).update(shorts)
     for path in changed_memories:
         m = memory(path)
         if m:
@@ -419,6 +426,8 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
             gone = sorted({memory(e)["ref"] for e in paths if _removed(memory(e))})
             if gone:
                 item["memories_removed"] = gone
+            if grown.get(rel):
+                item["grown"] = sorted(grown[rel] & set(shorts), key=lambda s: (started.get(s, ""), s))
             items.append(item)
         else:                            # a new page is written from the whole history of the project
             items.append({"name": p, "page": rel, "action": "create",
@@ -431,13 +440,37 @@ def _removed(m) -> bool:
 
 
 def _sources(path: Path) -> set:
+    return set(_page_meta(path)[0])
+
+
+def _page_meta(path: Path):
+    """(sources, updated) of a page file, ([], "") when it cannot be read."""
     try:
-        return set(parse_page(path.read_text(encoding="utf-8", errors="replace"))[0]["sources"])
+        meta = parse_page(path.read_text(encoding="utf-8", errors="replace"))[0]
     except (OSError, ValueError):
-        return set()
+        return [], ""
+    return meta["sources"], meta["updated"]
 
 
-def _plan_retros(root: Path, top: list, ready: dict, st: dict, settings, tz, now):
+def _grown(root: Path, top: list, waiting=()) -> dict:
+    """{page rel: {short}} of the sessions each project page and retro cites that ended after the page was written:
+    the page saw only their start (it was written while they ran, or a run skipped their new part). Every page is
+    checked, not only those of the sessions changed since the watermark, so a gap left by an earlier run is found.
+    A session still waiting for its summary is left for later."""
+    ended = {r["short"]: r["ended"] or "" for r in top if r["id"] not in waiting}
+    out = {}
+    for folder in ("projects", "retro"):
+        for path in sorted((root / "pages" / folder).glob("*.md")):
+            sources, updated = _page_meta(path)
+            if not updated:
+                continue
+            late = {s for s in sources if ended.get(s, "") > updated}
+            if late:
+                out[f"pages/{folder}/{path.name}"] = late
+    return out
+
+
+def _plan_retros(root: Path, top: list, ready: dict, st: dict, settings, tz, now, grown=None):
     weeks = {}
     for r in top:
         w = week_of(r["started"], tz)
@@ -452,7 +485,7 @@ def _plan_retros(root: Path, top: list, ready: dict, st: dict, settings, tz, now
             todo.add(w)
         elif now - week_bounds(w, tz)[1] <= late:
             new = {r["short"] for r in ready.values() if week_of(r["started"], tz) == w}
-            if new - _sources(root / rel):
+            if new - _sources(root / rel) or (grown or {}).get(rel):
                 todo.add(w)
     order = sorted((w for w in todo if w in weeks), reverse=True)
     batch = order[: settings["batch_retros"]]
@@ -464,6 +497,8 @@ def _plan_retros(root: Path, top: list, ready: dict, st: dict, settings, tz, now
                       "from": start.date().isoformat(), "to": (end.date() - dt.timedelta(days=1)).isoformat(),
                       "since": _iso(start), "until": _iso(end),
                       "sessions": [r["short"] for r in sorted(weeks[w], key=lambda r: (r["started"] or "", r["id"]))]})
+        if (grown or {}).get(rel):
+            items[-1]["grown"] = sorted((grown or {})[rel])
     return items, order[len(batch):]
 
 
@@ -674,6 +709,7 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
         if any(rel == ledger.DECISIONS_REL for _, rel in changes):
             more, decided = _check_decisions(root, known, index_path)
             problems += more
+    problems += _check_skips(root, plan, skip, {rel for _, rel in changes})
     if problems:
         raise PagesError("refusing to commit:\n  " + "\n  ".join(problems))
 
@@ -737,6 +773,24 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
     if push:
         result["push"] = _push(root, branch)
     return result
+
+
+def _check_skips(root: Path, plan: dict, skip, changed: set) -> list:
+    """A page to update may be skipped only when it already covers its planned sessions: each one cited, none grown
+    (it went on after the page was written). Memories alone, or a page to create, may be skipped."""
+    out = []
+    for item in plan["projects"] + plan["retros"]:
+        name = item.get("name") or item.get("week")
+        if name not in skip or item["action"] != "update" or item["page"] in changed:
+            continue
+        cited = _sources(root / item["page"])
+        new = [s for s in item["sessions"] if s not in cited]
+        late = item.get("grown", [])
+        if new or late:
+            why = (f"{len(new)} planned session(s) it does not cite ({', '.join(new[:5])})" if new else
+                   f"session(s) that went on after it was written ({', '.join(late[:5])}; read them with `kb show`)")
+            out.append(f"{item['page']}: cannot be skipped, it misses {why}; update it")
+    return out
 
 
 def _check_suggestions(root: Path, rels: list, known: dict, index_path: Path) -> list:
