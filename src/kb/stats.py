@@ -25,8 +25,11 @@ REPORTS = {
 ERROR_MARK = " → ERROR: "
 _ERROR_LINE = re.compile(r"^- (\S+).*? → ERROR: (.*)$")         # a tool call line, as distill writes it
 _PATH = re.compile(r"(?:~|\.{1,2})?(?:/[\w.@~+-]+)+/?")
-_NOISE = re.compile(r"^(?:exit code \d+\s*/?\s*)|</?tool_use_error>|traceback \(most recent call last\):\s*/?"
-                    r"|file \"[^\"]*\", line \d+(?:, in \S+)?\s*/?", re.I)
+_NOISE = re.compile(r"^(?:exit code \d+\s*/?\s*)"                      # "Exit code 1" at the start
+                    r"|</?tool_use_error>"                             # the <tool_use_error> tags around a message
+                    r"|traceback \(most recent call last\):\s*/?"      # a Python traceback header
+                    r"|file \"[^\"]*\", line \d+(?:, in \S+)?\s*/?",   # a Python traceback frame line
+                    re.I)
 _STOP = set("the and for with not this that from are was has have you your its use path error".split())
 SIGNATURE_WORDS = 7
 

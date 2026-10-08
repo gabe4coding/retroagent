@@ -31,10 +31,10 @@ def page_line(root: Path, project: str) -> str:
         _, body = parse_page((Path(root) / rel).read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
         return ""
-    n, m = _bullets(body, "Open threads"), _bullets(body, "Errors seen")
-    counts = [f"{n} open thread{'s' * (n != 1)}" if n else "",
-              (f"{m} errors → fixes" if m != 1 else "1 error → fix") if m else ""]
-    more = " (" + ", ".join(c for c in counts if c) + ")" if n or m else ""
+    threads, errors = _bullets(body, "Open threads"), _bullets(body, "Errors seen")
+    counts = [f"{threads} open thread{'s' * (threads != 1)}" if threads else "",
+              (f"{errors} errors → fixes" if errors != 1 else "1 error → fix") if errors else ""]
+    more = " (" + ", ".join(c for c in counts if c) + ")" if threads or errors else ""
     return f"Project page of {project}: `kb page {project}`{more}. Read it when the task needs it."
 
 
@@ -50,6 +50,7 @@ def build(root, cwd: str, project: str = "") -> str:
     """The brief for a session in `cwd` (or for `project`), or ""."""
     root = Path(root)
     names = [project] if project else projects(cwd)
+    # the first project that has a page, else the first non-empty name
     name = next((n for n in names if n and page_line(root, n)), "") or next((n for n in names if n), "")
     if not name:
         return ""

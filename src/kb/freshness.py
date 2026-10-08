@@ -1,16 +1,23 @@
 """Freshness of project page bullets: the date each fact was last confirmed, and the move of old facts to History.
 
-A bullet of a dated section ends with its sources in parentheses; `kb pages finish` adds the newest date of them:
+Each bullet of a dated section ends with its sources and a date, in parentheses:
   - <text> (<short>, <short>, memory <ref> · YYYY-MM-DD)
-The date is computed from the index (a session's start, a memory's modified time or else its session's start), never
-taken from the writer: stamp() replaces any date it finds. A bullet whose sources cannot be found keeps no date.
 
-Age is relative to the page, not to today: a bullet of an aging section is stale when its date is more than
-`stale_days` (`stale_days_current` for "Current state", `stale_days_threads` for "Open threads") older than the newest
-bullet date of the same page. So a
-dormant project keeps its page, and a page that is not written cannot become stale. "Key decisions" and "Important
-files" never age out: they stay true until a session replaces them. sweep() moves stale bullets to History as
+`kb pages finish` computes the date from the index: the newest of the sources' dates. A session's date is its start.
+A memory's date is its modified time, else the start of the session that wrote it. The date never comes from the
+writer: stamp() replaces any date it finds. A bullet whose sources cannot be found gets no date.
+
+A bullet is stale when its date is more than N days older than the newest bullet date on the same page. Age is
+relative to the page, not to today. So a dormant project keeps its page, and a page that is not written cannot become
+stale. N depends on the section (the defaults are below; pages/config.json can change them):
+- "Current state": stale_days_current (STALE_DAYS_CURRENT, 30).
+- "Open threads": stale_days_threads (STALE_DAYS_THREADS, 30).
+- "Errors seen": stale_days (STALE_DAYS, 90).
+"Key decisions" and "Important files" never become stale: they stay true until a session replaces them.
+
+sweep() moves the stale bullets to History as:
   - unconfirmed since YYYY-MM-DD (<section>): <text> (<sources · date>)
+
 Nothing here imports the index: `kb hint` reads dates with bullet_date() and is_stale() only.
 """
 from __future__ import annotations
@@ -120,19 +127,24 @@ def sweep(body: str, stale_days: int = STALE_DAYS, stale_days_current: int = STA
           stale_days_threads: int = STALE_DAYS_THREADS):
     """(body with the stale bullets of the AGING sections moved to the end of History, the moved History lines).
     History is added at the end when the page has none."""
-    top = newest(body)
+    newest_date = newest(body)
+    limit_by_section = {"Current state": stale_days_current, "Open threads": stale_days_threads}
     keep, moved = [], []
     for line, key, _ in _walk(body):
         if key in AGING and line.startswith("- "):
             text, ref, content = parse_tail(line)
-            limit = {"Current state": stale_days_current, "Open threads": stale_days_threads}.get(key, stale_days)
-            if ref is not None and is_stale(ref.date, top, limit):
+            if ref is not None and is_stale(ref.date, newest_date, limit_by_section.get(key, stale_days)):
                 moved.append(f"- unconfirmed since {ref.date} ({key}): {text[2:]} ({content} · {ref.date})")
                 continue
         keep.append(line)
     if not moved:
         return body, []
-    lines = keep
+    _append_to_history(keep, moved)
+    return "\n".join(keep), moved
+
+
+def _append_to_history(lines: list, moved: list) -> None:
+    """Add the moved lines at the end of the History section of lines (in place). Add the section when it is missing."""
     start = next((i for i, l in enumerate(lines) if _HEADING.match(l) and _key(_HEADING.match(l).group(1),
                                                                                (HISTORY,))), None)
     if start is None:
@@ -145,7 +157,6 @@ def sweep(body: str, stale_days: int = STALE_DAYS, stale_days_current: int = STA
         while last > start + 1 and not lines[last - 1].strip():
             last -= 1
         lines[last:last] = moved
-    return "\n".join(lines), moved
 
 
 def index_lookup(idx):
