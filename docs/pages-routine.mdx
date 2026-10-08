@@ -153,9 +153,10 @@ $ kb decide accept s-1a2b3c --note "add it to AGENTS.md"
 - `kb decide later [--days N]`: new sessions stop asking about the waiting suggestions for `N` days (default 1). A new
   suggestion makes them ask again.
 
-Run `kb decide accept` and `kb decide reject` in your own terminal. They refuse to run without a terminal, so an agent
-in a session cannot answer for you. Session text can hold instructions from other people. An accepted suggestion
-reaches every later session of its repo.
+Run `kb decide accept` and `kb decide reject` in your own terminal, or press the buttons of the
+[decide mod](./commands.mdx#answer-in-claude-code). Without a terminal, the commands refuse to run. In Claude Code, a
+`PreToolUse` hook also blocks each agent call to them. Thus an agent in a session cannot answer for you. Session text
+can hold instructions from other people, and an accepted suggestion reaches every later session of its repo.
 
 The answer goes to `decisions/<host>/answers.jsonl`, and the next sync pushes it. Only the sync of that machine
 writes this file. If you answer again, the newest answer counts. A later decision of the pages routine replaces your
@@ -177,6 +178,44 @@ drops an answer that was not pushed, the next sync adds it again from a local co
 
 `kb suggestions --all` also lists the fixed and rejected suggestions. The next retros read this list. They do not
 suggest a rejected change again. They give a higher rank to a change that came back.
+
+## Memory fixes
+
+Claude Code and Codex load the memory files of a folder into each new session there. A wrong memory file thus
+misleads every session. The pages routine reads the memory files of all machines. Thus it sees problems that no single
+session sees. Each machine keeps its own memory files, and only that machine changes them. Thus the pages routine never
+edits a memory file. It proposes a fix, and you accept or reject it with `kb decide`:
+
+```text
+$ kb decide
+m-4d5e6f  memory    rewrite memory demo/fix-branch: the branch was pushed as PR #1 that evening (a1b2c3d4)
+    --- now
+    +++ proposed
+    -description: Three uncommitted fixes; commit and PR still need the user's go
+    +description: Three fixes, pushed and open as PR #1
+$ kb decide accept m-4d5e6f
+```
+
+A fix is one of these kinds:
+
+- `delete`: a newer memory file or session says the opposite, or the memory file describes work that is over.
+- `rewrite`: part of the memory file is wrong, or its summary line no longer agrees with its text. The new text keeps
+  the front matter of the file.
+- `move`: a Claude Code memory file about one project is in the folder of another project. The fix moves it, with
+  its line in the `MEMORY.md` index of each folder.
+
+Only the machine that owns the host of the memory file lists its fixes. `kb decide accept` changes the memory file
+on that machine, and the next sync copies the change to the data repo. `kb decide accept` changes nothing in these
+cases:
+
+- The memory file changed after the proposal. The pages routine proposes again if the fix still applies.
+- The local file changed after the last sync. Run `kb sync --now --no-summaries`, then answer again.
+- The target folder of a move is not on this machine.
+
+The pages routine proposes at most 5 fixes in one run, each with the sessions that show it. It proposes one fix for
+each version of a memory file. If you reject a fix, it does not ask again until the memory file changes. `kb pages
+finish` refuses a rewrite of a memory file that holds a redacted secret, because a rewrite loses the secret.
+The proposals are in `pages/memory-edits.json`.
 
 ## Settings
 

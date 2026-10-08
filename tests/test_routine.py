@@ -695,6 +695,31 @@ def test_finish_records_the_suggestions_of_a_retro(tmp_path):
         routine.finish(root, settings(), now=NOW, push=False)
 
 
+def test_finish_records_the_memory_fixes_the_routine_proposes(tmp_path):
+    from kb import memedits
+    root = repo(tmp_path / "kb")
+    built(root)
+    memory(root, "alpha", "old.md", modified="2026-10-01T08:00:00Z")
+    commit(root)
+    plan(root, retro_weeks_back=0)
+    proposal = {"ref": "alpha/old", "kind": "delete", "why": "a later session replaced it", "sources": ["a0000002"]}
+    (root / memedits.REL).write_text(json.dumps({"new-1": proposal}))
+    res = routine.finish(root, settings(), now=NOW, push=False, skip=["alpha"])
+    (eid,) = res["memory_fixes"]
+    assert git(root, "log", "-1", "--format=%s").endswith(", memory fixes [skip ci]")
+    entry = memedits.load(root)[eid]
+    assert (entry["path"], entry["host"], entry["date"]) == (
+        "memories/h/claude/-Users-me-alpha/old.md", "h", NOW.astimezone(dt.timezone.utc).date().isoformat())
+
+    plan(root, retro_weeks_back=0)
+    (root / memedits.REL).write_text(json.dumps({eid: {**entry, "why": "changed"}}))
+    with pytest.raises(PagesError, match="never changes a proposal"):
+        routine.finish(root, settings(), now=NOW, push=False)
+    (root / memedits.REL).write_text(json.dumps({eid: entry, "new-2": {**proposal, "ref": "alpha/nothing"}}))
+    with pytest.raises(PagesError, match="no memory 'alpha/nothing'"):
+        routine.finish(root, settings(), now=NOW, push=False)
+
+
 def test_finish_asks_to_compact_current_state_and_open_threads(tmp_path):
     root = repo(tmp_path / "kb")
     demo(root)
