@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 from pathlib import Path
 
@@ -28,7 +29,7 @@ from kb.index import Index, connect_readonly, parse_memory
 from kb.pages import WEEK_RE, page_rel, parse_page, section, set_fields
 from kb.redact import redact
 from kb.stats import signature_sessions
-from kb.util import atomic_write, short_id
+from kb.util import atomic_write, short_id, slug
 
 CONFIG_REL = "pages/config.json"
 STATE_REL = "pages/.state.json"
@@ -318,7 +319,7 @@ def make_plan(root, idx: Index, settings, now=None) -> dict:
     mode, base, paths = _changes(root, state, head)
 
     rows = [dict(r) for r in idx.db.execute(
-        "SELECT id, short, project, parent, started, ended, summary, user_turns, md_path FROM sessions")]
+        "SELECT id, short, project, parent, started, ended, summary, user_turns, md_path, cwd, files, prs FROM sessions")]
     by_id = {r["id"]: r for r in rows}
     top = [r for r in rows if not r["parent"]]
     if paths is None:
@@ -358,7 +359,9 @@ def make_plan(root, idx: Index, settings, now=None) -> dict:
         return memories[path]
 
     grown = _grown(root, top, set(waiting))
-    projects, left_projects, todo = _plan_projects(root, top, ready, st, settings, changed_memories, memory, grown)
+    uncited = _uncited(root, top, set(waiting))
+    projects, left_projects, todo = _plan_projects(root, top, ready, st, settings, changed_memories, memory, grown,
+                                                   uncited)
     retros, left_weeks = _plan_retros(root, top, ready, st, settings, tz, now, grown)
     plan = {"version": 1, "mode": mode, "base": base, "head": head, "branch": gitops.current_branch(root),
             "created": _iso(now), "projects": projects, "retros": retros,
@@ -381,13 +384,14 @@ def _eligible(project: str, counts: dict, settings) -> bool:
 
 
 def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, changed_memories=(), memory=None,
-                   grown=None):
+                   grown=None, uncited=None):
     """Project items, what stays pending, and what changed in each planned project. What changed in a project is a set
     of session short ids and memory paths (they start with "memories/"); pending keeps both in one list. A memory whose
     file and old version are both gone is dropped. grown (_grown): sessions a page cites that went on after it was
-    written; they are planned again, and an item lists them as "grown"."""
+    written; they are planned again, and an item lists them as "grown". uncited (_uncited): sessions that worked in a
+    project with a page, which the page does not cite; an item lists those of other projects as "related"."""
     memory = memory or (lambda path: None)
-    grown = grown or {}
+    grown, uncited = grown or {}, uncited or {}
     counts, latest, members = {}, {}, {}
     for r in top:
         p = r["project"]
@@ -399,9 +403,10 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
     todo = {p: set(_strings(v)) for p, v in old.items()}
     for r in ready.values():
         todo.setdefault(r["project"], set()).add(r["short"])
-    for rel, shorts in grown.items():
-        if rel.startswith("pages/projects/"):
-            todo.setdefault(rel[len("pages/projects/"):-3], set()).update(shorts)
+    for found in (grown, uncited):
+        for rel, shorts in found.items():
+            if rel.startswith("pages/projects/"):
+                todo.setdefault(rel[len("pages/projects/"):-3], set()).update(shorts)
     for path in changed_memories:
         m = memory(path)
         if m:
@@ -428,6 +433,9 @@ def _plan_projects(root: Path, top: list, ready: dict, st: dict, settings, chang
                 item["memories_removed"] = gone
             if grown.get(rel):
                 item["grown"] = sorted(grown[rel] & set(shorts), key=lambda s: (started.get(s, ""), s))
+            other = {r["short"] for r in top if r["short"] in shorts and r["project"] != p}
+            if other:
+                item["related"] = sorted(other, key=lambda s: (started.get(s, ""), s))
             items.append(item)
         else:                            # a new page is written from the whole history of the project
             items.append({"name": p, "page": rel, "action": "create",
@@ -450,6 +458,72 @@ def _page_meta(path: Path):
     except (OSError, ValueError):
         return [], ""
     return meta["sources"], meta["updated"]
+
+
+_PR = re.compile(r"github\.com/[^/\s]+/([^/\s]+)/pull/\d+")
+
+
+def _json_list(text) -> list:
+    try:
+        v = json.loads(text or "[]")
+    except ValueError:
+        return []
+    return [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+
+
+def _projects_of(top: list, names: set) -> dict:
+    """{session id: projects with a page it worked in}. A session works in its own project and in every project whose
+    repo it changed files in or opened a PR in. A project's repo folders are learned from its sessions' working
+    folders named after it (~/Repositories/docs), never from a folder name alone (docs/ in another repo is not the
+    docs project); a cloud session's repos are the folders of /home/user. A PR's repo maps to a project by name, or by
+    the project whose sessions opened most PRs in it (repo plain → project plainwright)."""
+    from kb.setup import CLOUD_HOME
+    lower = {n.lower(): n for n in names}
+    roots, votes = {}, {}
+    for r in top:
+        cwd = os.path.normpath(r["cwd"] or "/")
+        if r["project"] in names and os.path.basename(cwd).lower() == r["project"].lower():
+            roots.setdefault(cwd, r["project"])
+        for url in _json_list(r["prs"]):
+            m = _PR.search(url)
+            if m and r["project"] in names:
+                c = votes.setdefault(slug(m.group(1)), {})
+                c[r["project"]] = c.get(r["project"], 0) + 1
+    repos = {repo: max(c, key=lambda p: (c[p], p)) for repo, c in votes.items()}
+    out = {}
+    for r in top:
+        found = {r["project"]} & names
+        cwd = os.path.normpath(r["cwd"] or "/")
+        for f in _json_list(r["files"]):
+            path = os.path.normpath(f if f.startswith("/") else os.path.join(cwd, f))
+            found.update(p for root_dir, p in roots.items() if path.startswith(root_dir + "/"))
+            if cwd == CLOUD_HOME:
+                parts = os.path.relpath(path, CLOUD_HOME).split("/")
+                if len(parts) >= 2 and parts[0].lower() in lower:
+                    found.add(lower[parts[0].lower()])
+        for url in _json_list(r["prs"]):
+            m = _PR.search(url)
+            repo = slug(m.group(1)) if m else ""
+            if repo in lower or repo in repos:
+                found.add(lower.get(repo) or repos[repo])
+        if found:
+            out[r["id"]] = found
+    return out
+
+
+def _uncited(root: Path, top: list, waiting=()) -> dict:
+    """{page rel: {short}} of the sessions that worked in a project with a page (_projects_of) and that its page does
+    not cite: the page is brought in line with the data, whatever the folder a session started in. A session still
+    waiting for its summary is left for later."""
+    folder = root / "pages" / "projects"
+    cited = {path.stem: set(_page_meta(path)[0]) for path in sorted(folder.glob("*.md"))} if folder.is_dir() else {}
+    out, shorts = {}, {r["id"]: r["short"] for r in top}
+    for sid, projects in _projects_of([r for r in top if r["id"] not in waiting], set(cited)).items():
+        short = shorts[sid]
+        for p in projects:
+            if short not in cited[p]:
+                out.setdefault(f"pages/projects/{p}.md", set()).add(short)
+    return out
 
 
 def _grown(root: Path, top: list, waiting=()) -> dict:

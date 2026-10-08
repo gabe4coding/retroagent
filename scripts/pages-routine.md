@@ -54,8 +54,10 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
    again; `finish` uses the saved plan). It prints JSON: `projects` and `retros` to write in this run (each with
    `page`, `action` create or update, and the `sessions` short ids; a project `update` can also have `memories`, the
    paths of memory files added or changed, and `memories_removed`, the refs of memory files deleted; an `update` of a
-   project or a retro can have `grown`, the sessions the page already cites that went on after it was written), plus
-   what stays `pending` for later runs. If both lists are empty, go to step 4b.
+   project or a retro can have `grown`, the sessions the page already cites that went on after it was written, and a
+   project `update` can have `related`, sessions that started in another folder but changed files or opened PRs in
+   this project's repo), plus what stays `pending` for later runs. Every session that worked in a project with a
+   page and that the page does not cite is planned, whatever the folder it started in. If both lists are empty, go to step 4b.
 3. **Project pages.** For each item in `projects`:
    - `create`: `kb pages digest --project <name>`. It starts with every memory of the
      project, then the sessions.
@@ -66,6 +68,8 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
      one-prompt run has no summary): read what happened after the page was written with `kb show <short> --grep
      "<regex>" --around 1` or `kb show <short>`, and update the page with it. Never treat a session as covered
      because the page already cites it.
+   - `related`: these sessions also belong to another project (or to none with a page). Write only what they did in
+     this project's repo, and cite them.
    - `memories_removed`: the owner or an agent deleted these memories, so their facts no longer hold. Remove or
      correct every bullet that cites `(memory <ref>)` for them, unless a session still supports it.
    - When the digest is not enough for an important point, look closer, at most 5 times per page:
