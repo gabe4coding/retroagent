@@ -1,4 +1,13 @@
-"""Write one session (and its subagents) as distilled markdown + slim raw under this host's folders."""
+"""Write one session and its subagents into this host's folders of the data clone.
+
+Each session gives two files:
+- distilled markdown (sessions/<host>/…/*.md): front matter with the session's fields, then the turns as readable
+  text (see kb.distill). This is what the index and people read.
+- slim raw copy (raw/<host>/…/*.jsonl.gz): the transcript with bulky parts left out, redacted and gzipped
+  (see kb.slimraw).
+
+Both are redacted before they are written: secrets are replaced, and the counts go into `redactions`.
+"""
 from __future__ import annotations
 
 import posixpath
@@ -72,68 +81,88 @@ def _drop_copy(root: Path, host: str, s, sub, touched) -> None:
 
 def write_session(root, host: str, s, redactions: Counter, dry_run: bool = False, known=None, touched=None,
                   raw: bool = True):
-    """Return (md paths relative to root, Counter of output sizes).
+    """Write the markdown (and the raw copy) of a session and of each of its subagents.
 
-    known: id -> current md path (from the index). When a session's path changes, the old markdown and the raw file it
-    names are removed, its summary fields move to the new file (the better of the two files wins), and the old month
-    is added to `touched` (a set) so the caller can rebuild that month's catalog.
-    A subagent with `elsewhere` set is another session's to write: it is only linked, and a copy of it that an older
-    sync wrote under this session is removed.
-    raw=False: the raw copies wait (the caller writes them once the session settles); an existing one is left as it
-    is. The markdown is the same either way: it names its raw path even before that file exists. Exception: a
-    session that moves away from a raw copy it already has gets its new copy now, so no stale copy stays behind.
-    Raises PathCollision, before anything is written, when a target markdown file holds a different session.
+    Returns (md paths relative to root, Counter of output sizes in bytes under "md" and "raw").
+    - known: id -> current md path (from the index). When a session's path changes:
+      the old markdown and the raw file it names are removed;
+      its summary fields move to the new file (the better summary of the two files wins);
+      the old month is added to `touched` (a set), so the caller can rebuild that month's catalog.
+    - A subagent with `elsewhere` set belongs to another session's file. It is only linked. A copy of it that an
+      older sync wrote under this session is removed.
+    - raw=False: the raw copies wait (the caller writes them once the session settles). An existing raw copy stays
+      as it is. The markdown is the same either way: it names its raw path even before that file exists.
+    - Exception to raw=False: a session that moves away from a raw copy it already has gets its new copy now. So no
+      stale copy stays behind.
+    - dry_run: compute everything, write and remove nothing.
+    - Raises PathCollision, before anything is written, when a target markdown file holds a different session.
     """
     root = Path(root)
-    known = known or {}
     sub_files = {sub.id: _sub_link(host, s, sub) for sub in s.subagents}
-    plan, owners = [], {}
-    for sess, parent in [(s, None)] + [(sub, s) for sub in s.subagents if not sub.elsewhere]:
-        mrel, rrel = md_rel(host, sess, parent), raw_rel(host, sess, parent)
-        here = read_meta(root / mrel) if (root / mrel).exists() else None
-        if owners.setdefault(mrel, sess.id) != sess.id:
-            raise PathCollision(f"{mrel} is the file of two sessions, {owners[mrel]} and {sess.id}")
-        if here is not None and here.get("id") != sess.id:
-            raise PathCollision(f"{mrel} already holds session {here.get('id') or '(no id)'}, not {sess.id}; "
-                                f"not overwriting it")
-        old = known.get(sess.id, "")
-        old_meta = {}
-        if old and old != mrel:
-            old_meta = read_meta(root / old)
-            if old_meta.get("id") != sess.id:       # gone, or no longer this session's file: leave it alone
-                old_meta = {}
-        keep = max([_summary_fields(here or {}), _summary_fields(old_meta)], key=_rank)
-        plan.append((sess, parent, mrel, rrel, old, old_meta, keep))
+    plan = _plan_writes(root, host, s, known or {})
     written, sizes = [], Counter()
-    for sess, parent, mrel, rrel, old, old_meta, keep in plan:
-        md, c1 = redact(render_markdown(sess, host, keep, sub_files if parent is None else {}, raw=rrel))
-        redactions.update(c1)
-        md_bytes = md.encode("utf-8", errors="replace")      # a lone surrogate in a transcript must not stop the write
-        sizes["md"] += len(md_bytes)
-        stale_raw = _old_raw(root, host, old_meta.get("raw"), rrel) if old_meta else None
-        stale_raw = stale_raw if stale_raw is not None and stale_raw.exists() else None
-        data = None
-        if raw or stale_raw is not None:
-            data, c2 = slim(sess.agent, sess.source_paths)
-            redactions.update(c2)
-            sizes["raw"] += len(data)
-        if not dry_run:
-            atomic_write(root / mrel, md_bytes)
-            if data is not None:
-                atomic_write(root / rrel, data)
-            if old and old != mrel:
-                if old_meta:                                  # raw first: a crash in between is repaired by the next run
-                    if stale_raw is not None:
-                        stale_raw.unlink()
-                    (root / old).unlink()
-                if touched is not None:
-                    try:
-                        touched.add(month_of(old))
-                    except IndexError:
-                        pass
-        written.append(mrel)
+    for entry in plan:
+        _write_one(root, host, entry, sub_files, redactions, sizes, dry_run, raw, touched)
+        written.append(entry[2])
     if not dry_run:
         for sub in s.subagents:
             if sub.elsewhere:
                 _drop_copy(root, host, s, sub, touched)
     return written, sizes
+
+
+def _plan_writes(root: Path, host: str, s, known: dict) -> list:
+    """Check the targets and read the old files, before anything is written. Raises PathCollision.
+
+    One entry per file to write: (session, parent, md_path, raw_path, old md path, old front matter, summary to keep).
+    """
+    plan, owners = [], {}
+    for sess, parent in [(s, None)] + [(sub, s) for sub in s.subagents if not sub.elsewhere]:
+        md_path, raw_path = md_rel(host, sess, parent), raw_rel(host, sess, parent)
+        here = read_meta(root / md_path) if (root / md_path).exists() else None
+        if owners.setdefault(md_path, sess.id) != sess.id:
+            raise PathCollision(f"{md_path} is the file of two sessions, {owners[md_path]} and {sess.id}")
+        if here is not None and here.get("id") != sess.id:
+            raise PathCollision(f"{md_path} already holds session {here.get('id') or '(no id)'}, not {sess.id}; "
+                                f"not overwriting it")
+        old = known.get(sess.id, "")
+        old_meta = {}
+        if old and old != md_path:
+            old_meta = read_meta(root / old)
+            if old_meta.get("id") != sess.id:       # gone, or no longer this session's file: leave it alone
+                old_meta = {}
+        keep = max([_summary_fields(here or {}), _summary_fields(old_meta)], key=_rank)
+        plan.append((sess, parent, md_path, raw_path, old, old_meta, keep))
+    return plan
+
+
+def _write_one(root: Path, host: str, entry: tuple, sub_files: dict, redactions: Counter, sizes: Counter,
+               dry_run: bool, raw: bool, touched) -> None:
+    """Write the markdown and, when due, the raw copy of one plan entry. Remove the old files of a moved session."""
+    sess, parent, md_path, raw_path, old, old_meta, keep = entry
+    md, md_redactions = redact(render_markdown(sess, host, keep, sub_files if parent is None else {}, raw=raw_path))
+    redactions.update(md_redactions)
+    md_bytes = md.encode("utf-8", errors="replace")      # a lone surrogate in a transcript must not stop the write
+    sizes["md"] += len(md_bytes)
+    stale_raw = _old_raw(root, host, old_meta.get("raw"), raw_path) if old_meta else None
+    stale_raw = stale_raw if stale_raw is not None and stale_raw.exists() else None
+    data = None
+    if raw or stale_raw is not None:
+        data, raw_redactions = slim(sess.agent, sess.source_paths)
+        redactions.update(raw_redactions)
+        sizes["raw"] += len(data)
+    if dry_run:
+        return
+    atomic_write(root / md_path, md_bytes)
+    if data is not None:
+        atomic_write(root / raw_path, data)
+    if old and old != md_path:
+        if old_meta:                                  # raw first: a crash in between is repaired by the next run
+            if stale_raw is not None:
+                stale_raw.unlink()
+            (root / old).unlink()
+        if touched is not None:
+            try:
+                touched.add(month_of(old))
+            except IndexError:
+                pass
