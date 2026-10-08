@@ -35,7 +35,7 @@ def _hook_env(tmp_path):
     bin_dir.mkdir()
     shutil.copy(PLUGIN / "bin/kb-hook", bin_dir / "kb-hook")
     marker = tmp_path / "ran.txt"
-    (bin_dir / "kb").write_text(f"#!/bin/sh\necho \"$@\" > '{marker}'\n")
+    (bin_dir / "kb").write_text(f"#!/bin/sh\n[ \"$1\" = brief ] && exit 0\necho \"$@\" > '{marker}'\n")  # the sync only
     (bin_dir / "kb").chmod(0o755)
     root = tmp_path / "root"
     (root / ".git").mkdir(parents=True)                  # a data clone
@@ -127,14 +127,14 @@ def _hint_env(tmp_path, config):
     return bin_dir / "kb-hint", marker, env
 
 
-def test_hint_hook_is_off_unless_hints_is_true(tmp_path):
+def test_hint_hook_is_off_only_with_hints_false(tmp_path):
     hook, marker, env = _hint_env(tmp_path, '{"hints": false}')
     p = subprocess.run([str(hook)], env=env, input="{}", capture_output=True, text=True, timeout=5)
     assert p.returncode == 0 and p.stdout == "" and not marker.exists()
 
 
 def test_hint_hook_hands_the_event_to_kb_and_always_exits_0(tmp_path):
-    hook, marker, env = _hint_env(tmp_path, '{\n  "hints": true\n}')
+    hook, marker, env = _hint_env(tmp_path, '{"root": "/data"}')            # on by default
     p = subprocess.run([str(hook)], env=env, input='{"error": "x"}', capture_output=True, text=True, timeout=5)
     assert p.returncode == 0                                    # kb exited 3
     assert marker.read_text().splitlines() == ["hint --event error --hook", '{"error": "x"}']
@@ -143,12 +143,12 @@ def test_hint_hook_hands_the_event_to_kb_and_always_exits_0(tmp_path):
     assert p.returncode == 0 and not marker.exists()
 
 
-def test_hook_prints_the_brief_first_only_when_it_is_on(tmp_path):
+def test_hook_prints_the_brief_first_unless_it_is_off(tmp_path):
     hook, marker, root, env = _hook_env(tmp_path)
     kb = hook.parent / "kb"
     kb.write_text(f"#!/bin/sh\necho \"$@\" >> '{marker}'\n[ \"$1\" = brief ] && cat && echo BRIEF\nexit 0\n")
     cfg = tmp_path / "config.json"
-    cfg.write_text(json.dumps({"brief": True}))
+    cfg.write_text(json.dumps({"auto_sync": False}))                     # brief: on by default
     (root / ".kb").mkdir()
     (root / ".kb/last-ok").touch()                      # debounced: no sync, the brief still comes
     p = subprocess.run([str(hook)], env={**env, "KB_CONFIG": str(cfg)}, input='{"cwd": "/w/demo"}',
