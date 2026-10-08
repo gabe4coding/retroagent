@@ -12,7 +12,10 @@ is `src/kb` (stdlib only, Python 3.9). `templates/data/` holds the files `kb set
 
 - `scripts/test` runs the fast tests in parallel on `/usr/bin/python3` with pytest from `uv` (a few seconds).
 - `scripts/test --all` adds the tests marked `slow`, which start real git and other processes. Run it before every
-  commit: there is no CI.
+  commit.
+- `KB_TEST_PYTHON=3.9 scripts/test` runs the tests on another Python: a path, or a version that `uv` finds or installs.
+- CI (`.github/workflows/test.yml`) runs `scripts/test --all` on every push to `main` and every pull request: on macOS
+  with `/usr/bin/python3`, and on Linux with Python 3.9 and 3.13. gitleaks is installed, so its tests run too.
 
 ## Releasing plugin changes
 

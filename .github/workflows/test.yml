@@ -1,0 +1,47 @@
+# Runs scripts/test --all, the same check a contributor runs before a commit, on every push to main and every PR.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            python: /usr/bin/python3   # the runtime target: the stock Python of macOS (3.9)
+          - os: ubuntu-latest
+            python: "3.9"              # the oldest Python that install.sh accepts
+          - os: ubuntu-latest
+            python: "3.13"
+    name: ${{ matrix.os }} · ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.28.0
+        run: |
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64) arch=linux_x64 ;;
+            macOS-ARM64) arch=darwin_arm64 ;;
+            macOS-X64) arch=darwin_x64 ;;
+            *) echo "no gitleaks build for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${arch}.tar.gz" \
+            | tar xz -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: scripts/test --all
+        env:
+          KB_TEST_PYTHON: ${{ matrix.python }}
+        run: scripts/test --all -rs
