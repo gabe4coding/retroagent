@@ -49,6 +49,11 @@ the date from the index (a session's start, a memory's modified time); the model
 - **Contradicted:** when a new session says otherwise, the routine writes the new bullet and moves the old one to
   History as `superseded <date> by <short>`. When two memories disagree, the newer wins and an open thread asks you to
   delete the old one.
+- **Sessions from another folder:** a session belongs to its own project and to every project whose repo it changed
+  files in or opened a PR in, wherever it started: your home folder, `~/Repositories`, a Codex scratch folder or a
+  cloud session's `/home/user`. Each plan compares every project page with these sessions and plans the ones the page
+  does not cite. A project's repo folders are learned from its own sessions, so a `docs/` folder in another repo is
+  not the `docs` project.
 - **Sessions that went on:** a session can go on after a page cited it (the page was written while it ran). Each plan
   checks every page and retro for cited sessions that ended after the page was written, and plans the page again with
   them as `grown`. `kb pages finish` refuses to skip such a page, or one with a planned session it does not cite.

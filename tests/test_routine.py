@@ -764,3 +764,26 @@ def test_skip_is_refused_for_a_page_that_misses_planned_sessions(tmp_path):
     with pytest.raises(PagesError, match=r"alpha.md: cannot be skipped, it misses 1 planned session\(s\) it does not "
                                          r"cite \(a0000004\)"):
         routine.finish(root, settings(), now=NOW, push=False, skip=["alpha"])
+
+
+def test_a_page_gets_the_sessions_that_worked_in_its_project_from_another_folder(tmp_path):
+    root = repo(tmp_path / "kb")
+    built(root)                                                   # alpha's page cites a0000001..3
+    for sid in ("a0000001", "a0000002", "a0000003"):              # alpha's repo folder, learned from its sessions
+        started = {"a0000001": "2026-09-22", "a0000002": "2026-09-30", "a0000003": "2026-10-06"}[sid]
+        put(root, f"h/claude/{started[:4]}/{started[5:7]}/{started}_alpha_{sid}.md", sid, project="alpha",
+            started=f"{started}T10:00:00Z", ended=f"{started}T10:00:00Z", summary="did things",
+            cwd="/Users/me/Repositories/alpha")
+    commit(root)
+    plan(root, retro_weeks_back=0)
+    write_alpha(root)
+    routine.finish(root, settings(), now=NOW, push=False)
+    put(root, "h/claude/2026/10/2026-10-05_me_c0000009.md", "c0000009", project="me", cwd="/Users/me",
+        started="2026-10-05T10:00:00Z", ended="2026-10-05T10:00:00Z", summary="fixed alpha from home",
+        files=["Repositories/alpha/src/a.py"])
+    commit(root)
+    item = next(i for i in plan(root, retro_weeks_back=0)["projects"] if i["name"] == "alpha")
+    assert (item["sessions"], item["related"]) == (["c0000009"], ["c0000009"])
+    with pytest.raises(PagesError, match=r"alpha.md: cannot be skipped, it misses 1 planned session\(s\) it does not "
+                                         r"cite \(c0000009\)"):
+        routine.finish(root, settings(), now=NOW, push=False, skip=["alpha"])
