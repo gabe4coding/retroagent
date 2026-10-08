@@ -26,6 +26,8 @@ KILL_GRACE = 5                # seconds between SIGTERM and SIGKILL for a proces
 STALE_LOCK_S = 10 * 60        # an index.lock older than this is not a git run in progress
 GITLEAKS_FALLBACKS = ("/opt/homebrew/bin/gitleaks", "/usr/local/bin/gitleaks")     # tried after PATH (a hook's PATH is short)
 NETWORK_COMMANDS = {"clone", "fetch", "ls-remote", "pull", "push"}     # the git commands that may start ssh
+SHOW_PATHS = 3                # paths an error message names at most
+GITLEAKS_ERROR_CHARS = 500    # an error text keeps only the last characters of the gitleaks output
 
 
 class GitError(Exception):
@@ -140,7 +142,11 @@ def upstream_text(root, path: str) -> str:
 
 
 def dirty_tracked(root) -> set:
-    """Paths of tracked files with local changes (staged or not). Untracked files are not listed."""
+    """Paths of tracked files with local changes (staged or not). Untracked files are not listed.
+
+    `git status --porcelain -z` gives NUL-separated entries "XY <path>": two status letters, a space, the path. For a
+    rename or copy (R or C), the next entry is the original path.
+    """
     entries = git(root, "status", "--porcelain", "-z", "--untracked-files=no").stdout.split("\0")
     paths, i = set(), 0
     while i < len(entries):
@@ -182,27 +188,29 @@ def pull(root, keep=()) -> None:
     dirty = dirty_tracked(root)
     blocking = sorted(dirty - set(keep))
     if blocking:
-        more = f" (+{len(blocking) - 3} more)" if len(blocking) > 3 else ""
-        raise GitError(f"local changes in tracked files; not pulling: {', '.join(blocking[:3])}{more}")
+        more = f" (+{len(blocking) - SHOW_PATHS} more)" if len(blocking) > SHOW_PATHS else ""
+        raise GitError(f"local changes in tracked files; not pulling: {', '.join(blocking[:SHOW_PATHS])}{more}")
     stashed = False
     if dirty:
-        before = git(root, "rev-parse", "-q", "--verify", "refs/stash", check=False).stdout.strip()
+        # Compare the stash ref before and after: it changes only if `git stash push` made a new entry. So we never
+        # pop a stash the user made.
+        stash_before = git(root, "rev-parse", "-q", "--verify", "refs/stash", check=False).stdout.strip()
         git(root, "stash", "push", "--quiet", "-m", "kb sync: held-back files during pull",
             "--", *[f":(literal){x}" for x in sorted(dirty)])
-        stashed = git(root, "rev-parse", "-q", "--verify", "refs/stash", check=False).stdout.strip() != before
+        stashed = git(root, "rev-parse", "-q", "--verify", "refs/stash", check=False).stdout.strip() != stash_before
     error = None
     try:
         p = git(root, "pull", "--rebase", "--quiet", check=False, timeout=PULL_TIMEOUT)
         if p.returncode != 0:
             conflict = _rebasing(root)          # stopped mid-rebase: a conflict, not a fetch error
-            where = _unmerged(root) if conflict else ""
+            conflict_files = _unmerged(root) if conflict else ""
             try:
                 git(root, "rebase", "--abort", check=False)
             except GitError:
                 pass
-            text = f"git pull --rebase: {where}{(p.stderr or p.stdout).strip()}"
+            text = f"git pull --rebase: {conflict_files}{(p.stderr or p.stdout).strip()}"
             error = PullConflict(text) if conflict else GitError(text)
-    except GitError as e:                  # a timeout
+    except GitError as e:                  # with check=False, git() raises only on a timeout
         error = e
     if stashed:
         _put_back(root, dirty, error)
@@ -241,8 +249,8 @@ def _unmerged(root) -> str:
     files = sorted({x for x in p.stdout.split("\0") if x}) if p.returncode == 0 else []
     if not files:
         return ""
-    more = f" (+{len(files) - 3} more)" if len(files) > 3 else ""
-    return f"conflict in {', '.join(files[:3])}{more}: "
+    more = f" (+{len(files) - SHOW_PATHS} more)" if len(files) > SHOW_PATHS else ""
+    return f"conflict in {', '.join(files[:SHOW_PATHS])}{more}: "
 
 
 def repair(root) -> str:
@@ -324,24 +332,26 @@ def _report_files(report: Path):
     return [str(f.get("File") or "(unknown file)") if isinstance(f, dict) else "(unknown file)" for f in data]
 
 
-def _gitleaks(exe, args, fallback, unknown, report: Path):
-    """Run gitleaks with a JSON report. `fallback` is used only if this gitleaks does not know the command.
+def _gitleaks(exe, new_args, old_args, unknown_command_text, report: Path):
+    """Run gitleaks with a JSON report. Returns (files with findings, error text).
 
-    Returns (files with findings, error text). An exit without findings is an error: not a clean scan.
+    Two command forms exist: newer gitleaks has `git` and `dir`, older gitleaks has `protect` and `detect`. Try
+    `new_args` first; use `old_args` only if the output contains `unknown_command_text`. A failed exit without
+    findings is an error, not a clean scan.
     """
     p = None
-    for cmd in (args, fallback):
+    for cmd in (new_args, old_args):
         if report.exists():
             report.unlink()
         p = _run([exe, *cmd], GITLEAKS_TIMEOUT, "gitleaks")
-        if p.returncode == 0 or unknown not in p.stdout + p.stderr:
+        if p.returncode == 0 or unknown_command_text not in p.stdout + p.stderr:
             break
     files = _report_files(report) or []
     if files:
         return files, ""
     if p.returncode == 0:
         return [], ""
-    return [], (p.stdout + p.stderr).strip()[-500:] or f"gitleaks exit {p.returncode}"
+    return [], (p.stdout + p.stderr).strip()[-GITLEAKS_ERROR_CHARS:] or f"gitleaks exit {p.returncode}"
 
 
 def _staged_raw(root) -> list:
@@ -349,18 +359,24 @@ def _staged_raw(root) -> list:
     return [p for p in out.split("\0") if p.endswith(".jsonl.gz")]
 
 
-def _map_raw(found: str, tmp: str, rels: dict) -> str:
-    """Map a path reported for the decompressed copy back to the staged .gz path."""
-    f = found
+def _map_raw(found: str, tmp: str, gz_by_plain: dict) -> str:
+    """Map a path reported for the decompressed copy back to the staged .gz path.
+
+    gz_by_plain is {decompressed path relative to `tmp`: staged .gz path}. If no mapping fits, `found` is returned.
+    """
+    path = found
+    # Remove the temp folder prefix. Try its real path too: the temp folder can sit behind a symlink (on macOS,
+    # /var is a link to /private/var), so the reported path may use either form.
     for base in (tmp, os.path.realpath(tmp)):
         prefix = base.rstrip("/") + "/"
-        if f.startswith(prefix):
-            f = f[len(prefix):]
+        if path.startswith(prefix):
+            path = path[len(prefix):]
             break
-    if f in rels:
-        return rels[f]
-    best = max((r for r in rels if f.endswith("/" + r)), key=len, default=None)
-    return rels[best] if best else found
+    if path in gz_by_plain:
+        return gz_by_plain[path]
+    # Still no exact match (another prefix): take the longest known path that the reported path ends with.
+    longest_match = max((r for r in gz_by_plain if path.endswith("/" + r)), key=len, default=None)
+    return gz_by_plain[longest_match] if longest_match else found
 
 
 def gitleaks_config(root):
