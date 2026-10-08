@@ -22,7 +22,7 @@ The config lives in `~/.config/retroagent/config.json`. An install from before t
 | `cloud_host` | `cloud` | The host the imported cloud sessions are written under. |
 | `brief` | `true` | At the start of a session, add a short brief for its project: a pointer to the project page and the suggestions accepted for its repo. See [Brief at session start](./commands.mdx#brief-at-session-start). |
 | `hints` | `true` | When a tool call fails, add at most one past fix from the project page to the agent's context. See [Hints when a command fails](./commands.mdx#hints-when-a-command-fails). |
-| `hint_semantic_min` | `0.78` | Cosine a semantic hint needs (0 to 1). The model's scores are close together (about 0.6 to 0.85), so a small change shows many more hints. |
+| `hint_semantic_min` | `0.80` | Cosine a semantic hint needs (0 to 1). The model's scores are close together (about 0.6 to 0.85), so a small change shows many more hints. |
 | `hint_keyword_min` | `3` | Words an error must share with the problem side of a bullet for a keyword hint. |
 | `branch` | `main` | On any other branch, the sync touches no git. |
 | `raw_settle_hours` | `24` | See below. |
