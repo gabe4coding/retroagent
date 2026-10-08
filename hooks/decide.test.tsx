@@ -44,11 +44,11 @@ for (const surface of SURFACES) {
   test(`the band shows the waiting questions and the pane answers them (${surface})`, async ($, on) => {
     const ran = fakeKb(on, [SUGGESTION, FIX])
     await $.command.run(DECIDE)
-    const band = await $.ui.mount({ plugin: 'retroagent-decide', surface, component: 'AbovePrompt', props: BAND })
+    const band = await $.ui.mount({ plugin: 'retroagent', surface, component: 'AbovePrompt', props: BAND })
     expect((await band.find({ text: /2 questions wait/ }))).toBeDefined()
     expect((await band.find({ key: 'review' }))?.props.label).toBe('Review')
 
-    const pane = await $.ui.mount({ plugin: 'retroagent-decide', surface, component: 'Pane',
+    const pane = await $.ui.mount({ plugin: 'retroagent', surface, component: 'Pane',
                                     requestId: 'retroagent-decide', props: {} as never })
     expect(await pane.find({ text: /retro suggestion/ })).toBeDefined()
     expect(await pane.find({ text: /memory fix/ })).toBeDefined()
@@ -65,7 +65,7 @@ for (const surface of SURFACES) {
 test('the band stays empty when nothing waits or the user chose later', async ($, on) => {
   fakeKb(on, [SUGGESTION], '2999-01-01')
   await $.command.run(DECIDE)
-  const band = await $.ui.mount({ plugin: 'retroagent-decide', surface: 'terminal', component: 'AbovePrompt',
+  const band = await $.ui.mount({ plugin: 'retroagent', surface: 'terminal', component: 'AbovePrompt',
                                   props: BAND })
   expect(await band.find({ key: 'review' })).toBeUndefined()
 })

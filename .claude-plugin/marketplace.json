@@ -8,11 +8,6 @@
       "name": "retroagent",
       "source": "./",
       "description": "Sync your Claude Code and Codex sessions to a private repo you choose; search them, get project pages and weekly retros."
-    },
-    {
-      "name": "retroagent-decide",
-      "source": "./mods/decide",
-      "description": "A Claude Code mod: a band above the prompt when retro suggestions or memory fixes wait for your answer, and a pane to accept or reject each one. Needs retroagent; mods are early access."
     }
   ]
 }

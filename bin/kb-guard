@@ -1,6 +1,6 @@
 #!/bin/sh
 # PreToolUse hook (Bash): refuse an agent's call to `kb decide accept|reject`. Only the owner answers the questions of
-# `kb decide` (src/kb/decide.py): in their own terminal, or with the buttons of the retroagent-decide mod, which run kb
+# `kb decide` (src/kb/decide.py): in their own terminal, or with the buttons of the decide mod (hooks/decide.tsx), which run kb
 # directly and are no tool call. Session text can hold instructions from other people, and an accepted suggestion or
 # memory fix reaches every later session. Matches only a call (kb after a separator or a space, or a path that ends in
 # /kb), so a search for the words in a file goes through. Prints nothing and exits 0 for every other command.

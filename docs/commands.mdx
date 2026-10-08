@@ -166,20 +166,13 @@ sync and does not show a brief. It adds only one line that tells the agent to of
 
 ## Answer in Claude Code
 
-The `retroagent-decide` mod shows the questions of `kb decide` in Claude Code. If questions wait for your answer, a
-band above the prompt says so. **Review** opens a pane with each question, its details and its sources. Each question
-has an **Accept** and a **Reject** button. **Later** hides the band for one day, or until a new question arrives. The
-`/decide` command opens the pane too.
-
-To install the mod, run this command in a terminal on a machine with retroagent:
-
-```sh
-claude plugin install retroagent-decide@retroagent
-```
+In Claude Code, the retroagent plugin shows the questions of `kb decide` with a mod. If questions wait for your
+answer, a band above the prompt says so. **Review** opens a pane with each question, its details and its sources. Each
+question has an **Accept** and a **Reject** button. **Later** hides the band for one day, or until a new question
+arrives. The `/decide` command opens the pane too. Codex has no mods, so in Codex you answer with `kb decide`.
 
 The mod runs `kb decide`, so it has the same rules. A memory fix shows only on the machine that owns the memory file.
-If `kb` is not on the `PATH` of Claude Code, the mod tries `~/.local/bin/kb`. To use another path, set the `kb` option
-of the plugin.
+If `kb` is not on the `PATH` of Claude Code, the mod uses `~/.local/bin/kb`, which `install.sh` makes.
 
 Mods are an early access feature of Claude Code, and they can be off for your account. If the mod does not load, the
 brief still tells the agent about the waiting questions. The agent then tells you, and you answer with `kb decide` in

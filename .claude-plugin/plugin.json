@@ -6,5 +6,7 @@
     "name": "gabe4coding"
   },
   "repository": "https://github.com/gabe4coding/retroagent",
-  "license": "MIT"
+  "license": "MIT",
+  "hooks": "./hooks/mods.json",
+  "types": "./types/index.d.ts"
 }
