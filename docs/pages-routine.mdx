@@ -131,8 +131,38 @@ a date:
 }
 ```
 
-You can also add or change entries manually. An entry whose `by` is not `"routine"` is yours. The pages routine never
+Your answers from `kb decide` are decisions too (see [Answer a suggestion](#answer-a-suggestion)). You can also add
+or change entries of `pages/decisions.json` manually. An entry whose `by` is not `"routine"` is yours. The pages routine never
 changes or removes it, and `finish` refuses a run that tries to.
+
+### Answer a suggestion
+
+A new suggestion has no decision. It waits for your answer. To see the suggestions that wait, run `kb decide`:
+
+```text
+$ kb decide
+s-1a2b3c  proposed  W41           still happening: 3 sessions in 14 days, last 2026-10-09
+    Rules · wait for CI with `gh pr checks --watch` (a1b2c3d4)
+
+1 wait for you. Answer one: kb decide accept|reject <id> [--note TEXT]
+$ kb decide accept s-1a2b3c --note "add it to AGENTS.md"
+```
+
+- `kb decide accept <id>`: the brief then shows the change in each new session of its repo.
+- `kb decide reject <id>`: the next retros do not suggest it again.
+- `kb decide later [--days N]`: new sessions stop asking about the waiting suggestions for `N` days (default 1). A new
+  suggestion makes them ask again.
+
+Run `kb decide accept` and `kb decide reject` in your own terminal. They refuse to run without a terminal, so an agent
+in a session cannot answer for you. Session text can hold instructions from other people. An accepted suggestion
+reaches every later session of its repo.
+
+The answer goes to `decisions/<host>/answers.jsonl`, and the next sync pushes it. Only the sync of that machine
+writes this file. If you answer again, the newest answer counts. A later decision of the pages routine replaces your
+answer only when it has a later date: for example, a session applied the change that you accepted. If `kb repair`
+drops an answer that was not pushed, the next sync adds it again from a local copy in `.kb/`.
+
+### Measure a suggestion
 
 `kb suggestions` shows each open suggestion with a verdict. If a suggestion names an error signature (from
 `kb stats errors`), `kb suggestions` measures it:

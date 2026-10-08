@@ -140,6 +140,8 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
    - `applied`: a session made the change (a commit, a merged PR or an edit of the named file, check or hook).
    - `accepted`: the owner asked for the change in their own words (`--role user --no-subagents`).
    - `rejected`: the owner said no to it in their own words, or a `feedback` memory says not to do it.
+   A decision with `by` `owner` and source `kb decide on <host>` is the owner's own answer. Never contradict it:
+   after an `accepted` answer, write only `applied`, with its evidence. Skip a `rejected` one.
    Write each decision you found into `pages/decisions.json` (a JSON object; create it if missing):
    `"<id>": {"state": "applied", "source": "<short>", "note": "<what was done, one line>"}`. `source` is the short
    id of the session that shows it, or `memory <ref>`. `finish` writes `date` (from the source) and `by`. Change only
