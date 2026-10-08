@@ -11,6 +11,7 @@ from fixtures import GH_TOKEN, SID, clone, git, init_remote, make_claude_tree, m
 from kb import cloud
 from kb.index import Index
 from kb.sync import own_paths, run_sync
+from kb.util import short_id
 from test_sync import FakeRunner
 
 pytestmark = pytest.mark.slow          # starts git
@@ -63,11 +64,22 @@ def test_push_commits_the_slim_transcript_on_the_sessions_branch(setup_):
     assert cloud.push(cfg, str(transcript)).startswith("pushed 1 file(s)")
 
 
-def test_push_refuses_the_sync_branch(setup_):
-    _, cfg, transcript, _ = setup_
-    git("checkout", "-q", "main", cwd=cfg.root)
-    with pytest.raises(cloud.CloudError, match="never to main"):
-        cloud.push(cfg, str(transcript))
+@pytest.mark.parametrize("start", ["detached", "main"])
+def test_push_without_a_branch_of_its_own_uses_an_inbox_branch(setup_, start):
+    """A cloud session starts every repo on a detached HEAD; main is never pushed to."""
+    remote, cfg, transcript, home = setup_
+    git("checkout", "-q", "--detach" if start == "detached" else "main", cwd=cfg.root)
+    branch = cloud.inbox_branch(str(transcript))
+    assert branch == f"claude/inbox-{short_id(SID)}"
+    assert cloud.push(cfg, str(transcript)).startswith(f"pushed 2 file(s) to {branch}")
+    assert _has_branch(remote, branch) and not _has_branch(remote, BRANCH)
+    assert not any(f.startswith("inbox/") for f in _remote_files(remote, "main"))
+    assert git("status", "--porcelain", cwd=cfg.root).stdout == ""
+    rep = run_sync(home, now=True, runner=FakeRunner())              # the owner's machine imports it
+    assert rep.errors == [] and not _has_branch(remote, branch), rep.errors
+    idx = Index(home.kb_dir / "index.sqlite")
+    assert [r[0] for r in idx.db.execute("SELECT host FROM sessions WHERE id=?", (SID,))] == ["cloud"]
+    idx.close()
 
 
 def test_one_machine_imports_cloud_sessions_as_host_cloud(setup_):

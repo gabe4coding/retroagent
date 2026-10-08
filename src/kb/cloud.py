@@ -3,9 +3,10 @@ the data repo.
 
 In a cloud session (a Stop hook that `kb cloud install` puts in ~/.claude/settings.json; the cloud setup script runs it):
   kb cloud push   slim and redact the session's transcript and its subagents (kb.slimraw) and commit them with git
-                  plumbing as inbox/claude/<encoded cwd>/<id>.jsonl.gz (+ <id>/subagents/…) on the branch of the data
-                  clone: the session's own claude/… branch, never the sync branch. The working tree is not touched,
-                  and the cloud owns no host.
+                  plumbing as inbox/claude/<encoded cwd>/<id>.jsonl.gz (+ <id>/subagents/…) on a branch of the data
+                  repo, never the sync branch: the data clone's claude/… branch when the session made one, else
+                  claude/inbox-<short id> (a cloud session starts every repo on a detached HEAD). The working tree is
+                  not touched, and the cloud owns no host.
 
 On the one machine that imports them (cloud_import on, `kb cloud import --on`), each sync:
   fetches, copies the inbox files of every remote branch into .kb/cloud/claude/ (laid out like ~/.claude/projects),
@@ -88,6 +89,11 @@ def _bootstrap_branch(root) -> str:
         return routine.DEFAULTS["bootstrap_branch"]
 
 
+def inbox_branch(transcript: str) -> str:
+    """The branch a session's transcript goes to when the data clone has no branch of the session's own."""
+    return f"claude/inbox-{short_id(Path(transcript).stem)}"
+
+
 def push(cfg, transcript: str) -> str:
     """Commit the session's slim transcript files on the data clone's branch and push. Pushes again while the
     transcript grew during the push (up to PUSH_ROUNDS). Returns one line."""
@@ -96,8 +102,7 @@ def push(cfg, transcript: str) -> str:
         raise CloudError(f"no data clone at {root}; start the session with the data repo too")
     branch = gitops.current_branch(root)
     if not branch or branch == cfg.branch:
-        raise CloudError(f"the data clone is on {branch or '(detached HEAD)'}; cloud sessions push only to their own "
-                         f"branch, never to {cfg.branch}")
+        branch = inbox_branch(transcript)            # detached (how a cloud session starts) or on the sync branch
     if branch == _bootstrap_branch(root):
         raise CloudError(f"the data clone is on {branch}, the pages routine's branch: it reaches {cfg.branch} with the "
                          f"pages, so nothing is pushed there")
