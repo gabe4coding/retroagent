@@ -1,15 +1,27 @@
 """kb repair: put the data clone back on its upstream when this host's commits no longer rebase onto it.
 
-When: the remote changed this host's files (for example summaries made on another machine and merged), so the
-sync's `pull --rebase` conflicts on every run. Safe because all that this host commits can be made again from the
-local transcripts: the reset drops this host's local-only commits and uncommitted changes, and clearing the
-fingerprints makes the next sync render every session again on top of the upstream files. That sync keeps the
-summary fields it finds in those files and commits only real differences.
+Terms:
+- fingerprint: a hash of the paths, sizes and times of a session's files, kept in the sync state. When it is new,
+  the next sync renders the session again.
+- quarantine: the files that gitleaks flagged. They stay out of the commits until a scan finds them clean.
 
-It refuses, and changes nothing, unless: no sync runs, the clone is on the configured branch, has an upstream and
-can fetch it, and every local-only commit and every uncommitted change of a tracked file is inside this host's
-folders. A half-done rebase is aborted first, as every sync does. The old HEAD is kept as refs/kb/repair/<time>
-when commits are dropped. The quarantine is kept: files gitleaks holds back stay held back.
+When to use:
+- The remote changed this host's files, for example summaries made on another machine and merged.
+- So the sync's `pull --rebase` conflicts on every run.
+
+Why it is safe:
+- All that this host commits can be made again from the local transcripts.
+- The reset drops this host's local-only commits and uncommitted changes.
+- Repair clears the fingerprints, so the next sync renders every session again on top of the upstream files.
+- That sync keeps the summary fields it finds in those files and commits only real differences.
+- When commits are dropped, the old HEAD is kept as refs/kb/repair/<time>.
+- The quarantine is kept: the files that gitleaks holds back stay held back.
+
+When it refuses (and changes nothing):
+- A sync runs.
+- The clone is not on the configured branch, has no upstream, or cannot fetch it.
+- A local-only commit or an uncommitted change of a tracked file is outside this host's folders.
+A half-done rebase is aborted first, as every sync does.
 """
 from __future__ import annotations
 

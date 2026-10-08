@@ -1,7 +1,12 @@
 """Codex adapter: ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<thread>[_<segment>].jsonl.
 
-One thread can span several files. A later segment's session_meta.history_base cuts the earlier
-history at end_ordinal_exclusive; records are then keyed by their 'ordinal'.
+Terms:
+- thread: one Codex conversation. Its id is in the file name.
+- segment: one rollout file of a thread. One thread can span several segments.
+- ordinal: the position number of a record in its thread. Two records with the same ordinal are the same record,
+  so the copy in the later segment wins.
+- history_base.end_ordinal_exclusive: a field of the session_meta record that starts a later segment. Records of
+  the earlier segments at this ordinal or higher are dropped: the later segment has its own copy of that history.
 """
 from __future__ import annotations
 
@@ -25,11 +30,18 @@ _INJECTED = re.compile(r"^\s*(?:<(?:" + "|".join(re.escape(t) for t in _INJECTED
 _PATCH_FILE = re.compile(r"^\*\*\* (?:Update File|Add File|Delete File|Move to): (.+)$", re.M)
 _EXIT = re.compile(r"^(?:Exit code:|Process exited with code)\s*(-?\d+)\s*$", re.M)
 _OUTPUT_MARK = re.compile(r"^Output:\r?$", re.M)
+# The header lines before a tool's output, e.g. "Exit code: 1", "Wall time: 0.1 seconds", "Output:".
+# They are removed from an error head: they say nothing about the error.
 _EXEC_HEADER = re.compile(r"^(?:Exit code:|Wall time:|Chunk ID:|Process exited with code|Original token count:|Output:).*$",
                           re.M)
 _STATE_DB = re.compile(r"^state_(\d+)\.sqlite$")
+# The input of the `exec` tool is a script that calls other tools. _EXEC_CMD finds the shell command in it:
+# `tools.exec_command({cmd: "ls -la"})` and `{"cmd": "ls -la"}` both give `ls -la` (still JSON-escaped).
 _EXEC_CMD = re.compile(r'["\']?\bcmd["\']?\s*:\s*"((?:[^"\\]|\\.)*)"')
+# A script with no command: _EXEC_TOOL finds the tool it calls. `tools.write_stdin(...)` gives `write_stdin`.
 _EXEC_TOOL = re.compile(r"\btools\.(\w+)\(")
+# parse_unit puts "[from <author>] " before a message from another agent. The title does not keep it.
+_FROM_PREFIX = re.compile(r"^\[from [^\]]*\]\s*")
 
 
 def _rank(path: Path):
@@ -43,9 +55,6 @@ def _rank(path: Path):
 def _segment_order(path: Path):
     m = _NAME.match(path.name)
     return (m.group(1) if m else "", path.name)
-
-
-_FROM_PREFIX = re.compile(r"^\[from [^\]]*\]\s*")
 
 
 def discover(dirs) -> list:
@@ -134,6 +143,11 @@ def _str(value) -> str:
 
 
 def _load_records(paths, skipped: Counter) -> list:
+    """The records of all segments (oldest segment first) as one list, in ordinal order.
+
+    A segment that starts with a history_base drops the earlier records from its end_ordinal_exclusive on.
+    Records without an ordinal come last, in file order.
+    """
     merged, unordered = {}, []
     for p in paths:
         recs = list(iter_records(p, skipped))
@@ -141,10 +155,10 @@ def _load_records(paths, skipped: Counter) -> list:
             continue
         try:
             head = recs[0]
-            hb = _payload(head).get("history_base") if head.get("type") == "session_meta" else None
-            if isinstance(hb, dict) and hb.get("end_ordinal_exclusive") is not None:
-                cut = int(hb["end_ordinal_exclusive"])
-                merged = {k: v for k, v in merged.items() if k < cut}
+            history_base = _payload(head).get("history_base") if head.get("type") == "session_meta" else None
+            if isinstance(history_base, dict) and history_base.get("end_ordinal_exclusive") is not None:
+                first_dropped_ordinal = int(history_base["end_ordinal_exclusive"])
+                merged = {k: v for k, v in merged.items() if k < first_dropped_ordinal}
         except Exception:                       # an unreadable cut: keep the earlier history whole
             skipped["<bad-record>"] += 1
         for r in recs:
@@ -269,95 +283,113 @@ def _apply_output(tc, out) -> None:
         tc.error_head = head_lines(_EXEC_HEADER.sub("", text))
 
 
+def _subagent_identity(meta: dict):
+    """(parent thread id, author names of this thread's own agent messages), or None for a thread to skip.
+
+    A guardian or internal review thread has an "other" key in source.subagent: it is not a session.
+    """
+    source = meta.get("source")
+    subagent_source = source.get("subagent") if isinstance(source, dict) else None
+    if isinstance(subagent_source, dict) and "other" in subagent_source:
+        return None
+    spawn = subagent_source.get("thread_spawn") if isinstance(subagent_source, dict) else None
+    parent = _str(spawn.get("parent_thread_id")) if isinstance(spawn, dict) else ""
+    parent = parent or _str(meta.get("parent_thread_id"))
+    own_author_names = {_str(meta.get("agent_path")), _str(meta.get("agent_nickname"))}
+    if isinstance(spawn, dict):
+        own_author_names |= {_str(spawn.get("agent_path")), _str(spawn.get("agent_nickname"))}
+    own_author_names.discard("")
+    if not parent:
+        own_author_names.add("/root")           # the agent path of a top-level thread; a child is "/root/<name>"
+    return parent, own_author_names
+
+
+def _read_response_item(s: Session, payload: dict, ts: str, current, calls: dict, files: list,
+                        own_author_names: set, skipped: Counter):
+    """Add one response_item record to the session. Returns the open assistant turn, or None after a user turn.
+
+    An error in a tool call is counted, as in parse_unit, but the turn it opened stays open: the next item adds to it.
+    """
+    item_type = payload.get("type")
+    if item_type == "message":
+        role = payload.get("role")
+        if role == "user":
+            text = _user_text(payload.get("content"))
+            if text:
+                s.add_turn("user", ts, [text])
+                current = None
+        elif role == "assistant":
+            content = payload.get("content")
+            text = "\n".join(str(c.get("text") or "") for c in content if isinstance(c, dict)).strip() \
+                if isinstance(content, list) else ""
+            if text:
+                current = current or s.add_turn("assistant", ts)
+                current.items.append(text)
+    elif item_type in ("function_call", "custom_tool_call"):
+        current = current or s.add_turn("assistant", ts)
+        try:
+            if item_type == "function_call":
+                tc = _function_call(str(payload.get("name") or ""), _args(payload.get("arguments")))
+            else:
+                tc = _custom_call(str(payload.get("name") or ""), payload.get("input"), s.cwd, files)
+            current.items.append(tc)
+            _register(calls, payload, tc)
+        except Exception:                       # the same count as the except in parse_unit
+            skipped["<bad-record>"] += 1
+    elif item_type in ("function_call_output", "custom_tool_call_output"):
+        call_id = payload.get("call_id")
+        _apply_output(calls.get(call_id) if isinstance(call_id, str) else None, payload.get("output"))
+    elif item_type == "web_search_call":
+        current = current or s.add_turn("assistant", ts)
+        action = payload.get("action")
+        query = action.get("query") if isinstance(action, dict) else ""
+        current.items.append(ToolCall(name="web_search", arg=first_line(str(query or ""), 100)))
+    elif item_type == "agent_message":
+        # A message between agents. An incoming one (a task from the parent, a report from a child) is a turn.
+        # This thread's own messages are skipped: its send or spawn tool call already shows them.
+        if _str(payload.get("author")) in own_author_names:
+            return current
+        content = payload.get("content")
+        text = "\n".join(str(c.get("text") or "") for c in content if isinstance(c, dict)).strip() \
+            if isinstance(content, list) else _str(content).strip()
+        if text:
+            s.add_turn("user", ts, [clean_user_text(f"[from {_str(payload.get('author')) or 'agent'}] {text}")],
+                       origin="agent")
+            current = None
+    elif item_type not in ("reasoning", "compaction"):
+        skipped[f"response_item:{item_type}"] += 1
+    return current
+
+
 def parse_unit(unit: Unit, titles=None):
     """Return a Session, or None for guardian/internal review threads."""
     skipped: Counter = Counter()
     recs = _load_records(unit.paths, skipped)
     meta = next((_payload(r) for r in recs if r.get("type") == "session_meta" and isinstance(r.get("payload"), dict)),
                 {})
-    source = meta.get("source")
-    sub_src = source.get("subagent") if isinstance(source, dict) else None
-    if isinstance(sub_src, dict) and "other" in sub_src:
+    identity = _subagent_identity(meta)
+    if identity is None:
         return None
-    spawn = sub_src.get("thread_spawn") if isinstance(sub_src, dict) else None
-    parent = _str(spawn.get("parent_thread_id")) if isinstance(spawn, dict) else ""
+    parent, own_author_names = identity
     tid = _str(meta.get("id")) or unit.key.split(":", 1)[-1]
     s = Session(id=tid, agent="codex", source_paths=list(unit.paths), cwd=_str(meta.get("cwd")),
-                parent=parent or _str(meta.get("parent_thread_id")), headless=source == "exec")
+                parent=parent, headless=meta.get("source") == "exec")
     git = meta.get("git") if isinstance(meta.get("git"), dict) else {}
     s.branch = _str(git.get("branch"))
-    me = {_str(meta.get("agent_path")), _str(meta.get("agent_nickname"))}
-    if isinstance(spawn, dict):
-        me |= {_str(spawn.get("agent_path")), _str(spawn.get("agent_nickname"))}
-    me.discard("")
-    if not s.parent:
-        me.add("/root")
     stamps, calls, files = [], {}, []
     current = None
-    for r in recs:
+    for rec in recs:
         try:
-            ts = iso_utc(r.get("timestamp"))
+            ts = iso_utc(rec.get("timestamp"))
             if ts:
                 stamps.append(ts)
-            kind, p = r.get("type"), _payload(r)
-            if kind == "session_meta":
-                continue
+            kind, payload = rec.get("type"), _payload(rec)
             if kind == "turn_context":
-                s.model = s.model or _str(p.get("model"))
-                continue
-            if kind != "response_item":
-                if kind != "event_msg":
-                    skipped[str(kind)] += 1
-                continue
-            pt = p.get("type")
-            if pt == "message":
-                role = p.get("role")
-                if role == "user":
-                    text = _user_text(p.get("content"))
-                    if text:
-                        s.add_turn("user", ts, [text])
-                        current = None
-                elif role == "assistant":
-                    content = p.get("content")
-                    text = "\n".join(str(c.get("text") or "") for c in content if isinstance(c, dict)).strip() \
-                        if isinstance(content, list) else ""
-                    if text:
-                        current = current or s.add_turn("assistant", ts)
-                        current.items.append(text)
-            elif pt == "function_call":
-                current = current or s.add_turn("assistant", ts)
-                tc = _function_call(str(p.get("name") or ""), _args(p.get("arguments")))
-                current.items.append(tc)
-                _register(calls, p, tc)
-            elif pt == "custom_tool_call":
-                current = current or s.add_turn("assistant", ts)
-                tc = _custom_call(str(p.get("name") or ""), p.get("input"), s.cwd, files)
-                current.items.append(tc)
-                _register(calls, p, tc)
-            elif pt in ("function_call_output", "custom_tool_call_output"):
-                call_id = p.get("call_id")
-                _apply_output(calls.get(call_id) if isinstance(call_id, str) else None, p.get("output"))
-            elif pt == "web_search_call":
-                current = current or s.add_turn("assistant", ts)
-                action = p.get("action")
-                query = action.get("query") if isinstance(action, dict) else ""
-                current.items.append(ToolCall(name="web_search", arg=first_line(str(query or ""), 100)))
-            elif pt == "agent_message":
-                # Messages between agents. Incoming ones (a task from the parent, a report from a child) are
-                # turns; outgoing ones are already visible as the send/spawn tool call.
-                if _str(p.get("author")) in me:
-                    continue
-                content = p.get("content")
-                text = "\n".join(str(c.get("text") or "") for c in content if isinstance(c, dict)).strip() \
-                    if isinstance(content, list) else _str(content).strip()
-                if text:
-                    s.add_turn("user", ts, [clean_user_text(f"[from {_str(p.get('author')) or 'agent'}] {text}")],
-                               origin="agent")
-                    current = None
-            elif pt in ("reasoning", "compaction"):
-                continue
-            else:
-                skipped[f"response_item:{pt}"] += 1
+                s.model = s.model or _str(payload.get("model"))
+            elif kind == "response_item":
+                current = _read_response_item(s, payload, ts, current, calls, files, own_author_names, skipped)
+            elif kind not in ("session_meta", "event_msg"):
+                skipped[str(kind)] += 1
         except Exception:                       # one bad record must not lose the whole session
             skipped["<bad-record>"] += 1
     s.started = min(stamps) if stamps else ""

@@ -1,21 +1,24 @@
-"""`kb hint --event error`: when a tool call fails, one short hint from the past, or nothing.
+"""`kb hint --event error`: when a tool call fails, show one short hint from the past, or nothing.
 
-The hint is a bullet of the "Errors seen → fixes" section of the current project's page (pages/projects/<project>.md)
-with its source session. Precision comes before recall, so most failures get no hint:
-  1. gate: the start of the error must look like an error. A grep that found nothing ("Exit code 1", no message) or
-     plain command output with exit code 1 never gets a hint.
-  2. deny-list: never a hint for a permission, classifier or safety denial, and never a bullet about one (the fix
-     such a bullet gives is a way around the denial).
-  3. semantic: when the embedding server already runs (it is never started here), the bullet closest to the error by
-     cosine, at least `hint_semantic_min`. Bullet vectors are kept in <root>/.kb/hints/, so a hint embeds only the
-     error once the page is known.
-  4. else keyword: the bullet whose problem side (the text before "→") shares the most words with the error, at least
-     `hint_keyword_min`. Words are normalized like `kb stats errors` (kb.stats.error_words).
-A bullet that the page's age rule calls stale (kb.freshness: its date more than `stale_days` older than the page's
-newest bullet) is never a hint; `kb pages finish` moves those to History, so this only catches pages written before.
-The hint shows the date the bullet was last confirmed. A session gets each bullet once; when its best bullet was
-shown already, nothing (the second best is noise). Every hint shown is logged to <root>/.kb/hints/log.jsonl
-(session, bullet, its date, score, method), so a later report can check whether hints helped and how old they were. Nothing here writes to the tracked files of the data clone.
+Terms:
+- bullet: one line of the "Errors seen → fixes" section of the current project's page (pages/projects/<project>.md).
+  It reads "problem → fix (source session)". The problem is the text before "→". A hint shows one bullet.
+- gate: a quick check that the start of the error text holds an error word (GATE).
+
+Precision comes before recall, so most failures get no hint. The steps:
+  1. Gate. So a grep that found nothing ("Exit code 1", no message) or plain output with exit code 1 gets no hint.
+  2. Deny-list: no hint for a permission, classifier or safety denial, and no bullet about one. The fix in such a
+     bullet is a way around the denial.
+  3. Age: a bullet that the page's age rule calls stale is never a hint. kb.freshness calls a bullet stale when its
+     date is more than `stale_days` older than the page's newest bullet. `kb pages finish` moves stale bullets to
+     History, so this step only catches older pages.
+  4. Semantic rule: if the embedding server already runs, take the bullet closest to the error by cosine, at least
+     `hint_semantic_min`. This module never starts the server.
+  5. Else the keyword rule: take the bullet whose problem shares the most words with the error, at least
+     `hint_keyword_min`. Words are normalized as in `kb stats errors` (kb.stats.error_words).
+  6. Once per session: a session gets each bullet once. If its best bullet was shown already, it gets nothing,
+     because the second best bullet is noise.
+The hint shows the date when a session last confirmed the bullet.
 """
 from __future__ import annotations
 
@@ -35,8 +38,8 @@ from kb.util import atomic_write, head_lines, main_checkout, project_from_cwd, p
 SECTION = "Errors seen"                 # the page section the hints come from ("## Errors seen → fixes")
 DOC_TITLE = "Errors seen → fixes"       # the title the bullets are embedded with
 PREFIX = "retroagent: seen before → "
-MAX_CHARS = 299                         # the whole hint line
-GATE_CHARS = 200
+MAX_CHARS = 299                         # the longest hint line, prefix and source included: format_hint cuts the text
+GATE_CHARS = 200                        # the gate reads only this many characters from the start of the error
 GATE = re.compile(r"error|fail|denied|blocked|not found|no such|cannot|can't|unable|traceback|exception|refus|invalid"
                   r"|not allowed|not permitted|does not", re.I)
 # Denials by the agent's permission system, its auto mode classifier, a sandbox or a safety check. A hint here could
@@ -95,7 +98,7 @@ def bullets(page_text: str) -> list:
 
 def fresh(items: list, newest: str, days: int) -> list:
     """The bullets the page's age rule does not call stale. An undated bullet stays."""
-    return [b for b in items if not freshness.is_stale(b.date, newest, days)]
+    return [bullet for bullet in items if not freshness.is_stale(bullet.date, newest, days)]
 
 
 def passes_gate(err: str) -> bool:
@@ -110,13 +113,14 @@ def keyword_match(err: str, items: list, minimum: int):
     """(bullet, shared words) of the bullet whose problem shares the most words with err (at least minimum), or None.
     A tie goes to the bullet with the fewer words: more of it matched."""
     words = set(error_words(err))
-    best = None
-    for b in items:
-        theirs = set(error_words(b.problem))
-        shared = len(words & theirs)
-        if shared >= max(minimum, 1) and (best is None or (shared, -len(theirs)) > best[2]):
-            best = (b, shared, (shared, -len(theirs)))
-    return (best[0], best[1]) if best else None
+    best_bullet, best_shared, best_rank = None, 0, None
+    for bullet in items:
+        bullet_words = set(error_words(bullet.problem))
+        shared = len(words & bullet_words)
+        rank = (shared, -len(bullet_words))         # more shared words first, then fewer words
+        if shared >= max(minimum, 1) and (best_bullet is None or rank > best_rank):
+            best_bullet, best_shared, best_rank = bullet, shared, rank
+    return (best_bullet, best_shared) if best_bullet is not None else None
 
 
 def cosine(a, b) -> float:
@@ -126,13 +130,13 @@ def cosine(a, b) -> float:
 def semantic_match(qvec, items: list, vectors: dict, minimum: float):
     """(bullet, cosine) of the closest bullet with a vector, at least minimum, or None."""
     best = None
-    for b in items:
-        v = vectors.get(b.key)
+    for bullet in items:
+        v = vectors.get(bullet.key)
         if v is None:
             continue
         s = cosine(qvec, v)
         if s >= minimum and (best is None or s > best[1]):
-            best = (b, s)
+            best = (bullet, s)
     return best
 
 
@@ -195,21 +199,30 @@ def page_bullets(root: Path, cwd: str):
         except (OSError, ValueError):
             continue
         try:
-            top = freshness.newest(parse_page(text)[1])
+            newest_bullet_date = freshness.newest(parse_page(text)[1])
         except ValueError:
-            top = ""
-        return project, bullets(text), top
+            newest_bullet_date = ""
+        return project, bullets(text), newest_bullet_date
     return "", [], ""
 
 
 # ---- local state under <root>/.kb/hints/
 
 class State:
+    """The local state of hints, under <root>/.kb/hints/. Nothing here writes to the tracked files of the data clone.
+
+    - seen/<session>.json: the bullets a session was shown, so it gets each bullet once.
+    - vectors/<project>.json: the bullet vectors of a page, so once the page is known a hint embeds only the error.
+    - log.jsonl: every hint shown (session, bullet, its date, score, method). A later report can then check whether
+      hints helped and how old they were.
+    """
+
     def __init__(self, kb_dir: Path, clock=time.time):
         self.dir = kb_dir / "hints"
         self.clock = clock
 
     def _session_file(self, session: str) -> Path:
+        # Only safe characters of the session id, at most 100 of them, make the file name.
         return self.dir / "seen" / ((re.sub(r"[^A-Za-z0-9_.-]", "", session or "")[:100] or "unknown") + ".json")
 
     def seen(self, session: str) -> set:
@@ -222,7 +235,7 @@ class State:
         self._prune(p.parent)
 
     def _prune(self, folder: Path) -> None:
-        cutoff = self.clock() - SEEN_DAYS * 86400
+        cutoff = self.clock() - SEEN_DAYS * 86400           # 86400 seconds in a day
         try:
             for f in folder.iterdir():
                 if f.stat().st_mtime < cutoff:
@@ -291,23 +304,24 @@ def bullet_vectors(items: list, project: str, ep, state) -> dict:
 def find(cfg, err: str, items: list, project: str = "", ep=None, state=None):
     """(bullet, score, method) for an error and the bullets of its project, or None. ep: an embedding endpoint (then
     the semantic rule), or None (the keyword rule)."""
+    # run() checks the error too, before it reads the page. find() checks again so it is also right when called alone.
     if not err or not passes_gate(err) or denied(err):
         return None
-    items = [b for b in items if not denied(b.full)]
+    items = [bullet for bullet in items if not denied(bullet.full)]
     if not items:
         return None
     if ep is not None:
         from kb import embed
         try:
             vecs = bullet_vectors(items, project, ep, state)
-            q = embed.embed([embed.query_text(err)], ep.url, ep.key, timeout=EMBED_TIMEOUT)[0]
+            error_vector = embed.embed([embed.query_text(err)], ep.url, ep.key, timeout=EMBED_TIMEOUT)[0]
         except embed.EmbedError:
-            q = None
-        if q is not None:
-            m = semantic_match(q, items, vecs, cfg.hint_semantic_min)
-            return (m[0], round(m[1], 4), "semantic") if m else None
-    m = keyword_match(err, items, cfg.hint_keyword_min)
-    return (m[0], m[1], "keyword") if m else None
+            error_vector = None
+        if error_vector is not None:
+            match = semantic_match(error_vector, items, vecs, cfg.hint_semantic_min)
+            return (match[0], round(match[1], 4), "semantic") if match else None
+    match = keyword_match(err, items, cfg.hint_keyword_min)
+    return (match[0], match[1], "keyword") if match else None
 
 
 def run(cfg, event: dict) -> str:
@@ -318,24 +332,24 @@ def run(cfg, event: dict) -> str:
     if not err or not passes_gate(err) or denied(err):
         return ""
     cwd = event.get("cwd") if isinstance(event.get("cwd"), str) else os.getcwd()
-    project, items, top = page_bullets(cfg.root, cwd)
-    items = fresh(items, top, freshness.stale_settings(cfg.root)[0])
+    project, items, newest_bullet_date = page_bullets(cfg.root, cwd)
+    items = fresh(items, newest_bullet_date, freshness.stale_settings(cfg.root)[0])
     session = str(event.get("session_id") or "")
     if not items:
         return ""
     state = State(cfg.kb_dir)
     try:
-        ep = endpoint(cfg)
+        embed_ep = endpoint(cfg)
     except Exception:  # noqa: BLE001 - no semantic match is no reason to give no hint
-        ep = None
-    hit = find(cfg, err, items, project, ep, state)
+        embed_ep = None
+    hit = find(cfg, err, items, project, embed_ep, state)
     if hit is None:
         return ""
-    b, score, method = hit
-    if b.key in state.seen(session):            # the same error again: the best bullet was shown, the next is noise
+    bullet, score, method = hit
+    if bullet.key in state.seen(session):       # the same error again: the best bullet was shown, the next is noise
         return ""
-    state.mark(session, b.key)
+    state.mark(session, bullet.key)
     state.log({"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "session": session, "project": project,
-               "tool": str(event.get("tool_name") or ""), "error": err, "bullet": b.full, "seen": b.date, "score": score,
-               "method": method})
-    return format_hint(b)
+               "tool": str(event.get("tool_name") or ""), "error": err, "bullet": bullet.full, "seen": bullet.date,
+               "score": score, "method": method})
+    return format_hint(bullet)
