@@ -1,20 +1,39 @@
-"""kb sync: discover changed sessions, distill, copy memories, summarize, catalog, commit this host's folders, then
-pull and push.
+"""kb sync: write this machine's new and changed sessions into the data clone, commit them, then pull and push.
 
-Order of a run (nothing is pulled before our own files are written and committed, so our own uncommitted
-files never block a pull): lock, host check (another machine's marker: stop), git gate (branch, half-done rebase,
-stale index.lock: otherwise skip git, keep processing), index, process sessions (headless one-prompt runs are
-skipped; a raw copy waits until its session has been idle raw_settle_hours), memories (kb.memories), summaries,
-catalog, host marker, stage + secrets check + commit, pull, index again (other machines' sessions), push (never
-commits that touch anything outside this host's folders).
+The steps of one run:
+ 1. Lock: only one sync runs at a time.
+ 2. Host check: if another machine's marker claims this host, stop (see kb.machine).
+ 3. Git gate: check the branch, abort a half-done rebase, look for a stale index.lock. On a problem, skip the git
+    steps but keep processing.
+ 4. Index: bring the search index up to date with the data clone.
+ 5. Process sessions: write the markdown and the raw copy of each changed unit. Skip headless one-prompt runs.
+    A raw copy waits until its session has been idle for raw_settle_hours.
+ 6. Memories: copy this machine's memory files (kb.memories).
+ 7. Summaries: ask claude for the summaries that are missing or out of date.
+ 8. Catalog: rebuild the catalog pages of the months that changed.
+ 9. Host marker: write sessions/<host>/.machine-id if it is missing.
+10. Stage this host's folders, run the secrets check (gitleaks), commit what is clean.
+11. Pull: get the commits of the other machines.
+12. Index again: the sessions of the other machines become searchable.
+13. Push: never push commits that touch files outside this host's folders.
 
-Only the machine that owns a host writes sessions/<host> and memories/<host>, summaries included: summarize_pending
-refuses any other host (ForeignHost). A pull that conflicts because the remote changed this host's files anyway
-points to `kb repair`.
+WHY this order: our own files are committed before the pull, so our own uncommitted files never block it.
 
-With cloud_import on, the run also imports the cloud sessions' inbox (kb.cloud) after the git gate and processes them
-as a second host, cloud_host, which this machine then owns: its sessions, summaries, catalog and vectors go through the
-same steps. After a clean push, the inbox branches whose sessions all have their markdown are deleted.
+Terms:
+- host: the name of one machine's folders in the data repo (sessions/<host>, raw/<host>, ...).
+- unit: one transcript plus its subagent files on disk (kb.model.Unit). One unit gives one session.
+- lane: a host this run processes. This machine's host is always a lane. With cloud import on, the cloud host is too.
+- raw copy: the slim, redacted transcript under raw/<host>/, next to the markdown.
+- quarantine: the files that gitleaks flagged. They stay out of the commits until a scan finds them clean.
+- fingerprint: a hash of the paths, sizes and times of a unit's files. A new fingerprint means the unit changed.
+
+Only the machine that owns a host writes sessions/<host> and memories/<host>, summaries included.
+summarize_pending refuses any other host: it raises ForeignHost. A pull can conflict because the remote changed this
+host's files anyway. The error then tells the user to run `kb repair`.
+
+With cloud_import on, the run imports the inbox of the cloud sessions (kb.cloud) after the git gate. It processes them
+as a second host, cloud_host, which this machine then owns. Their sessions, summaries, catalog and vectors go through
+the same steps. After a clean push, the run deletes each inbox branch whose sessions all have their markdown.
 """
 from __future__ import annotations
 
@@ -47,6 +66,10 @@ SUMMARY_MAX_ATTEMPTS = 3          # unusable answers tolerated per session and t
 SUMMARY_MAX_UNAVAILABLE = 3       # failed claude calls in a row that stop the summary pass
 CHECKPOINT_EVERY = 50             # processed units between two saves of the state
 REPAIR_HINT = "the remote changed this host's files too; run: kb repair"
+SHOW_PATHS = 3                    # paths an error message names at most
+ERROR_CHARS = 200                 # length of the first error in the report line, and of an embed note
+NOTE_CHARS = 120                  # length of the first note in the report line
+LAST_ERROR_CHARS = 300            # length of state.last_error, which `kb status` prints
 
 
 class ForeignHost(Exception):
@@ -54,18 +77,20 @@ class ForeignHost(Exception):
 
 
 def one_line(text, limit: int) -> str:
+    """The text on one line (each run of whitespace becomes one space), cut to `limit` characters."""
     return " ".join(str(text).split())[:limit]
 
 
 @dataclass
 class Report:
+    """What one sync run did. `kb sync` prints line() when happened is True."""
     sessions: int = 0
     summarized: int = 0
     memories: int = 0                                   # memory files written or removed
     errors: list = field(default_factory=list)
     redactions: Counter = field(default_factory=Counter)
-    skipped: Counter = field(default_factory=Counter)
-    sizes: Counter = field(default_factory=Counter)
+    skipped: Counter = field(default_factory=Counter)   # transcript record types the parsers skipped, with counts
+    sizes: Counter = field(default_factory=Counter)     # bytes of output by kind: "md" and "raw"
     committed: bool = False
     pushed: bool = False
     locked_out: bool = False
@@ -76,6 +101,7 @@ class Report:
 
     @property
     def happened(self) -> bool:
+        """True if the run did or found something worth a log line. Files quarantined before do not count."""
         return bool(self.sessions or self.summarized or self.memories or self.errors or self.committed
                     or self.pushed or self.newly_quarantined or self.embedded or self.notes)
 
@@ -91,9 +117,9 @@ class Report:
         if self.embedded:
             parts.append(f"{self.embedded} embedded")
         if self.errors:
-            parts.append(f"{len(self.errors)} errors (first: {one_line(self.errors[0], 200)})")
+            parts.append(f"{len(self.errors)} errors (first: {one_line(self.errors[0], ERROR_CHARS)})")
         if self.notes:
-            parts.append(one_line(self.notes[0], 120))
+            parts.append(one_line(self.notes[0], NOTE_CHARS))
         parts.append("pushed" if self.pushed else ("committed" if self.committed else "nothing committed"))
         return ", ".join(parts)
 
@@ -111,24 +137,27 @@ def raw_due(cfg, newest: float, clock=time.time) -> bool:
 
 
 def pending_units(cfg, state, now: bool = False, clock=time.time) -> list:
-    """Changed units, newest first, as (unit, fingerprint, raw due). Without `now`, skip units modified in the last
-    quiet_minutes. A unit whose markdown is current and whose raw copy waits is skipped until it settles."""
+    """The units to process, newest first, as (unit, fingerprint, raw copy due now).
+
+    A unit is skipped when its fingerprint is the one the state recorded as done. Without `now`, a unit changed in
+    the last quiet_minutes is skipped: the session may still be running. A unit whose markdown is current and whose
+    raw copy waits is skipped until the raw copy is due."""
     ready = []
-    for u in claude.discover(cfg.claude_dir) + codex.discover(cfg.codex_dirs):
+    for unit in claude.discover(cfg.claude_dir) + codex.discover(cfg.codex_dirs):
         try:
-            fp, newest = u.fingerprint(), u.newest_mtime()
+            fingerprint, newest = unit.fingerprint(), unit.newest_mtime()
         except OSError:
             continue
-        if state.files.get(u.key) == fp:
+        if state.files.get(unit.key) == fingerprint:
             continue
         due = raw_due(cfg, newest, clock)
-        if state.raw_pending.get(u.key) == fp and not due:
+        if state.raw_pending.get(unit.key) == fingerprint and not due:
             continue
         if not now and clock() - newest < cfg.quiet_minutes * 60:
             continue
-        ready.append((newest, u, fp, due))
-    ready.sort(key=lambda x: -x[0])
-    return [(u, fp, due) for _, u, fp, due in ready]
+        ready.append((newest, unit, fingerprint, due))
+    ready.sort(key=lambda item: item[0], reverse=True)     # newest first; equal times keep the discovery order
+    return [(unit, fingerprint, due) for _, unit, fingerprint, due in ready]
 
 
 def excluded(cfg, cwd: str) -> bool:
@@ -199,21 +228,26 @@ def _taken(cfg, s) -> bool:
     return bool(s.turns) and not excluded(cfg, s.cwd) and not _skip_headless(cfg, s)
 
 
-def _kept(cfg, s, sub, unit, known) -> str:
-    """The KB's file of this subagent when it belongs to a session that no longer holds it on disk, else ''.
-    Claude Code deletes old transcripts: the file stays where it is and the sessions that still hold it link to it."""
-    held = known.get(sub.id)
-    if not held or held == md_rel(cfg.host, sub, parent=s):
+def _existing_subagent_file(cfg, session, sub, unit, paths_by_id) -> str:
+    """The data clone's file of this subagent under a parent whose transcript is gone from disk, else ''.
+
+    Claude Code deletes old transcripts. If the data clone already has this subagent's file under such a parent, the
+    sessions that still hold the subagent link to that file instead of writing a second copy."""
+    known_path = paths_by_id.get(sub.id)
+    if not known_path or known_path == md_rel(cfg.host, sub, parent=session):
         return ""
-    meta = read_meta(cfg.root / held)
+    meta = read_meta(cfg.root / known_path)
     parent = meta.get("parent")
-    holders = {Path(main).stem for main in unit.shared.get(sub.id, {unit.main: ""})}
-    return held if meta.get("id") == sub.id and isinstance(parent, str) and parent and parent not in holders else ""
+    parents_on_disk = {Path(main).stem for main in unit.shared.get(sub.id, {unit.main: ""})}
+    if meta.get("id") == sub.id and isinstance(parent, str) and parent and parent not in parents_on_disk:
+        return known_path
+    return ""
 
 
 def _owner_file(cfg, unit, sub) -> str:
-    """'' when this session writes the subagent, else the md path of the session that does: the first holder in
-    claude.owner_order that the sync does not skip."""
+    """Which session writes this subagent's file: '' for this session, else the md path of the session that does.
+
+    The owner is the first holder in claude.owner_order that the sync does not skip."""
     copies = unit.shared.get(sub.id)
     for main in claude.owner_order(copies) if copies else []:
         if main == unit.main:
@@ -227,46 +261,55 @@ def _owner_file(cfg, unit, sub) -> str:
     return ""
 
 
-def place_subagents(cfg, s, unit, known) -> None:
-    """A resumed or forked Claude session copies its parent's subagents, so one subagent can sit under several
-    sessions. It is written once; every other holder links to that file (sub.elsewhere)."""
-    for sub in s.subagents:
-        sub.elsewhere = _kept(cfg, s, sub, unit, known) or _owner_file(cfg, unit, sub)
+def place_subagents(cfg, session, unit, paths_by_id) -> None:
+    """Set sub.elsewhere for each subagent that another file already holds, so it is written only once.
+
+    A resumed or forked Claude session copies its parent's subagents, so one subagent can sit under several sessions.
+    One session writes it; every other holder links to that file (sub.elsewhere)."""
+    for sub in session.subagents:
+        sub.elsewhere = (_existing_subagent_file(cfg, session, sub, unit, paths_by_id)
+                         or _owner_file(cfg, unit, sub))
 
 
-def _done(state, key: str, fp: str) -> None:
-    state.files[key] = fp
+def _done(state, key: str, fingerprint: str) -> None:
+    state.files[key] = fingerprint
     state.raw_pending.pop(key, None)
 
 
-def process_unit(cfg, state, report, unit, fp, titles, seen, months, known, dry_run, picker=None,
+def process_unit(cfg, state, report, unit, fingerprint, titles, seen, months, paths_by_id, dry_run, picker=None,
                  raw: bool = True) -> None:
-    """raw=False: write the markdown only and remember the unit in state.raw_pending until its raw copy is due."""
+    """Parse one unit and write its session (markdown, and the raw copy when `raw`). Record it in the state.
+
+    seen: the session ids this run already wrote; a second unit with the same id is skipped.
+    months: the set of months whose files changed (for the catalog); this call adds to it.
+    paths_by_id: session id -> its md path in the index, to find files that move or that another session holds.
+    raw=False: write the markdown only and remember the unit in state.raw_pending until its raw copy is due.
+    """
     try:
-        s = claude.parse_unit(unit) if unit.agent == "claude" else codex.parse_unit(unit, titles)
-        if s is None or s.id in seen or not _taken(cfg, s):
+        session = claude.parse_unit(unit) if unit.agent == "claude" else codex.parse_unit(unit, titles)
+        if session is None or session.id in seen or not _taken(cfg, session):
             if not dry_run:
-                _done(state, unit.key, fp)
+                _done(state, unit.key, fingerprint)
             return
-        seen.add(s.id)
-        report.skipped.update(s.skipped)
-        for sub in s.subagents:
+        seen.add(session.id)
+        report.skipped.update(session.skipped)
+        for sub in session.subagents:
             report.skipped.update(sub.skipped)
         if unit.agent == "claude":
-            place_subagents(cfg, s, unit, known)
-        written, sizes = write_session(cfg.root, cfg.host, s, report.redactions, dry_run=dry_run, known=known,
-                                       touched=months, raw=raw)
+            place_subagents(cfg, session, unit, paths_by_id)
+        written, sizes = write_session(cfg.root, cfg.host, session, report.redactions, dry_run=dry_run,
+                                       known=paths_by_id, touched=months, raw=raw)
         if picker is not None:
-            picker.offer(s)
+            picker.offer(session)
         report.sizes.update(sizes)
         months.update(month_of(p) for p in written)
         report.sessions += 1
         if dry_run:
             return
         if raw:
-            _done(state, unit.key, fp)
+            _done(state, unit.key, fingerprint)
         else:
-            state.raw_pending[unit.key] = fp
+            state.raw_pending[unit.key] = fingerprint
     except Exception as e:  # one bad session must not stop the sync
         report.errors.append(f"{unit.key}: {type(e).__name__}: {e}")
 
@@ -304,58 +347,65 @@ def summarize_pending(cfg, idx, state, cap, runner, report, lock, clock=time.tim
     if problem:
         raise ForeignHost(problem)
     rows = needs_summary(idx, host)
-    keys = {r["id"]: f"{r['id']}:{r['turns']}" for r in rows}
-    # Attempts matter only for what still waits for a summary at its current size. This also drops old plain-id keys.
-    # Another host's keys (the cloud host has its own pass) are kept.
-    waiting = set(keys.values())
-    mine = {row[0] for row in idx.db.execute("SELECT id FROM sessions WHERE host=?", (host,))}
-    state.summary_attempts = {k: v for k, v in state.summary_attempts.items() if isinstance(v, int) and ":" in k
-                              and (k in waiting or k.rpartition(":")[0] not in mine)}
-    start, done, calls, down, months = clock(), 0, 0, 0, set()
-    for r in rows:
+    keys = {row["id"]: f"{row['id']}:{row['turns']}" for row in rows}
+    _prune_summary_attempts(idx, state, host, set(keys.values()))
+    start, done, calls, failures_in_a_row, months = clock(), 0, 0, 0, set()
+    for row in rows:
         if cap is not None and calls >= cap:
             break
         if cap is not None and clock() - start >= SUMMARY_BUDGET_S:     # no cap (backfill --summaries): run to the end
             break
-        key, name = keys[r["id"]], short_id(r["id"])
+        key, name = keys[row["id"]], short_id(row["id"])
         attempts = state.summary_attempts.get(key, 0)
         if attempts >= SUMMARY_MAX_ATTEMPTS:
             continue
         lock.touch()
-        path = cfg.root / r["md_path"]
+        path = cfg.root / row["md_path"]
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, ValueError) as e:
-            report.errors.append(f"summary {name}: cannot read {r['md_path']}: {type(e).__name__}")
+            report.errors.append(f"summary {name}: cannot read {row['md_path']}: {type(e).__name__}")
             continue
         calls += 1
         child_dir = tempfile.mkdtemp(prefix="kb-summary-")
         try:
-            res = summarize(text, cfg.summary_model, runner=runner, cwd=child_dir)
+            summary = summarize(text, cfg.summary_model, runner=runner, cwd=child_dir)
         except SummaryUnavailable as e:
-            down += 1
+            failures_in_a_row += 1
             report.errors.append(f"summary {name}: {e}")
-            if down >= SUMMARY_MAX_UNAVAILABLE:
-                report.errors.append(f"summaries: stopped after {down} failed claude calls in a row")
+            if failures_in_a_row >= SUMMARY_MAX_UNAVAILABLE:
+                report.errors.append(f"summaries: stopped after {failures_in_a_row} failed claude calls in a row")
                 break
             continue
         finally:
             shutil.rmtree(child_dir, ignore_errors=True)
-        down = 0
-        if res is None:
+        failures_in_a_row = 0
+        if summary is None:
             state.summary_attempts[key] = attempts + 1
             report.errors.append(f"summary {name}: unusable answer (attempt {attempts + 1} of {SUMMARY_MAX_ATTEMPTS})")
             continue
-        res["summary_turns"] = r["turns"]
+        summary["summary_turns"] = row["turns"]
         try:
-            update_front_matter(path, res)
+            update_front_matter(path, summary)
         except OSError as e:
-            report.errors.append(f"summary {name}: cannot write {r['md_path']}: {type(e).__name__}")
+            report.errors.append(f"summary {name}: cannot write {row['md_path']}: {type(e).__name__}")
             continue
         state.summary_attempts.pop(key, None)
-        months.add(month_of(r["md_path"]))
+        months.add(month_of(row["md_path"]))
         done += 1
     return done, months
+
+
+def _prune_summary_attempts(idx, state, host: str, waiting: set) -> None:
+    """Drop the retry counts that no longer matter.
+
+    Keep a retry count only while that session still waits for a summary at the same size ("<id>:<turns>" in
+    `waiting`). Keep the counts of other hosts: the cloud host has its own pass. Drop keys without ":" or with a
+    count that is not an int.
+    """
+    host_session_ids = {row[0] for row in idx.db.execute("SELECT id FROM sessions WHERE host=?", (host,))}
+    state.summary_attempts = {k: v for k, v in state.summary_attempts.items() if isinstance(v, int) and ":" in k
+                              and (k in waiting or k.rpartition(":")[0] not in host_session_ids)}
 
 
 def summarize_other_host(cfg, host: str, runner=subprocess.run, clock=time.time) -> Report:
@@ -420,9 +470,10 @@ def _wrong_branch(cfg, report) -> bool:
 def git_gate(cfg, report):
     """Decide whether this run may touch git. Returns (git_ok, has_remote); a refusal is recorded in the report.
 
-    The branch is checked first: on another branch nothing is repaired, staged, committed, pulled or pushed (the
-    checkout may hold somebody's work). A half-done rebase of ours is aborted; that can put HEAD back on a branch,
-    so the branch is checked again.
+    The branch is checked first. On another branch, nothing is repaired, staged, committed, pulled or pushed: the
+    checkout may hold somebody's work. A detached HEAD passes this first check, because a half-done rebase leaves
+    HEAD detached. gitops.repair aborts such a rebase, which can put HEAD back on the branch. So the branch is
+    checked again after the repair; a HEAD that is still detached is refused then.
     """
     root = cfg.root
     if gitops.current_branch(root) not in ("", cfg.branch):
@@ -439,20 +490,24 @@ def git_gate(cfg, report):
     return True, remote
 
 
-def host_is_taken(cfg, mine: str) -> str:
+def host_is_taken(cfg, machine_id: str) -> str:
     """The error text if another machine owns this host (see kb.machine), else ''."""
-    if machine.owned_by_another(cfg.root, cfg.host, mine, cfg.branch):
+    if machine.owned_by_another(cfg.root, cfg.host, machine_id, cfg.branch):
         return f"host '{cfg.host}' belongs to another machine; set a unique host in the config"
     return ""
 
 
 def commit_own(cfg, state, report) -> None:
-    """Stage this host's folders, scan them, commit what is clean.
+    """Stage this host's folders, scan them with gitleaks, commit what is clean.
 
-    A scan that could not run commits nothing. Files gitleaks flags are kept out of the commit, stay on disk and
-    are staged and scanned again on every run: once clean they are committed and leave the quarantine.
-    Without any gitleaks: with `require_gitleaks` nothing is committed; otherwise the files that are already
-    quarantined stay held back (the quarantine is never emptied by a missing scanner) and the rest is committed.
+    The quarantine (state.quarantine) is the set of files gitleaks flagged. They stay on disk but out of the commit.
+    Every run stages and scans them again; once clean, they are committed and leave the quarantine.
+
+    Three cases:
+    - gitleaks ran: the flagged files go to the quarantine; the rest is committed. A scan that failed commits nothing.
+    - gitleaks is missing and `require_gitleaks` is on: nothing is committed.
+    - gitleaks is missing and not required: the files already in the quarantine stay held back, and the rest is
+      committed. A missing scanner never empties the quarantine.
     """
     root = cfg.root
     own = own_paths(cfg)
@@ -468,7 +523,8 @@ def commit_own(cfg, state, report) -> None:
         stray = [f for f in res.files if not _within(f, own)]
         if stray:                          # a finding we cannot hold back precisely: hold back everything
             gitops.unstage(root, own)
-            report.errors.append("gitleaks: finding in a path outside this host's folders: " + ", ".join(stray[:3]))
+            report.errors.append("gitleaks: finding in a path outside this host's folders: "
+                                 + ", ".join(stray[:SHOW_PATHS]))
             return
         held = res.files
         first_seen = state.quarantine
@@ -485,9 +541,9 @@ def commit_own(cfg, state, report) -> None:
     gitops.unstage(root, held)
     if not _staged(root, own):
         return
-    # `git commit -- <paths>` also takes unstaged changes of tracked files inside the paths, so name the held-back
-    # files as exclusions; otherwise a flagged file that was committed before would go in with its new content.
     memories_part = f", {report.memories} memories" if report.memories else ""
+    # `git commit -- <paths>` also takes unstaged changes inside the paths. Exclude the held-back files by name, or a
+    # flagged file that was committed before would go in with its new content.
     gitops.commit(root, f"sync({cfg.host}): {report.sessions} sessions, {report.summarized} summaries{memories_part}",
                   own + [f":(exclude,literal){f}" for f in held])
     report.committed = True
@@ -503,8 +559,10 @@ def publish(cfg, idx, state, report) -> None:
         except gitops.GitError as e:
             note = f" ({len(state.quarantine)} quarantined file(s) stay in the working tree; see kb status)" \
                 if state.quarantine and "local changes" in str(e) else ""
-            taken = host_is_taken(cfg, machine.local_id(cfg.kb_dir))      # a clone that had not seen the other marker
-            # first in the text, as the log line is cut; a host name clash needs a unique host, not kb repair
+            # The pull may have brought another machine's marker for this host, which this clone had not seen before.
+            taken = host_is_taken(cfg, machine.local_id(cfg.kb_dir))
+            # The repair hint goes first in the text, because the log line is cut. A host name clash needs a unique
+            # host, not kb repair, so it gets no hint.
             hint = f"{REPAIR_HINT}; " if isinstance(e, gitops.PullConflict) and not taken else ""
             report.errors.append(f"pull: {hint}{e}{note}")
             if taken:
@@ -514,11 +572,13 @@ def publish(cfg, idx, state, report) -> None:
             idx.update(root)                # other machines' sessions become searchable
         except Exception as e:  # noqa: BLE001 - the push matters more than a fresh index
             report.errors.append(f"index: {type(e).__name__}: {e}")
-    unborn = gitops.git(root, "rev-parse", "-q", "--verify", "HEAD", check=False).returncode != 0
-    if report.committed or gitops.ahead(root) or (not has_upstream and not unborn):
+    no_commit_yet = gitops.git(root, "rev-parse", "-q", "--verify", "HEAD", check=False).returncode != 0
+    first_push = not has_upstream and not no_commit_yet
+    # Push when this run committed, when older commits wait, or for the first push of a branch that has commits.
+    if report.committed or gitops.ahead(root) or first_push:
         foreign = [p for p in gitops.unpushed_paths(root) if not _within(p, own_paths(cfg))]
         if foreign:                         # somebody's own commits are theirs to push
-            report.errors.append(f"git: unpushed commits touch {', '.join(foreign[:3])}; push them by hand")
+            report.errors.append(f"git: unpushed commits touch {', '.join(foreign[:SHOW_PATHS])}; push them by hand")
             return
         try:
             gitops.push(root, keep=tuple(state.quarantine))
@@ -528,22 +588,29 @@ def publish(cfg, idx, state, report) -> None:
 
 
 def embed_own(cfg, idx, report, clock=time.time, hosts=()):
-    """Semantic search, before the commit: vectors for what this sync added or changed, then this host's vector files
-    (vectors/<host>/) so other machines and cloud sessions get them with the sessions. Runs only once the user turned
-    it on (`kb embed`), so it may install a new pin after `kb update`. Any problem is a note, never a sync error.
-    Returns (endpoint or None, deadline) for embed_rest."""
+    """Semantic search, before the commit. Returns (endpoint or None, deadline) for embed_rest.
+
+    1. Make vectors for what this sync added or changed.
+    2. Write this host's vector files (vectors/<host>/), so other machines and cloud sessions get them with the
+       sessions.
+    It runs only after the user turned semantic search on (`kb embed`). The pin is the exact llama.cpp build and model
+    that this code release names (embed_runtime). After `kb update` the pin can change, and ensure() installs the new
+    one here. Any problem is a note, never a sync error.
+    """
     from kb import embed, embed_runtime
     deadline = clock() + cfg.embed_sync_seconds
     try:
         ep = embed_runtime.ensure(cfg, wait=True)
     except Exception as e:  # noqa: BLE001 - semantic search must never cost a sync
-        report.notes.append(f"embed: {one_line(str(e), 200)}")
+        report.notes.append(f"embed: {one_line(str(e), ERROR_CHARS)}")
         return None, deadline
     try:
         store = embed.Vectors(cfg.kb_dir / embed.STORE)
         try:
             rep = embed.run_embed(idx.db, store, ep, deadline=deadline, clock=clock)
-            if not cfg.embed_url and ep.model == embed_runtime.MODEL:   # only the pinned model's vectors are shared
+            # Export only the pinned model's vectors. A custom server (embed_url) may run another model, and vectors
+            # of different models cannot be compared.
+            if not cfg.embed_url and ep.model == embed_runtime.MODEL:
                 for host in hosts or (cfg.host,):
                     embed.export_own(cfg.root, idx.db, store, ep.model, host)
         finally:
@@ -554,7 +621,7 @@ def embed_own(cfg, idx, report, clock=time.time, hosts=()):
         if not cfg.embed_url:
             embed_runtime.Server().touch()
     except Exception as e:  # noqa: BLE001
-        report.notes.append(f"embed: {one_line(str(e), 200)}")
+        report.notes.append(f"embed: {one_line(str(e), ERROR_CHARS)}")
     return ep, deadline
 
 
@@ -575,40 +642,85 @@ def embed_rest(cfg, idx, report, endpoint, deadline, clock=time.time) -> None:
         finally:
             store.close()
     except Exception as e:  # noqa: BLE001
-        report.notes.append(f"embed: {one_line(str(e), 200)}")
+        report.notes.append(f"embed: {one_line(str(e), ERROR_CHARS)}")
 
 
 # ---------------------------------------------------------------- cloud sessions
 
-def cloud_inbox(cfg, ccfg, git_ok: bool, report):
-    """The cloud lane of this run and the inbox branches to delete after a clean push: (ccfg or None, branches).
-    No lane when import is off or another machine owns the cloud host (a note: this machine's own sync goes on)."""
-    if ccfg is None:
+def cloud_inbox(cfg, cloud_cfg, git_ok: bool, report):
+    """The cloud lane of this run and the inbox branches to delete after a clean push: (cloud_cfg or None, branches).
+
+    No lane when import is off, or when another machine owns the cloud host. The second case is a note, not an
+    error: this machine's own sync goes on."""
+    if cloud_cfg is None:
         return None, []
-    why = cloud.taken(cfg, ccfg)
+    why = cloud.taken(cfg, cloud_cfg)
     if why:
         report.notes.append(why)
         return None, []
     if not git_ok:
-        return ccfg, []
+        return cloud_cfg, []
     try:
-        _, errors, done = cloud.import_inbox(cfg, ccfg)
+        _, errors, done = cloud.import_inbox(cfg, cloud_cfg)
     except gitops.GitError as e:
         report.errors.append(f"cloud: {e}")
-        return ccfg, []
+        return cloud_cfg, []
     report.errors += errors
-    return ccfg, done
+    return cloud_cfg, done
 
 
-def cloud_waiting(ccfg, state, clock=time.time) -> bool:
+def cloud_waiting(cloud_cfg, state, clock=time.time) -> bool:
     """True while an imported cloud session has no current markdown yet (its raw copy may still wait)."""
-    return any(state.raw_pending.get(u.key) != fp for u, fp, _ in pending_units(ccfg, state, now=True, clock=clock))
+    return any(state.raw_pending.get(unit.key) != fingerprint
+               for unit, fingerprint, _ in pending_units(cloud_cfg, state, now=True, clock=clock))
 
 
 # ---------------------------------------------------------------- the run
 
+def _process_lanes(cfg, lanes, state, idx, report, lock, months, now, dry_run, picker, clock) -> None:
+    """Step 5: write the markdown and raw copies of the changed units of every lane."""
+    titles = codex.load_titles(cfg.codex_home)
+    seen = set()
+    processed = 0
+    for lane_cfg in lanes:
+        paths_by_id = idx.paths_by_id(lane_cfg.host) if idx is not None else {}
+        for unit, fingerprint, raw_due_now in pending_units(lane_cfg, state, now, clock):
+            processed += 1
+            lock.touch()
+            process_unit(lane_cfg, state, report, unit, fingerprint, titles, seen, months[lane_cfg.host],
+                         paths_by_id, dry_run, picker, raw=raw_due_now)
+            if not dry_run and processed % CHECKPOINT_EVERY == 0:
+                save_state(state, report)    # a crash later keeps what is already written and recorded
+
+
+def _summarize_lanes(lanes, idx, state, cap, runner, report, lock, months, clock) -> None:
+    """Step 7: the summary pass of every lane. The cap counts the summaries of all lanes together."""
+    for lane_cfg in lanes:
+        left = None if cap is None else max(cap - report.summarized, 0)
+        done, touched = summarize_pending(lane_cfg, idx, state, left, runner, report, lock, clock)
+        report.summarized += done
+        months[lane_cfg.host] |= touched
+
+
+def _write_catalogs(cfg, lanes, months, report) -> None:
+    """Step 8: rebuild the catalog of each lane's changed months."""
+    for lane_cfg in lanes:
+        if months[lane_cfg.host]:
+            for path, why in write_catalog(cfg.root, lane_cfg.host, months[lane_cfg.host]):
+                report.errors.append(f"catalog: {path}: {why}")
+
+
+def _record_success(cfg, state, report) -> None:
+    """Record a finished run: the quarantine in the report, the time and line in the state, and the last-ok file."""
+    report.quarantined = sorted(state.quarantine)
+    state.last_ok = now_iso()
+    state.last_result = report.line()
+    (cfg.kb_dir / "last-ok").touch()
+
+
 def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default", sample: int = 0,
              runner=subprocess.run, clock=time.time) -> Report:
+    """One sync run; the module docstring lists its steps. Every problem goes into the returned Report."""
     report = Report()
     lock = Lock(cfg.kb_dir / "lock")
     if not lock.acquire():
@@ -619,32 +731,22 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
         idx = None
         try:
             git_ok, remote = False, False
-            mine = ""
-            ccfg, inbox_done = cloud.lane(cfg), []
+            machine_id = ""
+            cloud_cfg, inbox_done = cloud.lane(cfg), []
             if not dry_run:
-                mine = machine.local_id(cfg.kb_dir)
-                taken = host_is_taken(cfg, mine)         # before any git step and any write under the host's folders
+                machine_id = machine.local_id(cfg.kb_dir)
+                taken = host_is_taken(cfg, machine_id)   # before any git step and any write under the host's folders
                 if taken:
                     report.errors.append(taken)
                     return report
                 git_ok, remote = git_gate(cfg, report)
                 idx = Index(cfg.kb_dir / "index.sqlite")
                 idx.update(cfg.root)
-                ccfg, inbox_done = cloud_inbox(cfg, ccfg, git_ok and remote, report)
-            lanes = [cfg] + ([ccfg] if ccfg is not None else [])
-            titles = codex.load_titles(cfg.codex_home)
-            months, seen = {c.host: set() for c in lanes}, set()
+                cloud_cfg, inbox_done = cloud_inbox(cfg, cloud_cfg, git_ok and remote, report)
+            lanes = [cfg] + ([cloud_cfg] if cloud_cfg is not None else [])
+            months = {lane_cfg.host: set() for lane_cfg in lanes}
             picker = SamplePicker(sample) if dry_run and sample > 0 else None
-            n = 0
-            for c in lanes:
-                known = idx.paths_by_id(c.host) if idx is not None else {}
-                for unit, fp, due in pending_units(c, state, now, clock):
-                    n += 1
-                    lock.touch()
-                    process_unit(c, state, report, unit, fp, titles, seen, months[c.host], known, dry_run, picker,
-                                 raw=due)
-                    if not dry_run and n % CHECKPOINT_EVERY == 0:
-                        save_state(state, report)    # a crash later keeps what is already written and recorded
+            _process_lanes(cfg, lanes, state, idx, report, lock, months, now, dry_run, picker, clock)
             skip_cwd = lambda cwd: excluded(cfg, cwd)
             if dry_run:
                 report.memories = memories.sync_memories(cfg, None, report, skip_cwd, dry_run=True)
@@ -655,34 +757,24 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
             # after the index has this run's sessions: they tell the cwd of a memory folder whose transcripts are gone
             report.memories = memories.sync_memories(cfg, idx, report, skip_cwd)
             cap = cfg.summary_cap_per_run if summary_cap == "default" else summary_cap
-            for c in lanes:                     # the cap counts the summaries of every lane
-                left = None if cap is None else max(cap - report.summarized, 0)
-                done, touched = summarize_pending(c, idx, state, left, runner, report, lock, clock)
-                report.summarized += done
-                months[c.host] |= touched
+            _summarize_lanes(lanes, idx, state, cap, runner, report, lock, months, clock)
             if report.summarized or report.memories:
                 idx.update(cfg.root)
-            for c in lanes:
-                if months[c.host]:
-                    for path, why in write_catalog(cfg.root, c.host, months[c.host]):
-                        report.errors.append(f"catalog: {path}: {why}")
+            _write_catalogs(cfg, lanes, months, report)
             semantic = cfg.embed or cfg.embed_url
             if semantic:                        # before the commit, so this host's vector files go out with it
-                endpoint, deadline = embed_own(cfg, idx, report, clock, hosts=[c.host for c in lanes])
-            for c in lanes:
-                machine.claim(cfg.root, c.host, mine)
+                endpoint, deadline = embed_own(cfg, idx, report, clock, hosts=[lane_cfg.host for lane_cfg in lanes])
+            for lane_cfg in lanes:
+                machine.claim(cfg.root, lane_cfg.host, machine_id)
             if git_ok:
                 commit_own(cfg, state, report)
                 if remote:
                     publish(cfg, idx, state, report)
-                    if inbox_done and not report.errors and not cloud_waiting(ccfg, state, clock):
+                    if inbox_done and not report.errors and not cloud_waiting(cloud_cfg, state, clock):
                         report.errors += cloud.delete_branches(cfg.root, inbox_done)
             if semantic:                        # after the pull: other machines' vector files, then what is left
                 embed_rest(cfg, idx, report, endpoint, deadline, clock)
-            report.quarantined = sorted(state.quarantine)
-            state.last_ok = now_iso()
-            state.last_result = report.line()
-            (cfg.kb_dir / "last-ok").touch()
+            _record_success(cfg, state, report)
             return report
         except Exception as e:
             report.errors.append(f"sync: {type(e).__name__}: {e}")
@@ -691,7 +783,7 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
             if idx is not None:
                 idx.close()
             if not dry_run:
-                state.last_error = one_line(report.errors[0], 300) if report.errors else ""
+                state.last_error = one_line(report.errors[0], LAST_ERROR_CHARS) if report.errors else ""
                 save_state(state, report)
     finally:
         lock.release()
