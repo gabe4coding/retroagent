@@ -219,10 +219,10 @@ def test_auto_update_pulls_once_a_day_and_refreshes_plugins_on_a_new_version(tmp
     clone, publish_code, refreshed = code_clone
     cfg = _cfg(tmp_path)
     publish_code()
-    line = setup.auto_update(cfg, now=1_000_000)
+    line = setup.auto_update(cfg)
     assert line.startswith("code updated") and "plugin" not in line and not refreshed
     publish_code(version="1.1.0", name="g.txt")
-    assert setup.auto_update(cfg, now=(cfg.kb_dir / "code-update").stat().st_mtime + 60) == ""   # within a day
+    assert setup.auto_update(cfg) == ""                          # within a day
     stamp = cfg.kb_dir / "code-update"
     os.utime(stamp, (stamp.stat().st_mtime - 2 * 86400,) * 2)
     line = setup.auto_update(cfg)

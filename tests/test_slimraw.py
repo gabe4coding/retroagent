@@ -115,6 +115,11 @@ def test_deeply_nested_json_does_not_crash(tmp_path):
     assert len(lines) == 1 and "ghp_" not in lines[0] and counts["github-token"] == 1
 
 
+def test_json_lines_that_are_not_objects_are_kept(tmp_path):
+    for agent in ("claude", "codex"):
+        assert [_slim_one(tmp_path, line, agent)[0] for line in ("null", "1")] == [["null"], ["1"]]
+
+
 def test_nested_encrypted_content_is_dropped_at_any_depth(tmp_path):
     rec = {"type": "response_item", "payload": {"type": "message", "encrypted_content": "ENC1",
            "content": [{"a": {"b": [{"encrypted_content": "ENC2", "keep": "yes"}]}}], "x": {"encrypted_content": "ENC3"}}}

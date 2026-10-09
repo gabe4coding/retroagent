@@ -345,9 +345,9 @@ def check(cfg, config_file: Path) -> dict:
 UPDATE_EVERY_SECONDS = 24 * 3600
 
 
-def plugin_version(code: Path | None = None) -> str:
+def plugin_version() -> str:
     try:
-        return str(json.loads(((code or CODE_ROOT) / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")).get("version", ""))
+        return str(json.loads((CODE_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")).get("version", ""))
     except (OSError, ValueError):
         return ""
 
@@ -374,16 +374,15 @@ def refresh_plugins() -> list:
     return failed
 
 
-def auto_update(cfg, now: float | None = None) -> str:
+def auto_update(cfg) -> str:
     """`kb sync --auto` with auto_update on: at most once a day, fast-forward the code clone this runs from, when it
     sits clean on its default branch. A new plugin version also refreshes the plugins. One line for the log, or ""."""
     import time
     if not (CODE_ROOT / ".git").exists():
         return ""
     stamp = cfg.kb_dir / "code-update"
-    now = time.time() if now is None else now
     try:
-        if now - stamp.stat().st_mtime < UPDATE_EVERY_SECONDS:
+        if time.time() - stamp.stat().st_mtime < UPDATE_EVERY_SECONDS:
             return ""
     except OSError:
         pass

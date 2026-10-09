@@ -5,8 +5,8 @@ enforce; the others rely on discipline.
 
 ## Code
 - `src/kb/` targets Python 3.9 and the standard library only: `kb` runs on the stock `/usr/bin/python3` with nothing
-  installed. `[test: tests/test_scaffold.py checks 3.9+; scripts/test installs only pytest, so a third-party import
-  fails]`
+  installed. `[test: CI runs the suite on 3.9 (.github/workflows/test.yml); scripts/test installs only pytest, so a
+  third-party import fails]`
 
 ## Tests and commits
 - Run `scripts/test --all` before every commit; plain `scripts/test` (the fast tests, under 5 s) while you work. Both
