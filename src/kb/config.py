@@ -134,20 +134,20 @@ def _absolute(p: Path) -> Path:
         return Path(os.path.abspath(str(p)))
 
 
-def config_path(path: str | None = None) -> Path:
-    """The given path, else $KB_CONFIG, else the config file: the new one, or the old one when only that exists."""
-    if path or os.environ.get("KB_CONFIG"):
-        return expand(path or os.environ["KB_CONFIG"])
+def config_path() -> Path:
+    """$KB_CONFIG, else the config file: the new one, or the old one when only that exists."""
+    if os.environ.get("KB_CONFIG"):
+        return expand(os.environ["KB_CONFIG"])
     new, old = expand(CONFIG_PATH), expand(LEGACY_CONFIG_PATH)
     return old if not new.exists() and old.exists() else new
 
 
-def set_key(key: str, value, path: str | None = None) -> Path:
+def set_key(key: str, value) -> Path:
     """Set one key in the config file and keep every other key (None removes the key). A missing file is created.
 
     A file that is not a JSON object is never overwritten: ConfigError (one line) instead.
     """
-    p = config_path(path)
+    p = config_path()
     data = {}
     if p.exists():
         try:
@@ -164,8 +164,8 @@ def set_key(key: str, value, path: str | None = None) -> Path:
     return p
 
 
-def load(path: str | None = None) -> Config:
-    p = config_path(path)
+def load() -> Config:
+    p = config_path()
     raw = _read(p)
     root = os.environ.get("KB_ROOT") or _text(raw, "root") or DEFAULT_ROOT
     host = slug(str(raw.get("host") or default_host()))
