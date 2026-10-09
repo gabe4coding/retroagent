@@ -30,7 +30,8 @@ Who may write what:
 - Nothing here writes a file except save() and save_decisions().
 
 Answers (decisions/<host>/answers.jsonl): what the owner answered with `kb decide` (kb.decide) on a machine. One JSON
-line per answer: {"id", "state" (accepted or rejected), "date", "at" (UTC time), "note"}. Only that host's sync
+line per answer: {"id", "state" (accepted or rejected), "date", "at" (UTC time), "note"}. The id is a suggestion's
+(s-…) or a memory fix's (m-…, kb.memedits); decisions() reads only the suggestions'. Only that host's sync
 commits the file, so the cloud routine never conflicts with it. decisions() reads the answers of every host on top of
 decisions.json: per suggestion the newest answer counts, and it wins over a decisions.json entry unless that entry has
 a later date (a session applied the change after the owner accepted it).
@@ -65,6 +66,7 @@ CATEGORIES = ("Navigation", "Automated checks", "Rules", "Steering bloat and no-
 RECENT_DAYS = 14             # an open suggestion is "still happening" when its error was seen this recently
 SETTLE_DAYS = 7              # an applied suggestion is "fixed" when its error was not seen for this long after it
 _ID = re.compile(r"^s-[0-9a-f]{6}$")
+_ANSWER_ID = re.compile(r"^[sm]-[0-9a-f]{6}$")    # s-: a suggestion; m-: a memory fix (kb.memedits)
 _ITEM = re.compile(r"^- \[(new|s-[0-9a-f]{6})\]\s*(.*)$")
 _SIGNATURE = re.compile(r'\s*·?\s*signature\s+"([^"]*)"', re.I)
 _REPO = re.compile(r'\s*·?\s*repo\s+"([^"]*)"', re.I)
@@ -188,7 +190,7 @@ def decisions(root) -> dict:
         out[sid] = {"state": d["state"], "date": date, "note": _text(d.get("note")), "source": _text(d.get("source")),
                     "by": "routine" if d.get("by") == "routine" else "owner"}
     for sid, a in answers(root).items():
-        if sid in out and out[sid]["date"] > a["date"]:
+        if not _ID.match(sid) or (sid in out and out[sid]["date"] > a["date"]):
             continue
         out[sid] = {"state": a["state"], "date": a["date"], "note": a["note"], "source": f"kb decide on {a['host']}",
                     "by": "owner"}
@@ -205,7 +207,7 @@ def parse_answer(line: str):
         a = json.loads(line)
     except ValueError:
         return None
-    if not (isinstance(a, dict) and _ID.match(_text(a.get("id"))) and a.get("state") in ANSWER_STATES
+    if not (isinstance(a, dict) and _ANSWER_ID.match(_text(a.get("id"))) and a.get("state") in ANSWER_STATES
             and _DATE.match(_text(a.get("date"))) and _text(a.get("at"))):
         return None
     return {"id": a["id"], "state": a["state"], "date": a["date"], "at": a["at"], "note": _text(a.get("note"))}

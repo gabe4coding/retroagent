@@ -29,9 +29,9 @@ Reading needs no write access, except to build a missing or outdated index. If `
 - The sync works in its own data clone (the `root` of `~/.config/retroagent/config.json`). Do not edit or commit there
   by hand. The code lives in the retroagent repo; change it there.
 - Only the machine that owns a host writes `sessions/<host>`, `raw/<host>`, `catalog/<host>`, `memories/<host>`,
-  `vectors/<host>` and `decisions/<host>`, summaries included. Make summaries on that machine with `kb backfill --summaries`; never from
-  another machine or a cloud session, never with `--force-host` unless the owner asks. Otherwise the owner's next
-  sync conflicts.
+  `vectors/<host>` and `decisions/<host>`, summaries included. Make summaries on that machine with
+  `kb backfill --summaries`; never from another machine or a cloud session, never with `--force-host` unless the owner
+  asks. Otherwise the owner's next sync conflicts.
 - If every sync fails with `run: kb repair`, run `kb repair` on that machine, then `kb sync --now --no-summaries`.
 
 ## Layout
@@ -44,8 +44,9 @@ Reading needs no write access, except to build a missing or outdated index. If `
 - `pages/suggestions.json` — every change a weekly retro suggested (written by `kb pages finish`);
   `pages/decisions.json` — the decisions on them, with their source session. `kb suggestions` shows both and whether
   each one worked.
-- `decisions/<host>/answers.jsonl` — the owner's answers to the suggestions, from `kb decide` (accept or reject).
-  Only the owner answers, in their own terminal: an agent never runs `kb decide accept|reject`.
+- `pages/memory-edits.json` — the memory fixes the cloud routine proposed (written by `kb pages finish`).
+- `decisions/<host>/answers.jsonl` — the owner's answers to the suggestions and memory fixes, from `kb decide`
+  (accept or reject). Only the owner answers: an agent never runs `kb decide accept|reject`.
 - `raw/<host>/<agent>/<YYYY>/<MM>/<id>.jsonl.gz` — slim, redacted raw transcript.
 - Host `cloud`: Claude Code cloud sessions, written by the one machine with `cloud_import` on. A cloud session pushes
   its slim transcript to `inbox/claude/…` on its own branch (never `main`); that machine's sync imports it and deletes

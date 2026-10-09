@@ -1,6 +1,8 @@
 {
   "name": "retroagent",
-  "owner": { "name": "gabe4coding" },
+  "owner": {
+    "name": "gabe4coding"
+  },
   "plugins": [
     {
       "name": "retroagent",

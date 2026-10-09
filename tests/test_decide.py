@@ -70,7 +70,7 @@ def test_answer_writes_the_host_file_and_the_local_copy(tmp_path):
                    "at": "2026-10-08T09:30:00Z", "note": "yes, do it"}
     line = (tmp_path / "decisions" / "h" / "answers.jsonl").read_text()
     assert (kb_dir / decide.BACKUP).read_text() == line and json.loads(line) == got
-    with pytest.raises(ValueError, match="no suggestion s-999999"):
+    with pytest.raises(ValueError, match="no question s-999999"):
         decide.answer(tmp_path, kb_dir, "h", "s-999999", "accepted")
     with pytest.raises(ValueError, match="answer must be"):
         decide.answer(tmp_path, kb_dir, "h", "s-000001", "applied")
@@ -97,14 +97,14 @@ def test_later_hides_the_brief_line_until_a_new_question_arrives(tmp_path):
     _ledger(tmp_path)
     kb_dir = tmp_path / ".kb"
     today = dt.date(2026, 10, 8)
-    line = decide.brief_line(tmp_path, kb_dir, today)
+    line = decide.brief_line(tmp_path, kb_dir, today=today)
     assert line.startswith("2 retro suggestions wait for the user") and "`kb decide`" in line
     assert decide.later(kb_dir, decide.waiting(tmp_path), days=2, today=today) == "2026-10-10"
-    assert decide.brief_line(tmp_path, kb_dir, today) == ""
-    assert decide.brief_line(tmp_path, kb_dir, dt.date(2026, 10, 10)).startswith("2 retro")     # the day is over
+    assert decide.brief_line(tmp_path, kb_dir, today=today) == ""
+    assert decide.brief_line(tmp_path, kb_dir, today=dt.date(2026, 10, 10)).startswith("2 retro")     # the day is over
     known = ledger.load(tmp_path)
     ledger.save(tmp_path, {**known, "s-000004": {**known["s-000002"], "weeks": ["2026-W41"]}})
-    assert decide.brief_line(tmp_path, kb_dir, today).startswith("3 retro")                      # a new one arrived
+    assert decide.brief_line(tmp_path, kb_dir, today=today).startswith("3 retro")                      # a new one arrived
     (kb_dir / decide.LATER).write_text("{broken")
     assert decide.hidden_until(kb_dir, ["s-000001"], today) == ""
 
@@ -124,7 +124,7 @@ def test_decide_cli(kb_env, capsys, monkeypatch):  # noqa: F811 - kb_env is a fi
     code, out = run(capsys, "decide")
     assert code == 0 and out.index("s-000002  proposed") < out.index("s-000001  proposed")
     assert "2 wait for you" in out and "kb decide later" in out and "s-000003" not in out
-    assert [r["id"] for r in json.loads(run(capsys, "decide", "--json")[1])] == ["s-000002", "s-000001"]
+    assert [r["id"] for r in json.loads(run(capsys, "decide", "--json")[1])["items"]] == ["s-000002", "s-000001"]
 
     monkeypatch.setattr("sys.stdin", io.StringIO(""))                        # an agent: no terminal
     code, out = run(capsys, "decide", "accept", "s-000001")
@@ -141,11 +141,12 @@ def test_decide_cli(kb_env, capsys, monkeypatch):  # noqa: F811 - kb_env is a fi
     assert code == 0 and out.startswith("s-000001: rejected")
     assert ledger.decisions(kb_env)["s-000001"]["note"] == "too broad"
     code, out = run(capsys, "decide", "accept", "s-999999")
-    assert code == 2 and "no suggestion s-999999" in out
+    assert code == 2 and "no question s-999999" in out
 
     code, out = run(capsys, "decide", "later", "--days", "3")
     assert code == 0 and "stop asking about these 1 until" in out
     assert "New sessions stop asking until" in run(capsys, "decide")[1]
+    assert json.loads(run(capsys, "decide", "--json")[1])["hidden_until"] > "2026-01-01"     # the mod reads it
     code, out = run(capsys, "suggestions", "--all")
     assert "rejected by owner (kb decide on h): too broad" in out
 

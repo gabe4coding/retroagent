@@ -695,6 +695,52 @@ def test_finish_records_the_suggestions_of_a_retro(tmp_path):
         routine.finish(root, settings(), now=NOW, push=False)
 
 
+def test_a_retro_whose_suggestions_have_no_ids_is_planned_once_more(tmp_path):
+    """Retros written before the ledger have "Suggested changes" without ids: kb decide cannot ask about them."""
+    from kb import ledger
+    root = repo(tmp_path / "kb")
+    built(root)
+    old = "# Week 2026-W40\n\n## What happened\n- work (a0000002)\n\n## Suggested changes\n- wait for CI with a watch (a0000002)\n"
+    write_page(root, "retro", "2026-W40", body=old, sources=["a0000002"], sessions=1)
+    commit(root, "pages: an old retro")
+    p = plan(root)
+    (w40,) = [r for r in p["retros"] if r["week"] == "2026-W40"]
+    assert w40["action"] == "update" and w40["review_suggestions"]
+    assert not any(r.get("review_suggestions") for r in p["retros"] if r["week"] != "2026-W40")
+    with pytest.raises(PagesError, match="its suggested changes have no ids"):
+        routine.finish(root, settings(), now=NOW, push=False, skip=["2026-W40"])
+    write_page(root, "retro", "2026-W40", body=old.replace("- wait", "- [new] Rules · wait"), sources=["a0000002"],
+               sessions=1)
+    assert routine.finish(root, settings(), now=NOW, push=False)["committed"]
+    assert [e["text"] for e in ledger.load(root).values()] == ["wait for CI with a watch"]
+    assert not any(r["week"] == "2026-W40" for r in plan(root)["retros"])        # numbered now: not again
+
+
+def test_finish_records_the_memory_fixes_the_routine_proposes(tmp_path):
+    from kb import memedits
+    root = repo(tmp_path / "kb")
+    built(root)
+    memory(root, "alpha", "old.md", modified="2026-10-01T08:00:00Z")
+    commit(root)
+    plan(root, retro_weeks_back=0)
+    proposal = {"ref": "alpha/old", "kind": "delete", "why": "a later session replaced it", "sources": ["a0000002"]}
+    (root / memedits.REL).write_text(json.dumps({"new-1": proposal}))
+    res = routine.finish(root, settings(), now=NOW, push=False, skip=["alpha"])
+    (eid,) = res["memory_fixes"]
+    assert git(root, "log", "-1", "--format=%s").endswith(", memory fixes [skip ci]")
+    entry = memedits.load(root)[eid]
+    assert (entry["path"], entry["host"], entry["date"]) == (
+        "memories/h/claude/-Users-me-alpha/old.md", "h", NOW.astimezone(dt.timezone.utc).date().isoformat())
+
+    plan(root, retro_weeks_back=0)
+    (root / memedits.REL).write_text(json.dumps({eid: {**entry, "why": "changed"}}))
+    with pytest.raises(PagesError, match="never changes a proposal"):
+        routine.finish(root, settings(), now=NOW, push=False)
+    (root / memedits.REL).write_text(json.dumps({eid: entry, "new-2": {**proposal, "ref": "alpha/nothing"}}))
+    with pytest.raises(PagesError, match="no memory 'alpha/nothing'"):
+        routine.finish(root, settings(), now=NOW, push=False)
+
+
 def test_finish_asks_to_compact_current_state_and_open_threads(tmp_path):
     root = repo(tmp_path / "kb")
     demo(root)
