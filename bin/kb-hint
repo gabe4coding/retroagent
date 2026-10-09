@@ -1,6 +1,6 @@
 #!/bin/sh
 # PostToolUseFailure hook (Claude Code): when a tool call fails, add at most one past fix from the project page to the
-# agent's context (`kb hint --event error --hook`; see src/kb/hint.py). On by default; with "hints": false in the config
+# agent's context (`kb hint --hook`; see src/kb/hint.py). On by default; with "hints": false in the config
 # it exits before starting Python. Always exits 0 and prints nothing on any problem, so it never breaks a turn.
 [ "${KB_CHILD:-}" = "1" ] && exit 0
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -11,5 +11,5 @@ if [ -z "$CFG" ]; then
 fi
 [ -f "$CFG" ] || exit 0
 grep -q '"hints"[[:space:]]*:[[:space:]]*false' "$CFG" 2>/dev/null && exit 0
-KB_CONFIG="$CFG" "$HERE/kb" hint --event error --hook 2>/dev/null || true
+KB_CONFIG="$CFG" "$HERE/kb" hint --hook 2>/dev/null || true
 exit 0

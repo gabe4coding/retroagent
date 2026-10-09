@@ -117,12 +117,12 @@ def test_check_refuses_an_id_too_many_and_a_rewrite_that_loses_a_secret(cfg):
 
 
 def _waiting(cfg):
-    return [eid for eid, _ in decide.memory_fixes(cfg.root, cfg.host)]
+    return [eid for eid, _ in memedits.waiting(cfg.root, cfg.host)]
 
 
 def test_apply_rewrite_keeps_the_front_matter(cfg):
     eid, = record(cfg, **{"new-1": REWRITE})
-    assert _waiting(cfg) == [eid] and decide.memory_fixes(cfg.root, "other-host") == []
+    assert _waiting(cfg) == [eid] and memedits.waiting(cfg.root, "other-host") == []
     entry = memedits.load(cfg.root)[eid]
     assert "-description: User prefers small pull requests" in memedits.detail(cfg.root, entry)
     assert memedits.apply(cfg, eid, entry).startswith("rewrote ")

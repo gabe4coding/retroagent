@@ -33,7 +33,7 @@ import json
 import re
 from pathlib import Path
 
-from kb import freshness
+from kb import freshness, ledger
 from kb.distill import split_front_matter
 from kb.memories import Source, _render_keeping_date, encode_cwd
 from kb.redact import redact
@@ -202,9 +202,9 @@ def check(root, old, new, idx, today: str) -> tuple:
     return problems, out
 
 
-def waiting(root, host: str, answered: set) -> list:
+def waiting(root, host: str) -> list:
     """(id, entry) of the proposals for `host` with no answer whose memory did not change since, oldest first."""
-    out = []
+    answered, out = ledger.answers(root), []
     for eid, e in sorted(load(root).items(), key=lambda kv: (kv[1].get("date", ""), kv[0])):
         if e["host"] != host or eid in answered:
             continue
