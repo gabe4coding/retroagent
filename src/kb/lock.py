@@ -14,12 +14,10 @@ class Lock:
     The operating system holds the lock until release() or until the process exits. So a crashed or killed holder
     cannot leave a stale lock, and nothing has to refresh it.
     The file content ({"pid", "started"}) is for people only; the code never reads it.
-    `stale_seconds` is accepted so old callers still work, but it is ignored.
     """
 
-    def __init__(self, path, stale_seconds: int = 1800):
+    def __init__(self, path):
         self.path = Path(path)
-        self.stale = stale_seconds
         self.held = False
         self._fd = None
 
@@ -45,9 +43,6 @@ class Lock:
         self._fd = fd
         self.held = True
         return True
-
-    def touch(self) -> None:
-        """Does nothing: a held flock cannot go stale. Long runs still call it, so it stays."""
 
     def release(self) -> None:
         if not self.held:
