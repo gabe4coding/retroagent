@@ -274,29 +274,19 @@ def import_inbox(cfg, cloud_cfg) -> tuple:
     """
     root = cfg.root
     gitops.git(root, "fetch", "--quiet", "--prune", "origin", timeout=gitops.PULL_TIMEOUT)
-    seen_file = cfg.kb_dir / "cloud-inbox.json"
-    try:
-        seen = json.loads(seen_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        seen = {}
     copies, branches_with_inbox = _collect_copies(root, cfg.branch)
     written, errors, failed_paths = 0, [], set()
     for path in sorted(copies):
         target = cloud_cfg.claude_dir / path[len(INBOX) + 1:-len(".gz")]
         # Smallest copy first, then by blob id for a stable order: each larger copy can then extend the one before.
         for blob, (_, tip, name) in sorted(copies[path].items(), key=lambda item: (item[1][0], item[0])):
-            if seen.get(path) == blob:
-                continue
             try:
                 outcome = _import_one(root, blob, target)
-                if outcome == "older":
-                    continue
                 if outcome == "diverged":
                     errors.append(f"cloud: {path}: the copy on {name} does not extend the one imported before; "
                                   f"kept that one")
                     failed_paths.add(path)
-                    continue
-                if outcome == "written":
+                elif outcome == "written":
                     written += 1
                     # the push's time, not now: the sync's quiet period then counts from the session's last activity
                     when = int(gitops.git(root, "show", "-s", "--format=%ct", tip).stdout.strip() or 0)
@@ -305,9 +295,6 @@ def import_inbox(cfg, cloud_cfg) -> tuple:
             except (OSError, EOFError, ValueError, gitops.GitError) as e:     # one bad file must not stop the others
                 errors.append(f"cloud: {path}: {type(e).__name__}: {' '.join(str(e).split())[:200]}")
                 failed_paths.add(path)
-                continue
-            seen[path] = blob
-    atomic_write(seen_file, (json.dumps(seen, indent=1, sort_keys=True) + "\n").encode("utf-8"))
     done = [(name, tip) for name, tip, blobs in branches_with_inbox
             if not failed_paths.intersection(blobs) and _only_inbox(root, tip, cfg.branch)]
     return written, errors, done

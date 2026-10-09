@@ -71,20 +71,12 @@ def _redact_leaves(obj, counts: Counter):
     return obj
 
 
-def slim_record(agent: str, rec: dict, counts=None):
-    """Return the slimmed, redacted record, or None to drop it."""
-    if agent == "claude":
-        if rec.get("type") in CLAUDE_DROP:
-            return None
-    else:
-        p = rec.get("payload")
-        if isinstance(p, dict):
-            if p.get("type") in ("reasoning", "compaction"):
-                p = {k: v for k, v in p.items() if k != "encrypted_content"}
-            if rec.get("type") == "session_meta":
-                p = {k: v for k, v in p.items() if k != "base_instructions"}
-            rec = {**rec, "payload": p}
-    return _cap(_redact_leaves(_strip_images(rec), counts if counts is not None else Counter()))
+def _slim_value(agent: str, rec, counts: Counter):
+    """The slimmed, redacted JSON value."""
+    if agent != "claude" and isinstance(rec, dict) and rec.get("type") == "session_meta" \
+            and isinstance(rec.get("payload"), dict):
+        rec = {**rec, "payload": {k: v for k, v in rec["payload"].items() if k != "base_instructions"}}
+    return _cap(_redact_leaves(_strip_images(rec), counts))
 
 
 def _dumps(obj) -> str:
@@ -96,13 +88,9 @@ def _slim_line(agent: str, line: str, counts: Counter):
     found: Counter = Counter()                       # merged into counts only when the line is used
     try:
         rec = json.loads(line)
-        if isinstance(rec, dict):
-            rec = slim_record(agent, rec, found)
-            if rec is None:
-                return None
-        else:
-            rec = _cap(_redact_leaves(rec, found))
-        out = _dumps(rec)
+        if agent == "claude" and isinstance(rec, dict) and rec.get("type") in CLAUDE_DROP:
+            return None
+        out = _dumps(_slim_value(agent, rec, found))
     except (ValueError, RecursionError):
         text, c = redact(line)                       # not JSON (or too deep to walk): redact, then cap
         counts.update(c)
