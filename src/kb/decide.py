@@ -34,21 +34,12 @@ LATER = "decide.json"                    # in .kb/: {"until": "YYYY-MM-DD", "ids
 LATER_DAYS = 1
 
 
-def waiting(root) -> list:
-    """The ids of the suggestions with no decision, newest week first."""
-    known, decided = ledger.load(root), ledger.decisions(root)
-    rows = [(sid, e) for sid, e in known.items() if sid not in decided]
-    return [sid for sid, _ in sorted(rows, key=lambda r: (r[1]["weeks"][-1], r[0]), reverse=True)]
-
-
-def memory_fixes(root, host: str) -> list:
-    """(id, entry) of the memory fixes that wait for the owner of `host` (kb.memedits.waiting)."""
-    return memedits.waiting(root, host, set(ledger.answers(root)))
-
-
-def all_waiting(root, host: str) -> list:
-    """The ids of every question that waits on this machine: suggestions, then this host's memory fixes."""
-    return waiting(root) + [eid for eid, _ in memory_fixes(root, host)]
+def questions(root, host: str = "") -> tuple:
+    """(ids of the suggestions with no decision, (id, entry) of the memory fixes that wait for the owner of `host`).
+    With no host, no memory fixes."""
+    decided = ledger.decisions(root)
+    fixes = memedits.waiting(root, host) if host else []
+    return [sid for sid in ledger.load(root) if sid not in decided], fixes
 
 
 def answer(root, kb_dir, host: str, sid: str, state: str, note: str = "", now=None) -> dict:
@@ -113,9 +104,8 @@ def hidden_until(kb_dir, ids, today=None) -> str:
 
 def brief_line(root, kb_dir, host: str = "", today=None) -> str:
     """The brief's line about the questions that wait for the owner, or ""."""
-    suggestions = waiting(root)
-    fixes = [eid for eid, _ in memory_fixes(root, host)] if host else []
-    ids = suggestions + fixes
+    suggestions, fixes = questions(root, host)
+    ids = suggestions + [eid for eid, _ in fixes]
     if not ids or hidden_until(kb_dir, ids, today):
         return ""
     parts = [f"{n} {one if n == 1 else many}" for n, one, many in (
