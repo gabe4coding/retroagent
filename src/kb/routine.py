@@ -74,7 +74,6 @@ _DIGEST_FILES = 8                        # files listed per session
 _MEMORY_LINE_CHARS = 200                 # one-line memory description
 _SKIP_IDS_SHOWN = 5                      # ids per error
 _REPORT_LINE_CHARS = 120                 # undated/moved bullet text
-REVIEW = "@review-threads"               # in a project's todo: its open threads were never all checked
 # Parent links followed up from a subagent to find its top-level session. A session still deeper is skipped.
 _SUBAGENT_DEPTH = 5
 # kb sync summarizes only top-level sessions with this many user turns or more. Keep it equal to the rule in sync.py.
@@ -430,9 +429,9 @@ def _plan_projects(root: Path, top: list, ready: dict, state: dict, settings, ch
                    grown=None, uncited=None):
     """(project items to write, {project: todo} that stays pending, {project: todo} of each planned project).
 
-    A project's todo is the set of what changed in it. It holds session short ids, memory paths (they start with
-    "memories/") and the REVIEW marker. Only the first batch_projects projects, most recent activity first, are
-    planned this run. The others stay pending for later runs.
+    A project's todo is the set of what changed in it. It holds session short ids and memory paths (they start with
+    "memories/"). Only the first batch_projects projects, most recent activity first, are planned this run. The others
+    stay pending for later runs.
 
     grown and uncited are {page rel: {short}} from _grown and _uncited. Their sessions are planned again. An item lists
     the grown ones as "grown", and the uncited ones of other projects as "related"."""
@@ -444,7 +443,7 @@ def _plan_projects(root: Path, top: list, ready: dict, state: dict, settings, ch
         counts[p] = counts.get(p, 0) + 1
         latest[p] = max(latest.get(p, ""), r["started"] or "")
         members.setdefault(p, []).append(r)
-    todo = _collect_todo(root, ready, state, changed_memories, memory, grown, uncited)
+    todo = _collect_todo(ready, state, changed_memories, memory, grown, uncited)
     todo = {p: s for p, s in todo.items() if s and _eligible(p, counts, settings)}  # the config may have changed
     order = sorted(todo, key=lambda p: (latest.get(p, ""), p), reverse=True)        # most recent activity first
     batch = order[: settings["batch_projects"]]
@@ -453,7 +452,7 @@ def _plan_projects(root: Path, top: list, ready: dict, state: dict, settings, ch
     return items, {p: sorted(todo[p]) for p in order[len(batch):]}, {p: sorted(todo[p]) for p in batch}
 
 
-def _collect_todo(root: Path, ready: dict, state: dict, changed_memories, memory, grown: dict, uncited: dict) -> dict:
+def _collect_todo(ready: dict, state: dict, changed_memories, memory, grown: dict, uncited: dict) -> dict:
     """{project: todo}: the pending todo of the state, plus this run's changes. A memory whose file and old version are
     both gone is dropped."""
     pend = state.get("pending") if isinstance(state.get("pending"), dict) else {}
@@ -465,8 +464,6 @@ def _collect_todo(root: Path, ready: dict, state: dict, changed_memories, memory
         for rel, shorts in found.items():
             if rel.startswith("pages/projects/"):
                 todo.setdefault(rel[len("pages/projects/"):-3], set()).update(shorts)
-    for p in _threads_to_review(root, state):
-        todo.setdefault(p, set()).add(REVIEW)
     for path in changed_memories:
         m = memory(path)
         if m:
@@ -482,7 +479,7 @@ def _project_item(root: Path, p: str, todo: set, top: list, members: dict, start
     if not (root / rel).is_file():       # a new page is written from the whole history of the project
         return {"name": p, "page": rel, "action": "create",
                 "sessions": [r["short"] for r in sorted(members[p], key=lambda r: (r["started"] or "", r["id"]))]}
-    shorts = [e for e in todo if not e.startswith("memories/") and e != REVIEW]
+    shorts = [e for e in todo if not e.startswith("memories/")]
     item = {"name": p, "page": rel, "action": "update",
             "sessions": sorted(shorts, key=lambda s: (started.get(s, ""), s))}
     paths = sorted(e for e in todo if e.startswith("memories/"))
@@ -494,29 +491,10 @@ def _project_item(root: Path, p: str, todo: set, top: list, members: dict, start
         item["memories_removed"] = gone
     if grown.get(rel):
         item["grown"] = sorted(grown[rel] & set(shorts), key=lambda s: (started.get(s, ""), s))
-    if REVIEW in todo:
-        item["review_threads"] = True
     other = {r["short"] for r in top if r["short"] in shorts and r["project"] != p}
     if other:
         item["related"] = sorted(other, key=lambda s: (started.get(s, ""), s))
     return item
-
-
-def _threads_to_review(root: Path, state: dict) -> list:
-    """The projects whose page has open threads but was never written or reviewed since every update checks all open
-    threads against all sessions (state "threads_reviewed"): each is planned once for that review."""
-    done = set(_strings(state.get("threads_reviewed")))
-    out = []
-    for path in sorted((root / "pages" / "projects").glob("*.md")):
-        if path.stem in done:
-            continue
-        try:
-            body = parse_page(path.read_text(encoding="utf-8", errors="replace"))[1]
-        except (OSError, ValueError):
-            continue
-        if any(line.startswith("- ") for line in (section(body, "Open threads") or "").splitlines()):
-            out.append(path.stem)
-    return out
 
 
 def _removed(m) -> bool:
@@ -870,11 +848,8 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
         memedits.save(root, edits)
     pending, returned = _next_pending(plan, written, skip)
     old = load_state(root) or {}
-    reviewed = set(_strings(old.get("threads_reviewed")))        # every written project page had its threads checked
-    reviewed |= {Path(r).stem for r in written if r.startswith("pages/projects/")}
-    reviewed |= {i["name"] for i in plan["projects"] if i.get("review_threads") and i["name"] in skip}
     state = {"version": 1, "sha": plan["head"], "last_run": _iso(now), "mode": plan["mode"],
-             "pending": pending, "waiting": plan["waiting"], "threads_reviewed": sorted(reviewed)}
+             "pending": pending, "waiting": plan["waiting"]}
     result = {"branch": branch, "projects": sorted(r for r in written if r.startswith("pages/projects/")),
               "retros": sorted(r for r in written if r.startswith("pages/retro/")), "returned": returned,
               "undated": undated, "moved": moved, "decisions": decided is not None,
@@ -887,7 +862,6 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
         or plan["projects"] or plan["retros"]         # the plan had pages to write (even if they were skipped)
         or pending != old.get("pending")              # the pending list changed
         or plan["waiting"] != old.get("waiting")      # the sessions that wait for a summary changed
-        or state["threads_reviewed"] != sorted(_strings(old.get("threads_reviewed")))  # more threads reviewed
         or not old                                    # no state yet: the first run records one
     )
     if nothing_changed:

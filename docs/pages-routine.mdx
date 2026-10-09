@@ -69,10 +69,8 @@ The model never writes the date.
   with them as `grown`. `kb pages finish` refuses to skip such a page. It also refuses to skip a page that does not
   cite one of its planned sessions.
 - **Finished:** each time the pages routine updates a page, it checks each open thread against all sessions since
-  the thread date. It does not check only the new sessions. If a page never had this check, the plan selects it one
-  time for this review, also with no new sessions. `threads_reviewed` in `pages/.state.json` lists the pages that had
-  the check. When a session finished a thread (its PR merged, or the task is done), the pages routine moves it to
-  History as `closed <date> by <short>`.
+  the thread date. It does not check only the new sessions. When a session finished a thread (its PR merged, or the
+  task is done), the pages routine moves it to History as `closed <date> by <short>`.
 - **Current state, not a log:** "Current state" has one bullet per area, as the area is now. It does not include
   details that change in almost each session: version numbers, test counts, timings. Such a bullet stays true longer,
   because new sessions confirm it and do not contradict it.
