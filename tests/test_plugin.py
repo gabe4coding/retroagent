@@ -189,7 +189,7 @@ def test_hint_hook_hands_the_event_to_kb_and_always_exits_0(tmp_path):
     hook, marker, env = _hint_env(tmp_path, '{"root": "/data"}')            # on by default
     p = subprocess.run([str(hook)], env=env, input='{"error": "x"}', capture_output=True, text=True, timeout=5)
     assert p.returncode == 0                                    # kb exited 3
-    assert marker.read_text().splitlines() == ["hint --event error --hook", '{"error": "x"}']
+    assert marker.read_text().splitlines() == ["hint --hook", '{"error": "x"}']
     marker.unlink()
     p = subprocess.run([str(hook)], env={**env, "KB_CHILD": "1"}, input="{}", capture_output=True, text=True, timeout=5)
     assert p.returncode == 0 and not marker.exists()

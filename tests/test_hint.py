@@ -63,6 +63,16 @@ def test_bullets_keep_only_fixes_from_the_errors_section():
     assert bullets("no front matter") == []
 
 
+@pytest.mark.parametrize("tail, source", [
+    ("(memory demo-app/local-site, 1a2b3c4d)", "kb memory demo-app/local-site"),     # no comma after the ref
+    ("(see memory demo-app/local-site)", "kb memory demo-app/local-site"),           # a memory alone, not first
+    ("(memorydump 1a2b3c4d)", "kb summary 1a2b3c4d"),                                 # "memory" but no memory ref
+])
+def test_the_source_of_a_bullet(tail, source):
+    b = bullets(PAGE.replace("(memory demo-app/local-site)", tail))[2]
+    assert b.source == source and b.text.endswith("use the local site for benchmarks")
+
+
 def test_gate_needs_an_error_word_at_the_start():
     assert not passes_gate("Exit code 1")                       # grep found nothing
     assert not passes_gate("Exit code 1 / src/a.py:3: import os / src/b.py:9: import sys")
@@ -107,7 +117,6 @@ def test_run_is_silent_without_a_strong_match(kb):
     assert run(kb, _event("Exit code 1")) == ""                                     # no message
     assert run(kb, _event("Error: something else entirely went wrong")) == ""       # no match
     assert run(kb, _event(NO_YAML, cwd="/work/other-project")) == ""               # no page
-    assert run(kb, {"session_id": "s", "cwd": "/work/demo-app", "tool_response": {"stdout": NO_YAML}}) == ""
     kb.hints = False
     assert run(kb, _event(NO_YAML)) == ""
     assert not (kb.kb_dir / "hints" / "log.jsonl").exists()
@@ -144,17 +153,9 @@ def test_semantic_falls_back_to_keywords_when_the_server_fails(kb):
         srv.close()
 
 
-def test_error_text_of_each_event_shape():
+def test_error_text_reads_the_error_of_the_event():
     assert error_text({"error": "Exit code 2\nboom: failed"}) == "Exit code 2 / boom: failed"
-    assert error_text({"tool_response": "Exit code: 1\nError: not found"}) == "Exit code: 1 / Error: not found"
-    assert error_text({"tool_response": "Exit code: 0\nerror is a word here"}) == ""
-    assert error_text({"tool_response": "plain output that mentions an error"}) == ""     # Codex shell output
-    assert error_text({"tool_response": {"exit_code": 1, "output": "fatal: not a git repository"}}) == \
-        "Exit code 1 / fatal: not a git repository"
-    assert error_text({"tool_response": {"isError": True, "content": [{"type": "text", "text": "Invalid id"}]}}) == \
-        "Invalid id"
-    assert error_text({"tool_response": {"stdout": "", "stderr": "error"}}) == ""          # a success
-    assert error_text({}) == ""
+    assert error_text({"error": "  "}) == "" and error_text({}) == ""
 
 
 DATED = PAGE.replace("- the parser module raises when the config file is missing → not an error bullet",
@@ -192,9 +193,9 @@ def test_format_keeps_the_budget():
 def test_cli_hint_prints_the_hook_json(kb, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_event(NO_YAML))))
     monkeypatch.setattr(cli.config_mod, "load", lambda *a: kb)
-    assert cli.main(["hint", "--event", "error", "--hook"]) == 0
+    assert cli.main(["hint", "--event", "error", "--hook"]) == 0      # an older cached bin/kb-hint still passes --event
     out = json.loads(capsys.readouterr().out)
     assert out["hookSpecificOutput"]["hookEventName"] == "PostToolUseFailure"
     assert out["hookSpecificOutput"]["additionalContext"].startswith(PREFIX)
     monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
-    assert cli.main(["hint", "--event", "error"]) == 0 and capsys.readouterr().out == ""
+    assert cli.main(["hint"]) == 0 and capsys.readouterr().out == ""

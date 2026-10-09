@@ -55,11 +55,12 @@ def test_a_later_routine_decision_wins_over_an_older_answer(tmp_path):
     assert ledger.decisions(tmp_path)["s-000003"]["state"] == "rejected"          # same day: the owner wins
 
 
-def test_waiting_lists_the_undecided_newest_week_first(tmp_path):
+def test_questions_lists_the_undecided_suggestions(tmp_path):
     _ledger(tmp_path)
-    assert decide.waiting(tmp_path) == ["s-000002", "s-000001"]
+    sids, fixes = decide.questions(tmp_path)
+    assert set(sids) == {"s-000001", "s-000002"} and fixes == []          # no host: no memory fixes
     decide.answer(tmp_path, tmp_path / ".kb", "h", "s-000002", "accepted", now=NOW)
-    assert decide.waiting(tmp_path) == ["s-000001"]
+    assert decide.questions(tmp_path)[0] == ["s-000001"]
 
 
 def test_answer_writes_the_host_file_and_the_local_copy(tmp_path):
@@ -99,7 +100,7 @@ def test_later_hides_the_brief_line_until_a_new_question_arrives(tmp_path):
     today = dt.date(2026, 10, 8)
     line = decide.brief_line(tmp_path, kb_dir, today=today)
     assert line.startswith("2 retro suggestions wait for the user") and "`kb decide`" in line
-    assert decide.later(kb_dir, decide.waiting(tmp_path), days=2, today=today) == "2026-10-10"
+    assert decide.later(kb_dir, decide.questions(tmp_path)[0], days=2, today=today) == "2026-10-10"
     assert decide.brief_line(tmp_path, kb_dir, today=today) == ""
     assert decide.brief_line(tmp_path, kb_dir, today=dt.date(2026, 10, 10)).startswith("2 retro")     # the day is over
     known = ledger.load(tmp_path)

@@ -21,7 +21,7 @@ Run `kb --help` to see all the commands. To see the flags of a command, add `--h
 | `kb suggestions [--all] [--json]` | The changes that weekly retros suggested, the decisions on them, and if the error that each change targets still occurs. See [Suggested changes and whether they worked](./pages-routine.mdx#suggested-changes-and-whether-they-worked). |
 | `kb decide [accept\|reject <id>] [--note TEXT]` | The retro suggestions and memory fixes that wait for your answer. Accept or reject one in your own terminal. `kb decide later [--days N]` stops new sessions asking for a while. See [Answer a suggestion](./pages-routine.mdx#answer-a-suggestion), [Memory fixes](./pages-routine.mdx#memory-fixes) and [Answer in Claude Code](#answer-in-claude-code). |
 | `kb brief [--project P] [--hook]` | What a new session in this project gets at the start: a pointer to the project page, the accepted suggestions for its repo and one line about `kb find`. See [Brief at session start](#brief-at-session-start). |
-| `kb hint --event error [--hook]` | A past fix for a failed tool call. It reads the hook event JSON on stdin and prints one line or nothing. `--hook` prints the hook output JSON. See [Hints when a command fails](#hints-when-a-command-fails). |
+| `kb hint [--hook]` | A past fix for a failed tool call. It reads the hook event JSON on stdin and prints one line or nothing. `--hook` prints the hook output JSON. See [Hints when a command fails](#hints-when-a-command-fails). |
 | `kb sql "<SELECT …>" [--width N]` | Read-only SQL on the index (tables: `sessions`, `turns`, `pages`, `memories`). If a cell is longer than `N` characters (default 80), `kb sql` cuts it and adds `…` at the end. `--width 0` never cuts a cell. |
 
 An id is the 8-character short id that the lists show. You can also use any unique prefix of the short id or of the full
@@ -182,8 +182,8 @@ a terminal.
 ## Hints when a command fails
 
 Hints are on by default. To disable them, set `"hints": false` in the [config](./configuration.mdx). When a tool call
-fails in Claude Code, the `PostToolUseFailure` hook (`bin/kb-hint`) runs `kb hint --event error`. This command can add
-one line to the context of the agent:
+fails in Claude Code, the `PostToolUseFailure` hook (`bin/kb-hint`) runs `kb hint --hook`. This command can add one
+line to the context of the agent:
 
 ```
 retroagent: seen before → <problem → fix> (kb summary <short> · <date>)
@@ -215,7 +215,7 @@ every problem and prints nothing. When hints are off, it exits before Python sta
 never commits it. Each entry has the session, the bullet, its date, the score and the rule.
 
 Codex has no event for a failed tool call. Its `PostToolUse` shell response also has no exit code. Thus Codex gets no
-hints yet. `kb hint` still reads a Codex `PostToolUse` event whose response starts with `Exit code: N`.
+hints yet.
 
 `scripts/hint-replay` replays the hint rules on the tool errors of your data clone (read-only). It prints the number of
 hints that each rule gives. `--semantic --start` also runs the semantic rule. `--show N` prints examples.
