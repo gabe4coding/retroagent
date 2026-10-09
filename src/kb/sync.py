@@ -337,7 +337,7 @@ def foreign_host(cfg, host: str) -> str:
     return host_is_taken(cfg, machine.local_id(cfg.kb_dir))
 
 
-def summarize_pending(cfg, idx, state, cap, runner, report, lock, clock=time.time, host=None, force_host=False):
+def summarize_pending(cfg, idx, state, cap, runner, report, clock=time.time, host=None, force_host=False):
     """One summary pass over `host` (default: the configured host). Returns (summaries written, months touched).
 
     Raises ForeignHost, before any call, when this machine does not own `host` (see foreign_host), unless
@@ -363,7 +363,6 @@ def summarize_pending(cfg, idx, state, cap, runner, report, lock, clock=time.tim
         attempts = state.summary_attempts.get(key, 0)
         if attempts >= SUMMARY_MAX_ATTEMPTS:
             continue
-        lock.touch()
         path = cfg.root / row["md_path"]
         try:
             text = path.read_text(encoding="utf-8")
@@ -429,7 +428,7 @@ def summarize_other_host(cfg, host: str, runner=subprocess.run, clock=time.time)
         idx = Index(cfg.kb_dir / "index.sqlite")
         idx.update(cfg.root)
         scratch = State(path=cfg.kb_dir / "forced-summaries-state.json")      # never saved
-        report.summarized, months = summarize_pending(cfg, idx, scratch, None, runner, report, lock, clock,
+        report.summarized, months = summarize_pending(cfg, idx, scratch, None, runner, report, clock,
                                                       host=host, force_host=True)
         for path, why in write_catalog(cfg.root, host, months):
             report.errors.append(f"catalog: {path}: {why}")
@@ -681,7 +680,7 @@ def cloud_waiting(cloud_cfg, state, clock=time.time) -> bool:
 
 # ---------------------------------------------------------------- the run
 
-def _process_lanes(cfg, lanes, state, idx, report, lock, months, now, dry_run, picker, clock, max_age_days=None) -> None:
+def _process_lanes(cfg, lanes, state, idx, report, months, now, dry_run, picker, clock, max_age_days=None) -> None:
     """Step 5: write the markdown and raw copies of the changed units of every lane."""
     titles = codex.load_titles(cfg.codex_home)
     seen = set()
@@ -690,18 +689,17 @@ def _process_lanes(cfg, lanes, state, idx, report, lock, months, now, dry_run, p
         paths_by_id = idx.paths_by_id(lane_cfg.host) if idx is not None else {}
         for unit, fingerprint, raw_due_now in pending_units(lane_cfg, state, now, clock, max_age_days):
             processed += 1
-            lock.touch()
             process_unit(lane_cfg, state, report, unit, fingerprint, titles, seen, months[lane_cfg.host],
                          paths_by_id, dry_run, picker, raw=raw_due_now)
             if not dry_run and processed % CHECKPOINT_EVERY == 0:
                 save_state(state, report)    # a crash later keeps what is already written and recorded
 
 
-def _summarize_lanes(lanes, idx, state, cap, runner, report, lock, months, clock) -> None:
+def _summarize_lanes(lanes, idx, state, cap, runner, report, months, clock) -> None:
     """Step 7: the summary pass of every lane. The cap counts the summaries of all lanes together."""
     for lane_cfg in lanes:
         left = None if cap is None else max(cap - report.summarized, 0)
-        done, touched = summarize_pending(lane_cfg, idx, state, left, runner, report, lock, clock)
+        done, touched = summarize_pending(lane_cfg, idx, state, left, runner, report, clock)
         report.summarized += done
         months[lane_cfg.host] |= touched
 
@@ -753,7 +751,7 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
             lanes = [cfg] + ([cloud_cfg] if cloud_cfg is not None else [])
             months = {lane_cfg.host: set() for lane_cfg in lanes}
             picker = SamplePicker(sample) if dry_run and sample > 0 else None
-            _process_lanes(cfg, lanes, state, idx, report, lock, months, now, dry_run, picker, clock, max_age_days)
+            _process_lanes(cfg, lanes, state, idx, report, months, now, dry_run, picker, clock, max_age_days)
             skip_cwd = lambda cwd: excluded(cfg, cwd)
             if dry_run:
                 report.memories = memories.sync_memories(cfg, None, report, skip_cwd, dry_run=True)
@@ -764,7 +762,7 @@ def run_sync(cfg, now: bool = False, dry_run: bool = False, summary_cap="default
             # after the index has this run's sessions: they tell the cwd of a memory folder whose transcripts are gone
             report.memories = memories.sync_memories(cfg, idx, report, skip_cwd)
             cap = cfg.summary_cap_per_run if summary_cap == "default" else summary_cap
-            _summarize_lanes(lanes, idx, state, cap, runner, report, lock, months, clock)
+            _summarize_lanes(lanes, idx, state, cap, runner, report, months, clock)
             if report.summarized or report.memories:
                 idx.update(cfg.root)
             _write_catalogs(cfg, lanes, months, report)
