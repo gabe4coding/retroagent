@@ -2,18 +2,15 @@ import re
 from pathlib import Path
 
 SKILLS = Path(__file__).resolve().parents[1] / "skills"
+LIMITS = {"setup": 90}                       # body line limit of a SKILL.md, 60 for a skill not named here
 
 
 def test_skills_have_front_matter_and_stay_short():
-    for name, limit in (("kb-search", 60), ("kb-retro", 60), ("kb-stats", 60), ("setup", 90)):
-        text = (SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
-        assert text.startswith(f"---\nname: {name}\ndescription: "), name
+    for skill in (p for p in SKILLS.iterdir() if p.is_dir()):
+        text = (skill / "SKILL.md").read_text(encoding="utf-8")
+        assert text.startswith(f"---\nname: {skill.name}\ndescription: "), skill.name
         body = text.split("\n---\n", 1)[1]
-        assert len(body.splitlines()) < limit, name
-
-
-def test_every_skill_folder_is_listed_above():
-    assert sorted(p.name for p in SKILLS.iterdir() if p.is_dir()) == ["kb-retro", "kb-search", "kb-stats", "setup"]
+        assert len(body.splitlines()) < LIMITS.get(skill.name, 60), skill.name
 
 
 def test_the_setup_skill_uses_only_commands_that_exist():

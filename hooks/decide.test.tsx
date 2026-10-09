@@ -1,4 +1,4 @@
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 const SUGGESTION = {
@@ -22,7 +22,6 @@ function fakeKb(on: On, start: object[], hiddenUntil = '') {
   on('process.run', ($, e) => {
     const argv = [...e.argv]
     ran.push(argv)
-    if (argv[0] !== 'kb') return { deny: 'not found' }
     const [, , verb, id] = argv
     if (verb === '--json') {
       return { value: { exitCode: 0, stdout: JSON.stringify({ items: left, hidden_until: hiddenUntil }), stderr: '',
@@ -36,7 +35,6 @@ function fakeKb(on: On, start: object[], hiddenUntil = '') {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.close', () => ({ value: undefined }))
   on('ui.render', () => ({ type: 'Box', props: {}, children: [] }))     // the engine's own band: empty
-  mock.env(on, { HOME: '/home/me' })
   return ran
 }
 
@@ -53,7 +51,7 @@ for (const surface of SURFACES) {
     expect(await pane.find({ text: /retro suggestion/ })).toBeDefined()
     expect(await pane.find({ text: /memory fix/ })).toBeDefined()
     await pane.press({ key: 'accept-m-4d5e6f' })
-    expect(ran).toContainEqual(['kb', 'decide', 'accept', 'm-4d5e6f', '--yes'])
+    expect(ran).toContainEqual([expect.stringMatching(/\/bin\/kb$/), 'decide', 'accept', 'm-4d5e6f', '--yes'])
     expect(await pane.find({ text: /m-4d5e6f: accepted/ })).toBeDefined()
     expect(await pane.find({ key: 'accept-m-4d5e6f' })).toBeUndefined()
 
