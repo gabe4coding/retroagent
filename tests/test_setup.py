@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from fixtures import write_installed_plugins
 
 from kb import config, setup
 
@@ -246,6 +247,62 @@ def test_auto_update_leaves_a_clone_on_another_branch_or_with_changes_alone(tmp_
 def test_auto_update_does_nothing_without_a_git_clone(tmp_path, monkeypatch):
     monkeypatch.setattr(setup, "CODE_ROOT", tmp_path / "cache-copy")
     assert setup.auto_update(_cfg(tmp_path)) == ""
+
+
+@pytest.mark.slow
+def test_auto_update_refreshes_a_plugin_that_claude_code_loads_at_another_version(tmp_path, code_clone, monkeypatch):
+    """`kb update` pulled 1.0.0, but Claude Code still loads 0.9.0 from its cache: the daily run refreshes without a new
+    version of its own, and tries again the next day while the refresh fails or changes nothing."""
+    clone, publish_code, _ = code_clone
+    cfg = _cfg(tmp_path)
+    stamp = cfg.kb_dir / "code-update"
+
+    def next_day():
+        os.utime(stamp, (stamp.stat().st_mtime - 2 * 86400,) * 2)
+
+    write_installed_plugins(Path.home(), "0.9.0")
+    calls = []
+    monkeypatch.setattr(setup, "refresh_plugins", lambda: calls.append(1) or ["claude plugin update retroagent@retroagent"])
+    assert setup.auto_update(cfg) == "plugin 0.9.0 -> 1.0.0 (failed: claude plugin update retroagent@retroagent)"
+    assert setup.auto_update(cfg) == "" and calls == [1]                                # within a day
+    next_day()
+    monkeypatch.setattr(setup, "refresh_plugins", lambda: calls.append(1) or [])       # exits 0, changes nothing
+    assert setup.auto_update(cfg) == "plugin 0.9.0 -> 1.0.0 (failed: Claude Code still loads 0.9.0)"
+    next_day()
+    monkeypatch.setattr(setup, "refresh_plugins",
+                        lambda: calls.append(1) or write_installed_plugins(Path.home(), "1.0.0") and [])
+    publish_code()
+    line = setup.auto_update(cfg)
+    assert line.startswith("code updated ") and line.endswith(", plugin 0.9.0 -> 1.0.0") and len(calls) == 3
+    next_day()
+    assert setup.auto_update(cfg) == "" and len(calls) == 3                             # in step: nothing to do
+
+
+# ---- the plugin version Claude Code loads
+
+def test_installed_plugin_version_reads_the_user_install_of_retroagent():
+    assert setup.installed_plugin_version() == ""                                       # no file: not installed
+    write_installed_plugins(Path.home(), "0.4.1", scope="project")
+    assert setup.installed_plugin_version() == ""
+    write_installed_plugins(Path.home(), "0.4.1", plugin="other@retroagent")
+    assert setup.installed_plugin_version() == ""
+    path = write_installed_plugins(Path.home(), "0.4.1")
+    assert setup.installed_plugin_version() == "0.4.1"
+    for broken in ("{broken", "[]", '{"plugins": {"retroagent@retroagent": {"version": "1"}}}'):
+        path.write_text(broken)
+        assert setup.installed_plugin_version() == ""
+
+
+def test_plugin_drift_compares_the_install_with_the_code_clone(tmp_path, monkeypatch):
+    code = tmp_path / "code"
+    (code / ".claude-plugin").mkdir(parents=True)
+    (code / ".claude-plugin/plugin.json").write_text('{"version": "0.11.0"}\n')
+    monkeypatch.setattr(setup, "CODE_ROOT", code)
+    assert setup.plugin_drift() == ()                                                   # not installed in Claude Code
+    write_installed_plugins(Path.home(), "0.4.1")
+    assert setup.plugin_drift() == ("0.4.1", "0.11.0")
+    write_installed_plugins(Path.home(), "0.11.0")
+    assert setup.plugin_drift() == ()
 
 
 # ---- bin/kb in a plugin cache runs the recorded code clone

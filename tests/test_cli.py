@@ -2,12 +2,13 @@ import json
 import os
 import re
 import sqlite3
+from pathlib import Path
 
 import pytest
-from fixtures import AID, SID, T1
+from fixtures import AID, SID, T1, write_installed_plugins
 from test_index import OLD_SCHEMA, build_kb, put
 
-from kb import cli
+from kb import brief, cli, setup
 from kb.cli import main
 from kb.index import Index
 from kb.state import State
@@ -590,6 +591,19 @@ def test_status_shows_whether_automatic_syncs_are_on(kb_env, tmp_path, capsys):
     assert any(l.startswith("auto sync: off until the first full backfill") for l in out.splitlines())
 
 
+def test_status_warns_when_claude_code_loads_another_plugin_version(kb_env, capsys):
+    version = setup.plugin_version()
+    _, out = run(capsys, "status")
+    assert not any(l.startswith("plugin:") for l in out.splitlines())                # not installed in Claude Code
+    write_installed_plugins(Path.home(), "0.0.1")
+    _, out = run(capsys, "status")
+    assert (f"plugin: WARNING Claude Code loads retroagent 0.0.1, the code clone has {version}: the new hooks and "
+            "skills are off (run: kb update, then start a new session)") in out.splitlines()
+    write_installed_plugins(Path.home(), version)
+    _, out = run(capsys, "status")
+    assert f"plugin: Claude Code loads retroagent {version}" in out.splitlines()
+
+
 def test_status_uses_the_configured_gitleaks_path_and_says_when_it_is_required(kb_env, tmp_path, capsys, monkeypatch):
     _path_with_gitleaks(monkeypatch, tmp_path, installed=False)
     away = tmp_path / "away"
@@ -655,3 +669,10 @@ def test_brief_hook_output(kb_env, capsys, monkeypatch):
         "Project page of demo: `kb page demo` (1 open thread). Read it when the task needs it.")
     monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
     assert run(capsys, "brief", "--hook") == (0, "")                  # never fails
+
+
+def test_brief_says_when_claude_code_loads_another_plugin_version(kb_env, capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    write_installed_plugins(Path.home(), "0.0.1")
+    _, out = run(capsys, "brief")
+    assert out.splitlines()[-2] == brief.plugin_line(("0.0.1", setup.plugin_version()))

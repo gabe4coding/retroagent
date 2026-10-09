@@ -119,8 +119,13 @@ Each machine has a random id in `.kb/machine-id`. The first sync commits a copy 
 
 - `kb update` pulls the code clone (fast-forward only). Then it runs `install.sh` again for the plugins, the `kb`
   link and the config.
-- `kb enable updates` makes the background sync do the pull once a day instead. When the plugin version changes, it
-  also refreshes the plugins.
+- `kb enable updates` makes the background sync do the pull once a day instead. It also refreshes the plugins when
+  the plugin version changes, or when Claude Code loads another version than the code clone. If a refresh fails, the
+  run of the next day tries again.
+
+Claude Code sessions load the plugin from a cache. Only `claude plugin update` copies a new version into it, and
+`install.sh` runs this command each time. Start a new session to load the new version. `kb status` shows a warning
+when Claude Code loads another version than the code clone.
 
 Both commands run the latest `main` of the code repo. To know what changed, read the new commits on `main`.
 

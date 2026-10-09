@@ -395,6 +395,20 @@ def test_a_folder_marketplace_is_kept(tmp_path):
     assert "claude plugin marketplace remove retroagent" not in m.calls() and "replaced" not in p.stdout
 
 
+def test_an_installed_plugin_is_updated_so_a_new_version_reaches_the_plugin_cache(tmp_path):
+    """`claude plugin install` and `claude plugin marketplace add` exit 0 and change nothing when retroagent is already
+    there (the fake claude exits 0 too). Only `claude plugin update` copies a new version into the cache that sessions
+    load, so install.sh runs it each time."""
+    m = Machine(tmp_path)
+    for _ in range(2):
+        p = m.install("--host", "h")
+        assert p.returncode == 0, _out(p)
+        calls = [c for c in m.calls() if c.startswith("claude plugin ") and " list" not in c]
+        assert calls == [f"claude plugin marketplace add {m.code}", "claude plugin marketplace update retroagent",
+                         "claude plugin install retroagent@retroagent", "claude plugin update retroagent@retroagent"]
+        m.log.write_text("")
+
+
 def test_missing_claude_and_codex_are_skipped(tmp_path):
     m = Machine(tmp_path, tools=())
     p = m.install("--host", "h")
