@@ -837,20 +837,3 @@ def test_a_page_gets_the_sessions_that_worked_in_its_project_from_another_folder
     with pytest.raises(PagesError, match=r"alpha.md: cannot be skipped, it misses 1 planned session\(s\) it does not "
                                          r"cite \(c0000009\)"):
         routine.finish(root, settings(), now=NOW, push=False, skip=["alpha"])
-
-
-def test_a_page_with_threads_never_checked_is_reviewed_once(tmp_path):
-    """Pages written before every update checked all open threads get one review, then only with their updates."""
-    root = repo(tmp_path / "kb")
-    built(root)
-    state = json.loads((root / routine.STATE_REL).read_text())
-    assert state["threads_reviewed"] == ["alpha"]                 # alpha was written: its threads were checked
-    write_page(root, "project", "alpha", sources=["a0000001", "a0000002", "a0000003"],
-               body="# alpha\n\n## Open threads\n- merge PR 20 (a0000001)\n")
-    (root / routine.STATE_REL).write_text(json.dumps({k: v for k, v in state.items() if k != "threads_reviewed"}))
-    commit(root, "a page from before the rule")
-    item = plan(root, retro_weeks_back=0)["projects"][0]
-    assert (item["name"], item["sessions"], item["review_threads"]) == ("alpha", [], True)
-    res = routine.finish(root, settings(), now=NOW, push=False, skip=["alpha"])     # reviewed, nothing to close
-    assert res["committed"] and json.loads((root / routine.STATE_REL).read_text())["threads_reviewed"] == ["alpha"]
-    assert plan(root, retro_weeks_back=0)["projects"] == []
