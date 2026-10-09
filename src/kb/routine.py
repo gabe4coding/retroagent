@@ -636,11 +636,16 @@ def _plan_retros(root: Path, top: list, ready: dict, state: dict, settings, tz, 
     pend = state.get("pending") if isinstance(state.get("pending"), dict) else {}
     todo = {w for w in _strings(pend.get("weeks")) if WEEK_RE.match(w)}
     late = dt.timedelta(days=settings["retro_late_days"])
+    unnumbered = set()                   # retros whose suggestions have no id (written before kb.ledger): once more
     for w in closed_weeks(now, tz, settings):
         rel = page_rel("retro", w)
         if not (root / rel).is_file():
             todo.add(w)
-        elif now - week_bounds(w, tz)[1] <= late:
+            continue
+        if _unnumbered_suggestions(root / rel):
+            unnumbered.add(w)
+            todo.add(w)
+        if now - week_bounds(w, tz)[1] <= late:
             new = {r["short"] for r in ready.values() if week_of(r["started"], tz) == w}
             if new - _sources(root / rel) or (grown or {}).get(rel):
                 todo.add(w)
@@ -656,7 +661,19 @@ def _plan_retros(root: Path, top: list, ready: dict, state: dict, settings, tz, 
                       "sessions": [r["short"] for r in sorted(weeks[w], key=lambda r: (r["started"] or "", r["id"]))]})
         if (grown or {}).get(rel):
             items[-1]["grown"] = sorted((grown or {})[rel])
+        if w in unnumbered:
+            items[-1]["review_suggestions"] = True
     return items, order[len(batch):]
+
+
+def _unnumbered_suggestions(path: Path) -> bool:
+    """True when a retro has "Suggested changes" bullets without an id: written before the ledger (kb.ledger), so
+    `kb suggestions` and `kb decide` do not know them."""
+    try:
+        body = parse_page(path.read_bytes().decode("utf-8", errors="replace"))[1]
+    except (OSError, ValueError):
+        return False
+    return any(not it["id"] for it in ledger.items(body))
 
 
 def due(plan: dict, settings) -> dict:
@@ -990,11 +1007,15 @@ def _next_pending(plan: dict, written: set, skip):
 
 def _check_skips(root: Path, plan: dict, skip, changed: set) -> list:
     """A page to update may be skipped only when it already covers its planned sessions: each one cited, none grown
-    (it went on after the page was written). Memories alone, or a page to create, may be skipped."""
+    (it went on after the page was written). Memories alone, or a page to create, may be skipped. A retro planned for
+    its suggestions without ids (review_suggestions) may not be skipped."""
     out = []
     for item in plan["projects"] + plan["retros"]:
         name = item.get("name") or item.get("week")
         if name not in skip or item["action"] != "update" or item["page"] in changed:
+            continue
+        if item.get("review_suggestions"):
+            out.append(f"{item['page']}: cannot be skipped, its suggested changes have no ids; write them with [new]")
             continue
         cited = _sources(root / item["page"])
         new = [s for s in item["sessions"] if s not in cited]

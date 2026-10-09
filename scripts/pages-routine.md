@@ -133,6 +133,11 @@ The deterministic parts are code: `kb pages start | plan | digest | finish`. You
        refuses a signature that no session has.
    - Write the retro in the format below. `update` means sessions of that week arrived late: rewrite the page with
      all of them.
+   - `review_suggestions: true`: the retro's "Suggested changes" were written before they had ids, so `kb decide`
+     cannot ask the owner about them. Rewrite that section: keep every bullet with its text and sources, start it
+     with `[new]` (or the `[s-…]` id of the same problem from `kb suggestions --all`), and add its category. Keep a
+     bullet even when a session already made the change: step 4b then records it as `applied`. Change the other
+     sections only for late sessions. `finish` refuses to skip such a retro.
 4b. **Decisions.** Once per run, after the retros: `kb suggestions --all --json`. For each suggestion whose `state`
    is `proposed` or `accepted`, look for evidence in the sessions since it was first suggested (`kb find "<words of
    the change>" --since <its first week's Monday>`, at most 3 sessions looked at closer with `kb summary` or
