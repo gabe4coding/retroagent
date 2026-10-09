@@ -293,10 +293,6 @@ def _parse(path, session_id: str, parent: str = ""):
     return s, calls
 
 
-def parse_file(path, session_id: str, parent: str = "") -> Session:
-    return _parse(path, session_id, parent)[0]
-
-
 def _read_meta(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

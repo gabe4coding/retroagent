@@ -61,7 +61,6 @@ def test_signature_sessions(tmp_path):
         got = signature_sessions(con)
         assert set(got[hook]) == {"aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"}
         assert got[hook]["aaaaaaaa-0000-0000-0000-000000000002"] == "2026-10-03T10:00:00Z"   # the parent's own start
-        only = signature_sessions(con, {hook}, since="2026-10-02")
-        assert list(only) == [hook] and list(only[hook]) == ["aaaaaaaa-0000-0000-0000-000000000002"]
+        assert signature_sessions(con, {hook}) == {hook: got[hook]}                         # only these signatures
     finally:
         con.close()

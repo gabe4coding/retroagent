@@ -75,14 +75,14 @@ def repeated_errors(con, since: str = "", project: str = "", limit: int = 30):
     return ["sessions", "errors", "first", "last", "signature", "first_seen", "tool", "example"], rows[:limit]
 
 
-def signature_sessions(con, signatures=None, since: str = "") -> dict:
-    """{signature: {root session id: start of its first session with that error}} for the tool errors since `since`,
-    only these signatures when given. A subagent's error counts for its parent, at the subagent's start time."""
+def signature_sessions(con, signatures=None) -> dict:
+    """{signature: {root session id: start of its first session with that error}} for the tool errors, only these
+    signatures when given. A subagent's error counts for its parent, at the subagent's start time."""
     want = set(signatures) if signatures is not None else None
     out = {}
     sql = ("SELECT s.id, s.parent, s.started, t.text FROM turns t JOIN sessions s ON s.id = t.session_id "
-           "WHERE t.text LIKE ? AND s.started >= ? ORDER BY s.started, t.n")
-    for sid, parent, started, text in con.execute(sql, ["%" + ERROR_MARK + "%", since]):
+           "WHERE t.text LIKE ? ORDER BY s.started, t.n")
+    for sid, parent, started, text in con.execute(sql, ["%" + ERROR_MARK + "%"]):
         for line in text.splitlines():
             m = _ERROR_LINE.match(line)
             sig = error_signature(m.group(2)) if m else ""
