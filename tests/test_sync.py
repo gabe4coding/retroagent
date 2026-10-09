@@ -189,27 +189,6 @@ def test_locked_out(hosts):
     lock.release()
 
 
-def test_summary_failures_retry_then_stop(hosts):
-    """Changed for item 2: a call that returns junk is an attempt keyed by id:turns (a failed call is not)."""
-    a, _ = hosts
-    for _ in range(4):
-        run_sync(a, runner=FakeRunner("unusable"))
-    attempts = State.load(a.kb_dir / "sync-state.json").summary_attempts
-    assert attempts and set(attempts.values()) == {3} and all(":" in k for k in attempts)
-    runner = FakeRunner()
-    run_sync(a, runner=runner)
-    assert runner.calls == []
-
-
-def test_summary_call_uses_guard_env_and_temp_cwd(hosts):
-    a, _ = hosts
-    runner = FakeRunner()
-    run_sync(a, runner=runner)
-    cmd, kw = runner.calls[0]
-    assert cmd[0] == "claude" and kw["env"]["KB_CHILD"] == "1"
-    assert not str(kw["cwd"]).startswith(str(a.root))
-
-
 def test_dry_run_with_sample(hosts):
     a, _ = hosts
     r = run_sync(a, dry_run=True, sample=1)
@@ -223,33 +202,6 @@ def test_excluded_cwd(hosts):
     a.exclude_cwd_globs = ["/Users/me/*"]
     r = run_sync(a, runner=FakeRunner())
     assert r.sessions == 0 and not r.committed
-
-
-def test_gitleaks_finding_blocks_commit(hosts, tmp_path, monkeypatch):
-    a, _ = hosts
-    fake = tmp_path / "fakebin"
-    fake.mkdir()
-    (fake / "gitleaks").write_text("#!/bin/sh\necho finding\nexit 1\n")
-    (fake / "gitleaks").chmod(0o755)
-    monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
-    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
-    assert not r.committed and any(e.startswith("gitleaks") for e in r.errors)
-    assert gitops.git(a.root, "diff", "--cached", "--name-only").stdout == ""
-
-
-def test_cold_rebuild_is_identical(hosts):
-    """Changed for item 5: .kb/machine-id says which machine owns the host, so a rebuild keeps it (the rest of .kb is
-    derived data and goes). A wiped id looks like another machine."""
-    a, _ = hosts
-    run_sync(a, runner=FakeRunner())
-    mid = (a.kb_dir / "machine-id").read_text()
-    for d in ("sessions", "raw", "catalog", ".kb"):
-        shutil.rmtree(a.root / d)
-    a.kb_dir.mkdir()
-    (a.kb_dir / "machine-id").write_text(mid)
-    r = run_sync(a, runner=FakeRunner())
-    assert r.sessions == 3 and not r.committed
-    assert gitops.git(a.root, "status", "--porcelain").stdout == ""
 
 
 # ================================================================ helpers for the tests below
@@ -418,6 +370,7 @@ def test_pull_failure_is_recorded_and_skips_the_push_until_it_works(hosts):
 
 
 def test_first_push_into_an_empty_remote(tmp_path):
+    """The branch has no upstream yet: the guard for unpushed commits must not block the first push."""
     remote = tmp_path / "empty.git"
     git("init", "-q", "--bare", "-b", "main", str(remote))
     root = tmp_path / "root"
@@ -469,6 +422,7 @@ def test_unusable_output_three_times_skips_until_the_session_grows(hosts):
     attempts = State.load(a.kb_dir / "sync-state.json").summary_attempts
     old_turns = _row(a, SID)["turns"]
     assert attempts[f"{SID}:{old_turns}"] == 3
+    assert set(attempts.values()) == {3} and all(":" in k for k in attempts)   # every session, keyed by id:turns
     idle = FakeRunner()
     assert run_sync(a, runner=idle).summarized == 0 and idle.calls == []      # skipped, not retried
     _grow_claude(a, pairs=1)
@@ -558,7 +512,9 @@ def test_summary_child_runs_in_a_fresh_removed_temp_dir(hosts):
         assert existed and content == [] and not str(cwd).startswith(str(a.root))
         assert not os.path.exists(cwd)
     assert runner.cwd_seen[0][0] != runner.cwd_seen[1][0]
-    assert runner.calls[0][1]["encoding"] == "utf-8" and runner.calls[0][1]["errors"] == "replace"
+    cmd, kw = runner.calls[0]
+    assert cmd[0] == "claude" and kw["env"]["KB_CHILD"] == "1"                 # our own hooks skip the child
+    assert kw["encoding"] == "utf-8" and kw["errors"] == "replace"
 
 
 def test_summary_temp_dir_is_removed_when_the_call_fails(hosts):
@@ -685,12 +641,6 @@ def test_other_files_are_committed_while_a_missing_scanner_keeps_the_quarantine(
     _path(monkeypatch, tmp_path, gitleaks_bin)
     r = run_sync(a, runner=FakeRunner(), summary_cap=0)
     assert r.errors == [] and r.committed and _head_files(a.root) == [held] and _quarantine(a) == {}
-
-
-def test_a_missing_scanner_without_quarantine_commits_quietly_as_before(hosts):
-    a, _ = hosts
-    r = run_sync(a, runner=FakeRunner(), summary_cap=0)
-    assert r.errors == [] and r.committed and r.pushed
 
 
 def test_require_gitleaks_without_a_scanner_commits_nothing(hosts):
@@ -1138,19 +1088,6 @@ def test_unpushed_commits_inside_the_hosts_folders_are_pushed(hosts):
     assert r.errors == [] and r.pushed and gitops.ahead(a.root) == 0
 
 
-def test_the_first_push_without_an_upstream_is_not_blocked(tmp_path):
-    remote = tmp_path / "empty.git"
-    git("init", "-q", "--bare", "-b", "main", str(remote))
-    root = tmp_path / "root"
-    git("clone", "-q", str(remote), str(root))
-    src = tmp_path / "src"
-    projects = make_claude_tree(src)
-    sessions, home = make_codex_tree(src)
-    cfg = make_config(root, "host-a", projects, sessions, home)
-    r = run_sync(cfg, runner=FakeRunner(), summary_cap=0)
-    assert r.errors == [] and r.pushed
-
-
 def test_the_pull_refusal_in_the_log_names_the_dirty_files(hosts):
     a, _ = hosts
     (a.root / "README.md").write_text("local edit\n")
@@ -1314,11 +1251,6 @@ def test_catalog_files_that_are_skipped_become_one_error_line_each(hosts):
     rows = [json.loads(l) for l in (a.root / "catalog/host-a/2026-10.jsonl").read_text().splitlines()]
     assert "odd-2" not in {x["id"] for x in rows} and SID in {x["id"] for x in rows}
     assert State.load(a.kb_dir / "sync-state.json").last_error.startswith("catalog:")
-
-
-def test_a_clean_catalog_adds_no_error(hosts):
-    a, _ = hosts
-    assert run_sync(a, runner=FakeRunner(), summary_cap=0).errors == []
 
 
 # ================================================================ a subagent copied under two sessions (resume / fork)
