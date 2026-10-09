@@ -66,6 +66,9 @@ def test_state_unreadable_file_is_empty(tmp_path):
 def test_lock_excludes_second_holder(tmp_path):
     a, b = Lock(tmp_path / "lock"), Lock(tmp_path / "lock")
     assert a.acquire() and not b.acquire()
+    old = time.time() - 3600
+    os.utime(tmp_path / "lock", (old, old))
+    assert not Lock(tmp_path / "lock").acquire()  # age never frees a held lock
     a.release()
     assert b.acquire()
     b.release()
@@ -79,16 +82,6 @@ def test_lock_file_is_kept_and_holds_informational_pid(tmp_path):
     assert info["pid"] == os.getpid() and "started" in info
     a.release()
     assert path.exists()
-
-
-def test_lock_accepts_stale_seconds_and_touch_is_a_noop(tmp_path):
-    a = Lock(tmp_path / "lock", stale_seconds=1)
-    assert a.acquire()
-    old = time.time() - 3600
-    os.utime(tmp_path / "lock", (old, old))
-    assert not Lock(tmp_path / "lock", stale_seconds=1).acquire()  # age never makes a held lock stale
-    a.touch()
-    a.release()
 
 
 def test_release_without_acquire_and_double_release_are_safe(tmp_path):
