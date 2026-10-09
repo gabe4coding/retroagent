@@ -35,6 +35,14 @@ def test_the_first_sync_line_comes_before_the_kb_line_while_the_backfill_is_pend
     assert brief.build(tmp_path, str(tmp_path)) == brief.KB_LINE
 
 
+def test_a_plugin_that_claude_code_loads_at_another_version_adds_one_line_before_the_kb_line(tmp_path):
+    text = brief.build(tmp_path, str(tmp_path), first_sync_pending=True, plugin_drift=("0.4.1", "0.11.0"))
+    assert text.splitlines() == [brief.FIRST_SYNC_LINE, brief.plugin_line(("0.4.1", "0.11.0")), brief.KB_LINE]
+    line = brief.plugin_line(("0.4.1", "0.11.0"))
+    assert "0.4.1" in line and "0.11.0" in line and "`kb update`" in line
+    assert brief.plugin_line(()) == ""
+
+
 def test_page_pointer_only(tmp_path):
     write_page(tmp_path, "project", "demo", body=BODY)
     assert brief.build(tmp_path, "/work/demo") == (

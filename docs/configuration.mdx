@@ -15,7 +15,7 @@ The config is in `~/.config/retroagent/config.json`. If this file does not exist
 | `host` | short hostname | The name of this machine. It must be unique per machine. See [Installation](./installation.mdx#one-host-name-per-machine). |
 | `auto_sync` | `true` when missing, `install.sh` writes `false` | If `true`, the SessionStart hook syncs. Set it with `kb enable` / `kb disable`. |
 | `auto_sync_pending` | `false`, `install.sh` writes `true` on a new config | If `true`, the first full `kb backfill` sets `auto_sync` to `true`. Until then, the SessionStart hook runs `kb backfill`. `kb enable` and `kb disable` remove the key. |
-| `auto_update` | `false` | If `true`, `kb sync --auto` pulls the code clone one time each day. Set it with `kb enable updates`. |
+| `auto_update` | `false` | If `true`, `kb sync --auto` pulls the code clone one time each day. It also refreshes the plugins when Claude Code loads another version than the code clone. Set it with `kb enable updates`. |
 | `embed` | `false` | Turns on [semantic search](./commands.mdx#semantic-search). Set it with `kb embed` / `kb embed --off`. |
 | `embed_url` | empty | An OpenAI-compatible `/v1/embeddings` server that `kb` uses instead of its own server. Keep it on localhost, because it gets the text of your sessions. |
 | `embed_sync_seconds` | `60` | The maximum time that a sync spends to embed new items. |
