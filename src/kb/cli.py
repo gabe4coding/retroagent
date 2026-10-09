@@ -10,7 +10,8 @@
   kb brief             what a new session in this project sees (the SessionStart hook runs it; off: "brief": false)
   kb suggestions       the changes weekly retros suggested, the decisions on them (pages/decisions.json), and
                        whether the error each one should remove still happens
-  kb decide            the suggestions that wait for your answer: accept or reject each one (in your own terminal)
+  kb decide            the retro suggestions and memory fixes that wait for your answer: accept or reject each one
+                       (in your own terminal)
   kb stats [report]    ready-made analytics (errors: tool errors that came back); kb sql "<SELECT …>" for custom ones
   kb sync | backfill | status | reindex   maintenance
   kb embed             turn on semantic search: kb installs and runs a local embedding model (--status, --off)
@@ -54,6 +55,7 @@ MEMORY_HITS = 3                  # memories listed after the pages, before the s
 _SHOW_FILES = 15                 # files per session
 _GREP_MATCHES = 5                # matched turns shown
 _SUGGESTION_CHARS = 200          # suggestion text cut
+_DECIDE_DETAIL_LINES = 30        # lines of a memory fix's diff that `kb decide` prints
 _QUARANTINE_SHOWN = 5            # quarantined files listed
 
 
@@ -535,22 +537,49 @@ def cmd_suggestions(args, cfg) -> int:
     return 0
 
 
+def _decide_rows(cfg, ids: list) -> list:
+    """One dict per waiting question, suggestions first: id, kind (suggestion or memory), title, detail, sources;
+    a suggestion keeps every field of kb.ledger.report()."""
+    from kb import decide, ledger, memedits
+    wanted = set(ids)
+    rows = [{**r, "kind": "suggestion", "title": (r["category"] + " · " if r["category"] else "") + r["text"],
+             "detail": r["verdict"]}
+            for r in (_suggestion_rows(cfg, ledger.load(cfg.root)) if wanted else []) if r["id"] in wanted]
+    for eid, e in decide.memory_fixes(cfg.root, cfg.host):
+        if eid in wanted:
+            rows.append({"id": eid, "kind": "memory", "state": "proposed", "title": memedits.title(e),
+                         "detail": memedits.detail(cfg.root, e), "sources": e.get("sources", []), "ref": e["ref"],
+                         "change": e["kind"]})
+    return rows
+
+
 def cmd_decide(args, cfg) -> int:
-    """The suggestions that wait for the owner (kb.decide), or record an answer. accept and reject need a terminal:
-    only a person answers, never an agent in a session."""
-    from kb import decide, ledger
+    """The questions that wait for the owner (kb.decide), or record an answer. accept and reject need a terminal or
+    --yes: only a person answers, never an agent in a session (the PreToolUse hook blocks an agent's call)."""
+    from kb import decide, memedits
     if args.answer in ("accept", "reject"):
         if not args.id:
             print(f"usage: kb decide {args.answer} <id> [--note TEXT]")
             return 2
-        if not sys.stdin.isatty():
+        if not (args.yes or sys.stdin.isatty()):
             print(f"kb decide {args.answer}: runs only in your own terminal. An agent never answers for you.")
             return 2
         state = "accepted" if args.answer == "accept" else "rejected"
+        if memedits.is_id(args.id):
+            entry = dict(decide.memory_fixes(cfg.root, cfg.host)).get(args.id)
+            if entry is None:
+                print(f"{args.id}: does not wait on this machine (answered, another host's, or its memory changed)")
+                return 2
+            if state == "accepted":
+                try:
+                    print(memedits.apply(cfg, args.id, entry))
+                except (memedits.ApplyError, OSError) as e:
+                    print(f"{args.id}: not applied, nothing changed: {e}")
+                    return 2
         decide.answer(cfg.root, cfg.kb_dir, cfg.host, args.id, state, args.note or "")
-        print(f"{args.id}: {state}. The next sync pushes it; `kb suggestions --all` shows the decision.")
+        print(f"{args.id}: {state}. The next sync pushes it.")
         return 0
-    ids = decide.waiting(cfg.root)
+    ids = decide.all_waiting(cfg.root, cfg.host)
     if args.answer == "later":
         if not ids:
             print("nothing waits for you")
@@ -558,15 +587,25 @@ def cmd_decide(args, cfg) -> int:
         until = decide.later(cfg.kb_dir, ids, args.days)
         print(f"new sessions stop asking about these {len(ids)} until {until}, or until a new one arrives")
         return 0
-    rows = [r for r in _suggestion_rows(cfg, ledger.load(cfg.root)) if r["id"] in set(ids)] if ids else []
+    rows = _decide_rows(cfg, ids) if ids else []
     if args.json:
-        print(json.dumps(rows, ensure_ascii=False))
+        print(json.dumps({"items": rows, "hidden_until": decide.hidden_until(cfg.kb_dir, ids) if ids else ""},
+                         ensure_ascii=False))
         return 0
     if not rows:
         print("nothing waits for you")
         return 0
     for r in rows:
-        _print_suggestion(r)
+        if r["kind"] == "suggestion":
+            _print_suggestion(r)
+            continue
+        src = f" ({', '.join(r['sources'])})" if r["sources"] else ""
+        print(f"{r['id']}  memory    {r['title'][:_SUGGESTION_CHARS]}{src}")
+        lines = r["detail"].splitlines()
+        for line in lines[:_DECIDE_DETAIL_LINES]:
+            print("    " + line)
+        if len(lines) > _DECIDE_DETAIL_LINES:
+            print(f"    … {len(lines) - _DECIDE_DETAIL_LINES} more lines (kb decide --json shows all)")
     print(f"\n{len(rows)} wait for you. Answer one: kb decide accept|reject <id> [--note TEXT]")
     until = decide.hidden_until(cfg.kb_dir, ids)
     print(f"New sessions stop asking until {until}." if until else
@@ -584,7 +623,8 @@ def cmd_brief(args, cfg) -> int:
                 return 0
             event = json.loads(sys.stdin.read() or "{}")
             cwd = event.get("cwd") if isinstance(event, dict) and isinstance(event.get("cwd"), str) else cwd
-        text = brief.build(cfg.root, cwd, args.project or "", first_sync_pending=cfg.auto_sync_pending and not cfg.auto_sync)
+        text = brief.build(cfg.root, cwd, args.project or "", first_sync_pending=cfg.auto_sync_pending and not cfg.auto_sync,
+                           host=cfg.host)
     except Exception:  # noqa: BLE001 - a brief is never worth breaking the start of a session
         if not args.hook:
             raise
@@ -1117,13 +1157,16 @@ def build_parser() -> argparse.ArgumentParser:
     sg.add_argument("--json", action="store_true")
     sg.set_defaults(func=cmd_suggestions)
 
-    de = sub.add_parser("decide", help="the retro suggestions that wait for your answer; accept or reject one (only "
-                        "in your own terminal); later: new sessions stop asking for a while")
+    de = sub.add_parser("decide", help="the retro suggestions and memory fixes that wait for your answer; accept or "
+                        "reject one (only in your own terminal); later: new sessions stop asking for a while")
     de.add_argument("answer", nargs="?", choices=["accept", "reject", "later"])
-    de.add_argument("id", nargs="?", help="accept, reject: the suggestion id, like s-1a2b3c")
+    de.add_argument("id", nargs="?", help="accept, reject: the id, like s-1a2b3c (a suggestion) or m-1a2b3c (a memory "
+                                          "fix: accept changes this machine's memory file)")
+    de.add_argument("--yes", action="store_true", help="accept, reject: without a terminal, for the decide "
+                                                        "mod (an agent's call is blocked by the PreToolUse hook)")
     de.add_argument("--note", help="accept, reject: why, in one line")
     de.add_argument("--days", type=int, default=1, help="later: how many days (default 1)")
-    de.add_argument("--json", action="store_true", help="the list as JSON")
+    de.add_argument("--json", action="store_true", help="the list as JSON: {items, hidden_until} (the mod reads it)")
     de.set_defaults(func=cmd_decide)
 
     r = sub.add_parser("recent", help="latest sessions (no subagents)")

@@ -33,7 +33,7 @@ import os
 import re
 from pathlib import Path
 
-from kb import freshness, gitops, ledger
+from kb import freshness, gitops, ledger, memedits
 from kb.index import Index, connect_readonly, parse_memory
 from kb.pages import WEEK_RE, page_rel, parse_page, section, set_fields
 from kb.redact import redact
@@ -636,11 +636,16 @@ def _plan_retros(root: Path, top: list, ready: dict, state: dict, settings, tz, 
     pend = state.get("pending") if isinstance(state.get("pending"), dict) else {}
     todo = {w for w in _strings(pend.get("weeks")) if WEEK_RE.match(w)}
     late = dt.timedelta(days=settings["retro_late_days"])
+    unnumbered = set()                   # retros whose suggestions have no id (written before kb.ledger): once more
     for w in closed_weeks(now, tz, settings):
         rel = page_rel("retro", w)
         if not (root / rel).is_file():
             todo.add(w)
-        elif now - week_bounds(w, tz)[1] <= late:
+            continue
+        if _unnumbered_suggestions(root / rel):
+            unnumbered.add(w)
+            todo.add(w)
+        if now - week_bounds(w, tz)[1] <= late:
             new = {r["short"] for r in ready.values() if week_of(r["started"], tz) == w}
             if new - _sources(root / rel) or (grown or {}).get(rel):
                 todo.add(w)
@@ -656,7 +661,19 @@ def _plan_retros(root: Path, top: list, ready: dict, state: dict, settings, tz, 
                       "sessions": [r["short"] for r in sorted(weeks[w], key=lambda r: (r["started"] or "", r["id"]))]})
         if (grown or {}).get(rel):
             items[-1]["grown"] = sorted((grown or {})[rel])
+        if w in unnumbered:
+            items[-1]["review_suggestions"] = True
     return items, order[len(batch):]
+
+
+def _unnumbered_suggestions(path: Path) -> bool:
+    """True when a retro has "Suggested changes" bullets without an id: written before the ledger (kb.ledger), so
+    `kb suggestions` and `kb decide` do not know them."""
+    try:
+        body = parse_page(path.read_bytes().decode("utf-8", errors="replace"))[1]
+    except (OSError, ValueError):
+        return False
+    return any(not it["id"] for it in ledger.items(body))
 
 
 def due(plan: dict, settings) -> dict:
@@ -841,14 +858,16 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
     changes = _status(root)
     index_path = Path(index_path) if index_path else root / ".kb" / "index.sqlite"
     known = ledger.load(root)
-    decided = _check_changes(root, plan, settings, skip, changes, known, index_path)
+    decided, edits = _check_changes(root, plan, settings, skip, changes, known, index_path, now)
 
-    written = {rel for _, rel in changes if rel != ledger.DECISIONS_REL}
+    written = {rel for _, rel in changes if rel not in (ledger.DECISIONS_REL, memedits.REL)}
     suggestions, undated, moved = _rewrite_written_pages(root, written, settings, now, known, index_path)
     if suggestions != known:
         ledger.save(root, suggestions)
     if decided is not None:
         ledger.save_decisions(root, decided)
+    if edits is not None:
+        memedits.save(root, edits)
     pending, returned = _next_pending(plan, written, skip)
     old = load_state(root) or {}
     reviewed = set(_strings(old.get("threads_reviewed")))        # every written project page had its threads checked
@@ -858,10 +877,13 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
              "pending": pending, "waiting": plan["waiting"], "threads_reviewed": sorted(reviewed)}
     result = {"branch": branch, "projects": sorted(r for r in written if r.startswith("pages/projects/")),
               "retros": sorted(r for r in written if r.startswith("pages/retro/")), "returned": returned,
-              "undated": undated, "moved": moved, "decisions": decided is not None, "committed": False, "push": ""}
+              "undated": undated, "moved": moved, "decisions": decided is not None,
+              "memory_fixes": sorted(set(edits or {}) - set(_committed_json(root, memedits.REL) or {})),
+              "committed": False, "push": ""}
     nothing_changed = not (
         written                                       # pages were written
         or decided is not None                        # pages/decisions.json changed
+        or edits is not None                          # pages/memory-edits.json changed
         or plan["projects"] or plan["retros"]         # the plan had pages to write (even if they were skipped)
         or pending != old.get("pending")              # the pending list changed
         or plan["waiting"] != old.get("waiting")      # the sessions that wait for a summary changed
@@ -875,7 +897,7 @@ def finish(root, settings, now=None, push: bool = True, skip=(), index_path=None
                  .encode("utf-8"))
     _git(root, "add", "-A", "--", "pages/")
     projects, retros = len(result["projects"]), len(result["retros"])
-    more = ", decisions" if decided is not None else ""
+    more = (", decisions" if decided is not None else "") + (", memory fixes" if edits is not None else "")
     _git(root, "commit", "--quiet", "-m",
          f"pages: {projects} project page{'s' * (projects != 1)}, {retros} retro{'s' * (retros != 1)}{more} [skip ci]")
     result["committed"] = True
@@ -902,15 +924,16 @@ def _load_checked_plan(root: Path, settings, push: bool):
     return plan, branch
 
 
-def _check_changes(root: Path, plan: dict, settings, skip, changes: list, known: dict, index_path: Path):
-    """The decisions to write (None when decisions.json did not change). Raises PagesError with every problem found."""
+def _check_changes(root: Path, plan: dict, settings, skip, changes: list, known: dict, index_path: Path, now):
+    """(decisions, memory fixes) to write, each None when its file did not change. Raises PagesError with every
+    problem found."""
     problems = []
     for code, rel in changes:
         if not rel.startswith("pages/"):
             problems.append(f"{rel}: outside pages/")
         elif rel in (CONFIG_REL, STATE_REL, ledger.SUGGESTIONS_REL):
             problems.append(f"{rel}: only {'the owner' if rel == CONFIG_REL else '`kb pages finish`'} writes it")
-        elif rel == ledger.DECISIONS_REL:
+        elif rel in (ledger.DECISIONS_REL, memedits.REL):
             if "D" in code:
                 problems.append(f"{rel}: the routine never deletes it")
         elif "D" in code:
@@ -919,16 +942,19 @@ def _check_changes(root: Path, plan: dict, settings, skip, changes: list, known:
             problems.append(f"{rel}: only .md pages may be written")
         else:
             problems += check_page(root, rel, settings)
-    decided = None
+    decided = edits = None
     if not problems:
         problems += _check_suggestions(root, sorted(rel for _, rel in changes), known, index_path)
         if any(rel == ledger.DECISIONS_REL for _, rel in changes):
             more, decided = _check_decisions(root, known, index_path)
             problems += more
+        if any(rel == memedits.REL for _, rel in changes):
+            more, edits = _check_memory_edits(root, index_path, now)
+            problems += more
     problems += _check_skips(root, plan, skip, {rel for _, rel in changes})
     if problems:
         raise PagesError("refusing to commit:\n  " + "\n  ".join(problems))
-    return decided
+    return decided, edits
 
 
 def _rewrite_written_pages(root: Path, written: set, settings, now, known: dict, index_path: Path):
@@ -981,11 +1007,15 @@ def _next_pending(plan: dict, written: set, skip):
 
 def _check_skips(root: Path, plan: dict, skip, changed: set) -> list:
     """A page to update may be skipped only when it already covers its planned sessions: each one cited, none grown
-    (it went on after the page was written). Memories alone, or a page to create, may be skipped."""
+    (it went on after the page was written). Memories alone, or a page to create, may be skipped. A retro planned for
+    its suggestions without ids (review_suggestions) may not be skipped."""
     out = []
     for item in plan["projects"] + plan["retros"]:
         name = item.get("name") or item.get("week")
         if name not in skip or item["action"] != "update" or item["page"] in changed:
+            continue
+        if item.get("review_suggestions"):
+            out.append(f"{item['page']}: cannot be skipped, its suggested changes have no ids; write them with [new]")
             continue
         cited = _sources(root / item["page"])
         new = [s for s in item["sessions"] if s not in cited]
@@ -1035,6 +1065,35 @@ def _check_decisions(root: Path, known: dict, index_path: Path):
     idx = Index(index_path)
     try:
         return ledger.check_decisions(old, new, known, freshness.index_lookup(idx))
+    finally:
+        idx.close()
+
+
+def _committed_json(root: Path, rel: str):
+    """The JSON of rel at HEAD, or None when it is missing or broken."""
+    shown = _git(root, "show", f"HEAD:{rel}", check=False)
+    try:
+        return json.loads(shown.stdout) if shown.returncode == 0 else None
+    except ValueError:
+        return None
+
+
+def _check_memory_edits(root: Path, index_path: Path, now):
+    """(problems, the proposals to write) for the routine's change of pages/memory-edits.json (kb.memedits)."""
+    rel = memedits.REL
+    text = (root / rel).read_bytes().decode("utf-8", errors="replace")
+    found = redact(text)[1]
+    if found:
+        return [f"{rel}: looks like it holds a secret ({', '.join(sorted(found))}); remove it"], None
+    try:
+        new = json.loads(text)
+    except ValueError as e:
+        return [f"{rel}: not valid JSON ({e})"], None
+    if not index_path.is_file():
+        return [f"{rel}: no index to check the memories; run `kb pages plan` first"], None
+    idx = Index(index_path)
+    try:
+        return memedits.check(root, _committed_json(root, rel), new, idx, now.astimezone(_UTC).date().isoformat())
     finally:
         idx.close()
 

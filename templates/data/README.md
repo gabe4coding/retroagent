@@ -3,8 +3,8 @@
 The private data of [retroagent](https://github.com/gabe4coding/retroagent): Claude Code and Codex sessions and memory
 files synced from every machine, and the project pages and weekly retros the cloud routine writes from them.
 
-Keep this repo **private**. The sync redacts secrets and scans every commit it makes with gitleaks, but the sessions still hold
-your prompts, file paths and the output of your tools.
+Keep this repo **private**. The sync redacts secrets and scans every commit it makes with gitleaks, but the
+sessions still hold your prompts, file paths and the output of your tools.
 
 - `sessions/<host>/`, `raw/<host>/`, `catalog/<host>/`, `memories/<host>/` — written by `kb sync` on the machine that
   owns `<host>`. Never edit them by hand.

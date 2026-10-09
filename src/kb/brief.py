@@ -58,11 +58,12 @@ def accepted(root: Path, project: str) -> list:
     return sorted(rows, key=lambda r: (r[1]["weeks"][0], r[0]))
 
 
-def build(root, cwd: str, project: str = "", first_sync_pending: bool = False) -> str:
+def build(root, cwd: str, project: str = "", first_sync_pending: bool = False, host: str = "") -> str:
     """The brief for a session in `cwd` (or for `project`): the project part, FIRST_SYNC_LINE while the first full
-    backfill is not done, the line about the questions that wait for the owner, then KB_LINE."""
+    backfill is not done, the line about the questions that wait for the owner (with the memory fixes of `host`), then
+    KB_LINE."""
     parts = [_project_part(Path(root), cwd, project), FIRST_SYNC_LINE if first_sync_pending else "",
-             decide.brief_line(root, Path(root) / ".kb"), KB_LINE]
+             decide.brief_line(root, Path(root) / ".kb", host), KB_LINE]
     return "\n".join(p for p in parts if p)
 
 
