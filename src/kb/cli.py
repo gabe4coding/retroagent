@@ -617,6 +617,7 @@ def cmd_brief(args, cfg) -> int:
     """What a new session sees (kb.brief). --hook: the SessionStart hook output, nothing with "brief": false; never fails."""
     from kb import brief
     try:
+        from kb.setup import plugin_drift
         cwd = os.getcwd()
         if args.hook:
             if not cfg.brief:
@@ -624,7 +625,7 @@ def cmd_brief(args, cfg) -> int:
             event = json.loads(sys.stdin.read() or "{}")
             cwd = event.get("cwd") if isinstance(event, dict) and isinstance(event.get("cwd"), str) else cwd
         text = brief.build(cfg.root, cwd, args.project or "", first_sync_pending=cfg.auto_sync_pending and not cfg.auto_sync,
-                           host=cfg.host)
+                           host=cfg.host, plugin_drift=plugin_drift())
     except Exception:  # noqa: BLE001 - a brief is never worth breaking the start of a session
         if not args.hook:
             raise
@@ -791,6 +792,13 @@ def cmd_status(args, cfg) -> int:
         print("auto sync: off (the hook does nothing; run: kb enable)")
     print("auto update: on (the code clone is pulled once a day)" if cfg.auto_update
           else "auto update: off (run: kb update; or kb enable updates)")
+    from kb.setup import installed_plugin_version, plugin_drift
+    drift = plugin_drift()
+    if drift:
+        print(f"plugin: WARNING Claude Code loads retroagent {drift[0]}, the code clone has {drift[1]}: the new hooks "
+              "and skills are off (run: kb update, then start a new session)")
+    elif installed_plugin_version():
+        print(f"plugin: Claude Code loads retroagent {installed_plugin_version()}")
     print(f"last sync: {st.last_ok or 'never'}" + (f" · {st.last_result}" if st.last_result else ""))
     if st.last_error:
         print(f"last error: {st.last_error}")

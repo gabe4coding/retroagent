@@ -33,7 +33,7 @@ id. A prefix must have 4 characters at least.
 | --- | --- |
 | `kb sync --now` | Sync the local sessions now, then commit and push. For a faster sync, add `--no-summaries`. |
 | `kb backfill` | Process every pending session now. `--summaries` also writes every missing summary. `--recent DAYS` processes only the sessions of the last `DAYS` days and does not push: search works before the long first push. |
-| `kb status` | The last sync, the pending sessions, the summary backlog, gitleaks, the cloud import (when it is on) and the last run of the pages routine. |
+| `kb status` | The last sync, the pending sessions, the summary backlog, gitleaks, the cloud import (when it is on), the last run of the pages routine and the plugin version that Claude Code loads. |
 | `kb reindex` | Build the local index again. While a sync runs, `kb reindex` only updates the index. |
 | `kb embed` | Enable [semantic search](#semantic-search) and embed the new items. Other flags: `--status`, `--stop`, `--off`, `--remove`, `--rebuild`. `--install` only downloads the files and enables the feature (for a cloud setup script). `--quiet` imports and embeds the missing items without output, and only when the feature is on. |
 | `kb enable [updates]` | Enable automatic syncs (or daily code updates). |
@@ -153,7 +153,8 @@ On purpose, the brief holds no facts from the page. These facts can be out of da
 The second part lists only the suggestions with an `accepted` decision whose `repo` is this project (see
 [Suggested changes](./pages-routine.mdx#suggested-changes-and-whether-they-worked)). The third part is there only when
 retro suggestions wait for your answer. The agent then tells you about them. `kb decide later` removes this part for
-one day, or until a new suggestion arrives. The last line is always there,
+one day, or until a new suggestion arrives. One more line is there only when Claude Code loads another retroagent
+version than the code clone. The agent then asks you to run `kb update`. The last line is always there,
 also when the project has no page and no accepted suggestion. A skill starts only when the agent thinks of it. This
 line tells the agent that the past sessions are there to search. The full brief stays under 1,200 characters. It reads a few small files of the
 data clone and never the index. Thus it adds no wait.

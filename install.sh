@@ -233,13 +233,17 @@ for m in rows if isinstance(rows, list) else []:
          say "claude: replaced the retroagent marketplace ($SRC) with $HERE"
        fi ;;
   esac
-  if claude plugin marketplace add "$HERE" >/dev/null 2>&1 || claude plugin marketplace update retroagent >/dev/null 2>&1; then
+  # `marketplace add` and `plugin install` exit 0 and change nothing when retroagent is already there. Sessions load
+  # the plugin from Claude Code's cache, and only `plugin update` copies a new version into it: always run it.
+  claude plugin marketplace add "$HERE" >/dev/null 2>&1 || true
+  if claude plugin marketplace update retroagent >/dev/null 2>&1; then
     say "claude: marketplace retroagent ready"
   else
     say "claude: WARNING could not add the marketplace; run: claude plugin marketplace add $HERE"
   fi
-  if claude plugin install retroagent@retroagent >/dev/null 2>&1 || claude plugin update retroagent@retroagent >/dev/null 2>&1; then
-    say "claude: plugin retroagent@retroagent installed"
+  claude plugin install retroagent@retroagent >/dev/null 2>&1 || true
+  if claude plugin update retroagent@retroagent >/dev/null 2>&1; then
+    say "claude: plugin retroagent@retroagent installed (new sessions load it)"
   else
     say "claude: WARNING could not install; run: claude plugin install retroagent@retroagent"
   fi

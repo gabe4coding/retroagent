@@ -362,6 +362,19 @@ def clone(remote, dest):
     return Path(dest)
 
 
+def write_installed_plugins(home, version, plugin="retroagent@retroagent", scope="user"):
+    """~/.claude/plugins/installed_plugins.json as Claude Code writes it: one install record of `plugin`, whose cache
+    copy (installPath) is what sessions load. Replaces the whole file."""
+    home = Path(home)
+    name, marketplace = plugin.split("@")
+    path = home / ".claude" / "plugins" / "installed_plugins.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 2, "plugins": {plugin: [{
+        "scope": scope, "installPath": str(path.parent / "cache" / marketplace / name / version), "version": version,
+        "installedAt": "2026-10-07T10:35:01.979Z", "lastUpdated": "2026-10-07T10:56:08.955Z"}]}}))
+    return path
+
+
 def make_config(root, host, claude_dir, codex_sessions, codex_home, **kw):
     from kb.config import Config
     return Config(root=Path(root), host=host, claude_dir=Path(claude_dir), codex_dirs=[Path(codex_sessions)],
