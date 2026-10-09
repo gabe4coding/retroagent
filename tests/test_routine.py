@@ -695,6 +695,27 @@ def test_finish_records_the_suggestions_of_a_retro(tmp_path):
         routine.finish(root, settings(), now=NOW, push=False)
 
 
+def test_a_retro_whose_suggestions_have_no_ids_is_planned_once_more(tmp_path):
+    """Retros written before the ledger have "Suggested changes" without ids: kb decide cannot ask about them."""
+    from kb import ledger
+    root = repo(tmp_path / "kb")
+    built(root)
+    old = "# Week 2026-W40\n\n## What happened\n- work (a0000002)\n\n## Suggested changes\n- wait for CI with a watch (a0000002)\n"
+    write_page(root, "retro", "2026-W40", body=old, sources=["a0000002"], sessions=1)
+    commit(root, "pages: an old retro")
+    p = plan(root)
+    (w40,) = [r for r in p["retros"] if r["week"] == "2026-W40"]
+    assert w40["action"] == "update" and w40["review_suggestions"]
+    assert not any(r.get("review_suggestions") for r in p["retros"] if r["week"] != "2026-W40")
+    with pytest.raises(PagesError, match="its suggested changes have no ids"):
+        routine.finish(root, settings(), now=NOW, push=False, skip=["2026-W40"])
+    write_page(root, "retro", "2026-W40", body=old.replace("- wait", "- [new] Rules · wait"), sources=["a0000002"],
+               sessions=1)
+    assert routine.finish(root, settings(), now=NOW, push=False)["committed"]
+    assert [e["text"] for e in ledger.load(root).values()] == ["wait for CI with a watch"]
+    assert not any(r["week"] == "2026-W40" for r in plan(root)["retros"])        # numbered now: not again
+
+
 def test_finish_records_the_memory_fixes_the_routine_proposes(tmp_path):
     from kb import memedits
     root = repo(tmp_path / "kb")
