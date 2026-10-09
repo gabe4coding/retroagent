@@ -37,15 +37,9 @@ function today(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
-// kb from the PATH; when it does not start there (the PATH of the app), the link install.sh makes
-async function kb($: EngineInterface, args: string[]): Promise<Ran> {
-  try {
-    return await $.process.run(['kb', ...args], { timeoutMs: TIMEOUT_MS })
-  } catch (first) {
-    const home = await $.env.get('HOME')
-    if (!home) throw first
-    return await $.process.run([`${home}/.local/bin/kb`, ...args], { timeoutMs: TIMEOUT_MS })
-  }
+// the plugin's own bin/kb, as the shell hooks run it: the PATH of the app can lack kb
+function kb($: EngineInterface, args: string[]): Promise<Ran> {
+  return $.process.run([`${$.plugin.root}/bin/kb`, ...args], { timeoutMs: TIMEOUT_MS })
 }
 
 async function refresh($: EngineInterface): Promise<void> {

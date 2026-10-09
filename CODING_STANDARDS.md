@@ -34,8 +34,6 @@ enforce; the others rely on discipline.
 - Detail a skill needs only sometimes goes in `skills/<name>/references/<file>.md`, plain Markdown (Codex reads the
   same folder). `SKILL.md` names each file as `references/<file>.md` and says when to read it; a file it does not
   name is an orphan. `[test: tests/test_skills.py]`
-- A new skill folder must be added to the list in `tests/test_skills.py`, so it gets the same checks.
-  `[test: tests/test_skills.py]`
 - `skills/setup/SKILL.md` names only `kb` and `install.sh` commands that exist: an agent runs them as written.
   `[test: tests/test_skills.py checks a fixed list]`
 
