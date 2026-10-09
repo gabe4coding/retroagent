@@ -352,6 +352,26 @@ def plugin_version(code: Path | None = None) -> str:
         return ""
 
 
+def installed_plugin_version() -> str:
+    """The retroagent version of Claude Code's user install: its cache copy is what sessions load, until a
+    `claude plugin update` copies a new one. "" when it is not installed or the file is unreadable."""
+    path = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8")).get("plugins", {}).get("retroagent@retroagent")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and row.get("scope") == "user":
+            return str(row.get("version") or "")
+    return ""
+
+
+def plugin_drift() -> tuple:
+    """(installed, clone) when Claude Code loads another retroagent version than the code clone's, else ()."""
+    installed, clone = installed_plugin_version(), plugin_version()
+    return (installed, clone) if installed and clone and installed != clone else ()
+
+
 def refresh_plugins() -> list:
     """Load the new skills and hook into Claude Code and Codex (best effort). Returns what ran and failed."""
     failed = []
@@ -376,7 +396,9 @@ def refresh_plugins() -> list:
 
 def auto_update(cfg, now: float | None = None) -> str:
     """`kb sync --auto` with auto_update on: at most once a day, fast-forward the code clone this runs from, when it
-    sits clean on its default branch. A new plugin version also refreshes the plugins. One line for the log, or ""."""
+    sits clean on its default branch. Then refresh the plugins when the pull brought a new plugin version, or when
+    Claude Code still loads another version than the clone's (`kb update` pulled it, or a refresh failed): a refresh
+    that fails is tried again the next day. One line for the log, or ""."""
     import time
     if not (CODE_ROOT / ".git").exists():
         return ""
@@ -398,15 +420,19 @@ def auto_update(cfg, now: float | None = None) -> str:
         return f"code update skipped: {CODE_ROOT} has local changes"
     before, version = gitops.git(CODE_ROOT, "rev-parse", "HEAD").stdout.strip(), plugin_version()
     p = gitops.git(CODE_ROOT, "pull", "--ff-only", "--quiet", check=False, timeout=gitops.PULL_TIMEOUT)
-    if p.returncode != 0:
-        return f"code update failed: {' '.join((p.stderr or p.stdout).split())[:300]}"
     after = gitops.git(CODE_ROOT, "rev-parse", "HEAD").stdout.strip()
-    if after == before:
-        return ""
-    line = f"code updated {before[:7]}..{after[:7]}"
-    if plugin_version() != version:
+    if p.returncode != 0:
+        line = f"code update failed: {' '.join((p.stderr or p.stdout).split())[:300]}"
+    else:
+        line = f"code updated {before[:7]}..{after[:7]}" if after != before else ""
+    drift = plugin_drift()
+    if drift or plugin_version() != version:
         failed = refresh_plugins()
-        line += f", plugin {version} -> {plugin_version()}" + (f" (failed: {'; '.join(failed)})" if failed else "")
+        if not failed and plugin_drift():           # `claude plugin update` exited 0 but did not copy the new version
+            failed = [f"Claude Code still loads {installed_plugin_version()}"]
+        refresh = f"plugin {drift[0] if drift else version} -> {plugin_version()}" \
+                  + (f" (failed: {'; '.join(failed)})" if failed else "")
+        line = f"{line}, {refresh}" if line else refresh
     return line
 
 
