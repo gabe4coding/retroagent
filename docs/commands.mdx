@@ -172,7 +172,7 @@ question has an **Accept** and a **Reject** button. **Later** hides the band for
 arrives. The `/decide` command opens the pane too. Codex has no mods, so in Codex you answer with `kb decide`.
 
 The mod runs `kb decide`, so it has the same rules. A memory fix shows only on the machine that owns the memory file.
-If `kb` is not on the `PATH` of Claude Code, the mod uses `~/.local/bin/kb`, which `install.sh` makes.
+The mod runs the `bin/kb` of the plugin, as the hooks do, so it does not need `kb` on the `PATH`.
 
 Mods are an early access feature of Claude Code, and they can be off for your account. If the mod does not load, the
 brief still tells the agent about the waiting questions. The agent then tells you, and you answer with `kb decide` in
