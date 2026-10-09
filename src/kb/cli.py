@@ -6,7 +6,7 @@
   kb recent            latest sessions
   kb summary <id>      summary, decisions, outcome, files, PRs, subagents of one session
   kb show <id>         only the part of a session you need (--turn N --around K, --grep PATTERN)
-  kb hint --event error  a past fix for a failed tool call (the PostToolUseFailure hook runs it; off: "hints": false)
+  kb hint              a past fix for a failed tool call (the PostToolUseFailure hook runs it; off: "hints": false)
   kb brief             what a new session in this project sees (the SessionStart hook runs it; off: "brief": false)
   kb suggestions       the changes weekly retros suggested, the decisions on them (pages/decisions.json), and
                        whether the error each one should remove still happens
@@ -537,19 +537,17 @@ def cmd_suggestions(args, cfg) -> int:
     return 0
 
 
-def _decide_rows(cfg, ids: list) -> list:
+def _decide_rows(cfg, fixes: list) -> list:
     """One dict per waiting question, suggestions first: id, kind (suggestion or memory), title, detail, sources;
-    a suggestion keeps every field of kb.ledger.report()."""
-    from kb import decide, ledger, memedits
-    wanted = set(ids)
+    a suggestion keeps every field of kb.ledger.report(). fixes: the memory fixes of kb.decide.questions()."""
+    from kb import ledger, memedits
     rows = [{**r, "kind": "suggestion", "title": (r["category"] + " · " if r["category"] else "") + r["text"],
              "detail": r["verdict"]}
-            for r in (_suggestion_rows(cfg, ledger.load(cfg.root)) if wanted else []) if r["id"] in wanted]
-    for eid, e in decide.memory_fixes(cfg.root, cfg.host):
-        if eid in wanted:
-            rows.append({"id": eid, "kind": "memory", "state": "proposed", "title": memedits.title(e),
-                         "detail": memedits.detail(cfg.root, e), "sources": e.get("sources", []), "ref": e["ref"],
-                         "change": e["kind"]})
+            for r in _suggestion_rows(cfg, ledger.load(cfg.root)) if r["state"] == "proposed"]
+    for eid, e in fixes:
+        rows.append({"id": eid, "kind": "memory", "state": "proposed", "title": memedits.title(e),
+                     "detail": memedits.detail(cfg.root, e), "sources": e.get("sources", []), "ref": e["ref"],
+                     "change": e["kind"]})
     return rows
 
 
@@ -566,7 +564,7 @@ def cmd_decide(args, cfg) -> int:
             return 2
         state = "accepted" if args.answer == "accept" else "rejected"
         if memedits.is_id(args.id):
-            entry = dict(decide.memory_fixes(cfg.root, cfg.host)).get(args.id)
+            entry = dict(memedits.waiting(cfg.root, cfg.host)).get(args.id)
             if entry is None:
                 print(f"{args.id}: does not wait on this machine (answered, another host's, or its memory changed)")
                 return 2
@@ -579,7 +577,8 @@ def cmd_decide(args, cfg) -> int:
         decide.answer(cfg.root, cfg.kb_dir, cfg.host, args.id, state, args.note or "")
         print(f"{args.id}: {state}. The next sync pushes it.")
         return 0
-    ids = decide.all_waiting(cfg.root, cfg.host)
+    sids, fixes = decide.questions(cfg.root, cfg.host)
+    ids = sids + [eid for eid, _ in fixes]
     if args.answer == "later":
         if not ids:
             print("nothing waits for you")
@@ -587,7 +586,7 @@ def cmd_decide(args, cfg) -> int:
         until = decide.later(cfg.kb_dir, ids, args.days)
         print(f"new sessions stop asking about these {len(ids)} until {until}, or until a new one arrives")
         return 0
-    rows = _decide_rows(cfg, ids) if ids else []
+    rows = _decide_rows(cfg, fixes) if ids else []
     if args.json:
         print(json.dumps({"items": rows, "hidden_until": decide.hidden_until(cfg.kb_dir, ids) if ids else ""},
                          ensure_ascii=False))
@@ -1197,7 +1196,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     hi = sub.add_parser("hint", help="a past fix for a failed tool call, from the project page (hook event JSON on "
                                      "stdin; prints one line or nothing; needs \"hints\": true in the config)")
-    hi.add_argument("--event", choices=["error"], required=True, help="the kind of event: error (a tool call failed)")
+    # No code reads --event: an older cached bin/kb-hint still passes it.
+    hi.add_argument("--event", help=argparse.SUPPRESS)
     hi.add_argument("--hook", action="store_true", help="print the hook output JSON (additionalContext) instead")
     hi.set_defaults(func=cmd_hint)
 

@@ -18,7 +18,7 @@ stale. N depends on the section (the defaults are below; pages/config.json can c
 sweep() moves the stale bullets to History as:
   - unconfirmed since YYYY-MM-DD (<section>): <text> (<sources · date>)
 
-Nothing here imports the index: `kb hint` reads dates with bullet_date() and is_stale() only.
+Nothing here imports the index: `kb hint` reads its bullets with parse_tail() and their age with is_stale().
 """
 from __future__ import annotations
 

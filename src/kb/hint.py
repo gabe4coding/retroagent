@@ -1,4 +1,4 @@
-"""`kb hint --event error`: when a tool call fails, show one short hint from the past, or nothing.
+"""`kb hint`: when a tool call fails, show one short hint from the past, or nothing.
 
 Terms:
 - bullet: one line of the "Errors seen → fixes" section of the current project's page (pages/projects/<project>.md).
@@ -47,10 +47,6 @@ GATE = re.compile(r"error|fail|denied|blocked|not found|no such|cannot|can't|una
 DENY = re.compile(r"classifier|auto[ -]?mode|permission to use|permission prompt|permission request|requires? approval"
                   r"|approval|user (?:denied|declined|rejected)|doesn't want to proceed|does not want to proceed"
                   r"|denied by (?:the )?(?:user|policy|sandbox|harness)|sandbox|safety|unsafe", re.I)
-_SOURCE = re.compile(r"\s*\(([^()]*)\)\.?\s*$")
-_SHORT = re.compile(r"\b[0-9a-f]{8}\b")
-_MEMORY = re.compile(r"^memory\s+(\S+)")
-_EXIT = re.compile(r"^\s*Exit code:?\s*(-?\d+)")
 EMBED_TIMEOUT = 1.5                     # per call, 2 calls at most: well under the hook timeout of 5 s
 SEEN_DAYS = 7                           # per-session state older than this is removed
 
@@ -79,20 +75,15 @@ def bullets(page_text: str) -> list:
         full = " ".join(line[2:].split())
         if "→" not in full:
             continue
-        text, source = full, ""
-        m = _SOURCE.search(full)
-        if m:
-            ref = m.group(1).strip()
-            mem, shorts = _MEMORY.match(ref), _SHORT.findall(ref)
-            if mem:
-                source = f"kb memory {mem.group(1)}"
-            elif shorts:
-                source = f"kb summary {shorts[0]}"
-            if source:
-                text = full[: m.start()].rstrip()
+        text, ref, content = freshness.parse_tail(full)
+        source = ""
+        if ref:
+            # A memory cited first is the source, else the first session. A memory alone is the source too.
+            memory_first = bool(ref.memories) and content.lstrip().startswith("memory")
+            source = f"kb memory {ref.memories[0]}" if memory_first or not ref.shorts else f"kb summary {ref.shorts[0]}"
         problem = full.split("→", 1)[0].strip()
         out.append(Bullet(text, full, problem, source, hashlib.sha1(full.encode("utf-8")).hexdigest(),
-                          freshness.bullet_date(full)))
+                          ref.date if ref else ""))
     return out
 
 
@@ -151,30 +142,9 @@ def format_hint(b: Bullet) -> str:
 
 def error_text(event: dict) -> str:
     """The error of a failed tool call, as the index keeps it (first 3 lines, redacted, 300 chars), or "" when the
-    event is not a failure. Claude Code sends PostToolUseFailure with `error`. A PostToolUse is a failure only when its
-    response says so: `is_error`/`isError` true, `success` false, a non-zero `exit_code`, or text that starts with
-    "Exit code: N" (Codex's shell format). Plain output is never read as an error."""
+    event has none. Claude Code sends PostToolUseFailure with `error`."""
     err = event.get("error")
-    if isinstance(err, str) and err.strip():
-        return head_lines(err)
-    resp = event.get("tool_response")
-    if isinstance(resp, str):
-        m = _EXIT.match(resp)
-        return head_lines(resp) if m and m.group(1) != "0" else ""
-    if not isinstance(resp, dict):
-        return ""
-    code = resp.get("exit_code", resp.get("exitCode"))
-    code = code if isinstance(code, int) and not isinstance(code, bool) else None
-    if not (resp.get("is_error") is True or resp.get("isError") is True or resp.get("success") is False or code):
-        return ""
-    parts = [f"Exit code {code}" if code else ""]
-    for k in ("error", "stderr", "output", "stdout", "content"):
-        v = resp.get(k)
-        if isinstance(v, list):                     # MCP content: [{"type": "text", "text": "..."}]
-            v = "\n".join(i.get("text", "") for i in v if isinstance(i, dict) and isinstance(i.get("text"), str))
-        if isinstance(v, str) and v.strip():
-            parts.append(v)
-    return head_lines("\n".join(p for p in parts if p))
+    return head_lines(err) if isinstance(err, str) and err.strip() else ""
 
 
 def projects(cwd: str) -> list:
