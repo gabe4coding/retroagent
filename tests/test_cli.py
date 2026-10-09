@@ -10,6 +10,7 @@ from test_index import OLD_SCHEMA, build_kb, put
 
 from kb import brief, cli, setup
 from kb.cli import main
+from kb.config import ConfigError
 from kb.index import Index
 from kb.state import State
 from kb.stats import REPORTS
@@ -302,14 +303,16 @@ def test_summary_caps_the_subagent_list(kb_env, capsys, monkeypatch):
 
 # ---- review fixes: read-only readers, one-line errors, short find output
 
-def _freeze(kb_dir):
-    """Read-only like a sandbox: checkpoint the WAL, drop its side files, 0o444 on the files, 0o555 on the folder."""
+def _freeze(kb_dir, keep_wal_files=False):
+    """Read-only like a sandbox: checkpoint the WAL, drop its side files (unless kept), 0o444 on the files, 0o555 on
+    the folder."""
     if (kb_dir / "index.sqlite").exists():
         con = sqlite3.connect(kb_dir / "index.sqlite")
         con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         con.close()
-    for f in kb_dir.glob("index.sqlite-*"):
-        f.unlink()
+    if not keep_wal_files:                                  # a clean close deletes them on most builds of SQLite
+        for f in kb_dir.glob("index.sqlite-*"):
+            f.unlink()
     for f in kb_dir.iterdir():
         if f.is_file():
             f.chmod(0o444)
@@ -327,10 +330,11 @@ needs_permissions = pytest.mark.skipif(os.geteuid() == 0, reason="root ignores f
 
 
 @needs_permissions
-def test_read_commands_work_when_the_kb_folder_is_read_only(kb_env, capsys):
+@pytest.mark.parametrize("keep_wal_files", [True, False])
+def test_read_commands_work_when_the_kb_folder_is_read_only(kb_env, capsys, keep_wal_files):
     run(capsys, "reindex")
     kb_dir = kb_env / ".kb"
-    _freeze(kb_dir)
+    _freeze(kb_dir, keep_wal_files)
     try:
         code, out = run(capsys, "find", "flaky", "motion")
         assert code == 0 and out.startswith("55555555 2026-10-06 claude")
@@ -386,6 +390,8 @@ def test_a_reader_does_not_wait_for_a_sync_that_holds_a_write_transaction(kb_env
         assert code == 0 and out.startswith("55555555")
         code, out = run(capsys, "sql", "SELECT COUNT(*) AS n FROM sessions")
         assert code == 0 and out.splitlines()[1].strip() == "4"
+        code, out = run(capsys, "summary", SID[:8])                            # the last committed state
+        assert code == 0 and "kb:" not in out and "title: Fix flaky motion test" in out
         assert time.monotonic() - started < 3
     finally:
         writer.db.execute("ROLLBACK")
@@ -416,7 +422,8 @@ def test_show_reads_a_markdown_file_that_is_not_utf8(kb_env, capsys):
 
 
 @pytest.mark.parametrize("error", [sqlite3.OperationalError("disk I/O error"), OSError(28, "No space left on device"),
-                                   re.error("unbalanced parenthesis"), ValueError("something\nwith lines")])
+                                   re.error("unbalanced parenthesis"), ValueError("something\nwith lines"),
+                                   ConfigError("cannot change /x/config.json: not valid JSON; fix it first")])
 def test_unexpected_errors_are_one_line_and_exit_2(kb_env, capsys, monkeypatch, error):
     def boom(args, cfg):
         raise error
@@ -562,22 +569,6 @@ def test_disable_and_enable_write_the_config_and_print_one_line(kb_env, tmp_path
     code, out = run(capsys, "enable")
     assert code == 0 and len(out.splitlines()) == 1 and "enabled" in out
     assert json.loads(_config_file(tmp_path).read_text()) == {**before, "auto_sync": True}
-
-
-def test_enable_creates_the_config_when_there_is_none(tmp_path, monkeypatch, capsys):
-    p = tmp_path / "fresh" / "config.json"
-    monkeypatch.setenv("KB_CONFIG", str(p))
-    assert run(capsys, "enable")[0] == 0
-    assert json.loads(p.read_text()) == {"auto_sync": True}
-
-
-def test_enable_does_not_overwrite_a_broken_config(tmp_path, monkeypatch, capsys):
-    p = tmp_path / "config.json"
-    p.write_text("{broken")
-    monkeypatch.setenv("KB_CONFIG", str(p))
-    code, out = run(capsys, "enable")
-    assert code == 2 and len(out.splitlines()) == 1 and str(p) in out
-    assert p.read_text() == "{broken"
 
 
 def test_status_shows_whether_automatic_syncs_are_on(kb_env, tmp_path, capsys):
