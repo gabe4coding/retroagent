@@ -341,10 +341,9 @@ def _host_a_files(cfg):
 def _summarize(cfg, **kw):
     idx = Index(cfg.kb_dir / "index.sqlite")
     idx.update(cfg.root)
-    lock = Lock(cfg.kb_dir / "lock")
     try:
         state = State.load(cfg.kb_dir / "sync-state.json")
-        return sync_mod.summarize_pending(cfg, idx, state, None, FakeRunner(), Report(), lock, **kw)
+        return sync_mod.summarize_pending(cfg, idx, state, None, FakeRunner(), Report(), **kw)
     finally:
         idx.close()
 
