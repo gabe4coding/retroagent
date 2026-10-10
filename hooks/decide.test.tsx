@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 const SUGGESTION = {
@@ -15,10 +15,12 @@ const BAND = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100
 const DECIDE = { command: 'decide', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false,
                  columns: 100 } } as const
 
-// a fake kb: `decide --json` lists what is left, and each answer removes its question
-function fakeKb(on: On, start: object[], hiddenUntil = '') {
+// a fake kb: `decide --json` lists what is left in `start`, and each answer removes its question; session.id answers
+// `session.id`
+function fakeKb(on: On, start: object[], hiddenUntil = '', session = { id: 'session-1' }) {
   const ran: string[][] = []
-  let left = [...start]
+  const left = start
+  on('session.id', () => ({ value: session.id }))
   on('process.run', ($, e) => {
     const argv = [...e.argv]
     ran.push(argv)
@@ -27,7 +29,7 @@ function fakeKb(on: On, start: object[], hiddenUntil = '') {
       return { value: { exitCode: 0, stdout: JSON.stringify({ items: left, hidden_until: hiddenUntil }), stderr: '',
                         isStdoutTruncated: false, isStderrTruncated: false } }
     }
-    left = left.filter(item => (item as { id: string }).id !== id)
+    left.splice(left.findIndex(item => (item as { id: string }).id === id), 1)
     return { value: { exitCode: 0, stdout: `${id}: ${verb}ed. The next sync pushes it.\n`, stderr: '',
                       isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -72,4 +74,27 @@ test('the command says so when nothing waits', async ($, on) => {
   fakeKb(on, [])
   const out = await $.command.run(DECIDE)
   expect(out).toMatchObject({ text: 'Nothing waits for you.' })
+})
+
+test('the band lists the questions again in a new session after /clear, once', async ($, on) => {
+  const clock = mock.clock(on)
+  const session = { id: 'cleared-1' }
+  const waiting: object[] = [SUGGESTION]
+  const ran = fakeKb(on, waiting, '', session)
+  const lists = () => ran.filter(argv => argv[2] === '--json').length
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  expect(lists()).toBe(1)
+  await clock.advance(10_000)
+  expect(lists()).toBe(1)
+
+  waiting.push(FIX)
+  session.id = 'cleared-2'                  // what /clear, /resume and /branch do
+  await clock.advance(2_000)
+  expect(lists()).toBe(2)
+  const band = await $.ui.mount({ plugin: 'retroagent', surface: 'terminal', component: 'AbovePrompt',
+                                  props: BAND })
+  expect(await band.find({ text: /2 questions wait/ })).toBeDefined()
+  await clock.advance(10_000)
+  expect(lists()).toBe(2)
 })
