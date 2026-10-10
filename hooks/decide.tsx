@@ -14,6 +14,13 @@ const PANE = 'retroagent-decide'
 const DETAIL_LINES = 12
 const TIMEOUT_MS = 60_000
 
+const WATCH_MS = 2_000
+
+// the session refresh() last ran for. /clear, /resume and /branch go on under a new id and reset $.state, and no
+// module event fires then (classic.SessionStart is skipped for user-tier modules since Claude Code 2.1.296), so a
+// timer started in session.start looks for a new id; a render hook may not write $.state
+let refreshedFor = ''
+
 const items = atom({ plugin: 'retroagent', key: 'items' } as const, [] as Item[])
 const hiddenUntil = atom({ plugin: 'retroagent', key: 'hiddenUntil' } as const, '')
 const message = atom({ plugin: 'retroagent', key: 'message' } as const, '')
@@ -75,15 +82,17 @@ async function answer($: EngineInterface, args: string[]): Promise<void> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'decide', description: 'Answer the retro suggestions and memory fixes that wait' })
+    refreshedFor = await $.session.id()
     await refresh($)
+    $.clock.every(WATCH_MS, () => {
+      $.session.id().then(id => {
+        if (id === refreshedFor) return
+        refreshedFor = id
+        return refresh($)
+      }).catch(() => {})                    // a failed refresh never stops the timer
+    })
     return next(e)
   })
-
-  // /clear, /resume and /branch reset $.state, and session.start does not fire again
-  on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
-    await refresh($)
-    return next(e)
-  }).catch(($, e, next) => next(e))         // a failed refresh never holds up the session
 
   on('command.run', { command: 'decide' }, async $ => {
     await refresh($)
