@@ -8,6 +8,7 @@ data; each user's data lives in their own data repo.
 - Code, tests, skills or docs → `CODING_STANDARDS.md`. User docs: `README.md` (pitch, quick start) and
   `docs/*.mdx`. The whole repo is the Claude Code / Codex plugin (marketplace source `./`); `bin/kb` runs
   `python3 -m kb` from `src/kb/`.
+- Run a change end to end (`/verify`) → `.claude/skills/verify/SKILL.md`.
 - Install or setup → `skills/setup/SKILL.md` and `install.sh`.
 - The cloud routine → `scripts/pages-routine.md`.
 - Cloud sessions: the push from a cloud container and the import by one machine's sync → `src/kb/cloud.py`.

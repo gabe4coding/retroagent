@@ -23,6 +23,19 @@ is `src/kb` (stdlib only, Python 3.9). `templates/data/` holds the files that `k
 - The decide mod (`hooks/decide.tsx`, Claude Code only) has its own tests, and CI does not run them. When you change
   the mod, run `claude plugin validate .` and `claude plugin test .`.
 
+## Verification loop
+
+Before each commit, an agent does these steps in this order. If a step changes code, it starts again at step 1.
+
+1. `/simplify` cleans up the diff.
+2. `/code-review` finds correctness bugs in the diff.
+3. `scripts/test --all` runs the tests.
+4. `/verify` runs the change end to end.
+
+`/verify` uses the recipe in `.claude/skills/verify/`. Its `drive.py` makes a sandbox data repo in the temp folder,
+with fake sessions. It runs `kb` commands there, or a headless Claude Code session with this checkout as the plugin.
+It never uses your real data repo. The recipe also says when to skip `/verify`.
+
 ## Releasing plugin changes
 
 When skills or hooks change, increase `version` in `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`.

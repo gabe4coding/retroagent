@@ -9,8 +9,18 @@ enforce; the others rely on discipline.
   third-party import fails]`
 
 ## Tests and commits
-- Run `scripts/test --all` before every commit; plain `scripts/test` (the fast tests, under 5 s) while you work. Both
-  run in parallel on `/usr/bin/python3`, the runtime target, with pytest from `uv`. It already passes `-q`; adding
+- Before every commit, do the verification loop in this order. If a step changes code, start again at step 1.
+  1. `/simplify`: the built-in Claude Code skill. It cleans up the diff and applies the fixes. Run it first, so the
+     checks test its edits too.
+  2. `/code-review`: the built-in Claude Code skill. It reviews the diff for correctness bugs, which `/simplify` does
+     not look for. Check each finding against the code, and fix the real ones.
+  3. `scripts/test --all`. After a change to `hooks/decide.tsx`, also `claude plugin validate .` and
+     `claude plugin test .`.
+  4. `/verify`: the built-in Claude Code skill. It drives the change end to end and observes the behavior. It reads
+     the project recipe in `.claude/skills/verify/` (`SKILL.md` and `drive.py`), which also says when to skip. If the
+     recipe fails or misses a step, fix it.
+- Run plain `scripts/test` (the fast tests, under 5 s) while you work; `scripts/test --all` in step 3. Both run in
+  parallel on `/usr/bin/python3`, the runtime target, with pytest from `uv`. It already passes `-q`; adding
   another `-q` hides the summary line. CI (`.github/workflows/test.yml`) runs `scripts/test --all` on every push to
   `main` and every PR, on Linux with Python 3.9 and 3.13 (`KB_TEST_PYTHON` picks the interpreter). It has no macOS
   job: run `scripts/test --all` on a Mac before a commit that changes macOS behavior.
