@@ -48,8 +48,25 @@ def _git(*args):
     return subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True, timeout=20)
 
 
+def _plugin_version(rev):
+    return json.loads(_git("show", f"{rev}:.claude-plugin/plugin.json").stdout)["version"]
+
+
+def _number(version):
+    return tuple(int(n) for n in version.split("."))
+
+
+def _not_above(new, olds):
+    """The entries of olds ({where: version}) that new is not above, as "<version> on <where>"."""
+    return [f"{v} on {where}" for where, v in olds.items() if _number(new) <= _number(v)]
+
+
 def test_a_change_to_the_cached_files_raises_the_version():
-    """This branch, uncommitted edits included, against where it left origin/main. CI fetches main for it."""
+    """This branch, uncommitted edits included, against where it left origin/main. CI fetches main for it.
+
+    The new version must be above the merge base and the tip of origin/main: two branches cut from the same main can
+    both raise 0.11.3 to 0.11.4, and after the first merges the second ships other files under the same version.
+    """
     base = _git("merge-base", "origin/main", "HEAD").stdout.strip()
     if not base:
         assert not os.environ.get("CI"), "no origin/main in CI: the checkout needs fetch-depth: 0"
@@ -57,11 +74,18 @@ def test_a_change_to_the_cached_files_raises_the_version():
     changed = _git("diff", "--name-only", base, "--", *CACHED).stdout.split()
     if not changed:
         return
-    old = json.loads(_git("show", f"{base}:.claude-plugin/plugin.json").stdout)["version"]
     new = json.loads((PLUGIN / ".claude-plugin/plugin.json").read_text())["version"]
-    number = lambda v: tuple(int(n) for n in v.split("."))     # noqa: E731
-    assert number(new) > number(old), (f"{', '.join(changed)} changed but the version {new} is not above {old}: "
-                                       "raise it in .claude-plugin/plugin.json and .codex-plugin/plugin.json")
+    low = _not_above(new, {"the merge base": _plugin_version(base), "origin/main": _plugin_version("origin/main")})
+    assert not low, (f"{', '.join(changed)} changed but the version {new} is not above {', '.join(low)}: "
+                     "merge origin/main, then raise it in .claude-plugin/plugin.json and .codex-plugin/plugin.json")
+
+
+def test_the_new_version_must_be_above_each_old_one():
+    olds = {"the merge base": "0.11.3", "origin/main": "0.11.3"}
+    assert _not_above("0.11.4", olds) == []
+    # another branch from the same base merged first with the same raise
+    assert _not_above("0.11.4", {**olds, "origin/main": "0.11.4"}) == ["0.11.4 on origin/main"]
+    assert _not_above("0.11.10", {"origin/main": "0.11.9"}) == []       # numbers, not strings
 
 
 # grep_denied is the narrower fallback (no python3, or python3 exits with anything but 10). It misses a quoted kb,

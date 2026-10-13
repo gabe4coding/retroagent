@@ -36,9 +36,11 @@ enforce; the others rely on discipline.
 
 ## Plugin and skills
 - When `bin/`, `hooks/`, `skills/` or `types/` change, bump `version` in both `.claude-plugin/plugin.json` and
-  `.codex-plugin/plugin.json`. Claude Code and Codex cache plugins per version, and the hooks run from that copy:
-  `kb update` reaches only `bin/kb` and `bin/kb-guard`, which hand over to the code clone. `[test: tests/test_plugin.py compares with origin/main, and checks the two
-  manifests agree]`
+  `.codex-plugin/plugin.json`, above the version on `main` now, not only where the branch started. Merge `main` just
+  before the PR merges: the test sees only the `main` it fetched. Claude Code and Codex cache plugins per version,
+  and the hooks run from that copy: `kb update` reaches only `bin/kb` and `bin/kb-guard`, which hand over to the
+  code clone. `[test: tests/test_plugin.py compares with the merge base and the tip of origin/main, and checks the
+  two manifests agree]`
 - Each `skills/<name>/SKILL.md` starts with front matter whose first keys are `name: <folder name>` then
   `description:`, and its body stays under a line limit: tests/test_skills.py enforces the limits.
   `[test: tests/test_skills.py]`
