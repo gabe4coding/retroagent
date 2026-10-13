@@ -5,10 +5,10 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from fixtures import AID, SID, T1, write_installed_plugins
+from fixtures import AID, SID, T1, codex_on_path, write_codex_plugin_cache, write_installed_plugins
 from test_index import OLD_SCHEMA, build_kb, put
 
-from kb import brief, cli, setup
+from kb import brief, cli, config, setup
 from kb.cli import main
 from kb.config import ConfigError
 from kb.index import Index
@@ -582,7 +582,7 @@ def test_status_shows_whether_automatic_syncs_are_on(kb_env, tmp_path, capsys):
     assert any(l.startswith("auto sync: off until the first full backfill") for l in out.splitlines())
 
 
-def test_status_warns_when_claude_code_loads_another_plugin_version(kb_env, capsys):
+def test_status_warns_when_claude_code_or_codex_loads_another_plugin_version(kb_env, capsys, monkeypatch, tmp_path):
     version = setup.plugin_version()
     _, out = run(capsys, "status")
     assert not any(l.startswith("plugin:") for l in out.splitlines())                # not installed in Claude Code
@@ -592,6 +592,12 @@ def test_status_warns_when_claude_code_loads_another_plugin_version(kb_env, caps
             "skills are off (run: kb update, then start a new session)") in out.splitlines()
     write_installed_plugins(Path.home(), version)
     _, out = run(capsys, "status")
+    assert f"plugin: Claude Code loads retroagent {version}" in out.splitlines()
+    write_codex_plugin_cache(config.load().codex_home, "0.0.2")
+    codex_on_path(monkeypatch, tmp_path / "bin")
+    _, out = run(capsys, "status")
+    assert (f"plugin: WARNING Codex loads retroagent 0.0.2, the code clone has {version}: the new hooks and "
+            "skills are off (run: kb update, then start a new session)") in out.splitlines()
     assert f"plugin: Claude Code loads retroagent {version}" in out.splitlines()
 
 
@@ -662,8 +668,10 @@ def test_brief_hook_output(kb_env, capsys, monkeypatch):
     assert run(capsys, "brief", "--hook") == (0, "")                  # never fails
 
 
-def test_brief_says_when_claude_code_loads_another_plugin_version(kb_env, capsys, monkeypatch, tmp_path):
+def test_brief_says_when_claude_code_or_codex_loads_another_plugin_version(kb_env, capsys, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     write_installed_plugins(Path.home(), "0.0.1")
+    write_codex_plugin_cache(config.load().codex_home, "0.0.2")
+    codex_on_path(monkeypatch, tmp_path / "bin")
     _, out = run(capsys, "brief")
-    assert out.splitlines()[-2] == brief.plugin_line(("0.0.1", setup.plugin_version()))
+    assert out.splitlines()[-2] == brief.plugin_line((setup.plugin_version(), {"Claude Code": "0.0.1", "Codex": "0.0.2"}))

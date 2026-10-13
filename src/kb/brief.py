@@ -7,8 +7,9 @@ On purpose very little, and no facts that can be out of date:
   - while the first full backfill is not done (auto_sync_pending), one line that says so: the hook starts it again;
   - when retro suggestions wait for the owner's answer (kb.decide), one line that asks the agent to tell the user,
     unless the user hid it with `kb decide later`;
-  - when Claude Code loads another retroagent version than the code clone's (kb.setup.plugin_drift), one line that
-    asks the agent to tell the user to run `kb update`: the hooks and skills of the new version are not active;
+  - when Claude Code or Codex loads another retroagent version than the code clone's (kb.setup.plugin_drift), one
+    line that asks the agent to tell the user to run `kb update`: the hooks and skills of the new version are not
+    active;
   - always, last: one line that the past sessions are searchable with `kb find`. Skills trigger only when the agent
     thinks of them; without this line a project with no page gives the agent no sign that the KB exists. The project is the working directory's, as for
 `kb hint` (kb.hint.projects). Reads a few small files of the data clone, never the index: it runs before each
@@ -34,11 +35,13 @@ FIRST_SYNC_LINE = ("The first full retroagent sync is not finished: it runs agai
 
 
 def plugin_line(drift: tuple) -> str:
-    """The line for (installed, clone) versions from kb.setup.plugin_drift, or "" when there is no drift."""
+    """The line for the (clone, {agent: installed}) of kb.setup.plugin_drift, or "" when there is no drift."""
     if not drift:
         return ""
-    return (f"Claude Code loads the retroagent plugin {drift[0]}, but the code clone has {drift[1]}: the hooks and "
-            "skills of the new version are off. Tell the user once to run `kb update`, then start a new session.")
+    clone, stale = drift
+    loads = " and ".join(f"{agent} loads the retroagent plugin {installed}" for agent, installed in stale.items())
+    return (f"{loads}, but the code clone has {clone}: the hooks and skills of the new version are off. "
+            "Tell the user once to run `kb update`, then start a new session.")
 
 
 def _bullets(body: str, heading: str) -> int:
@@ -72,7 +75,7 @@ def build(root, cwd: str, project: str = "", first_sync_pending: bool = False, h
           plugin_drift: tuple = ()) -> str:
     """The brief for a session in `cwd` (or for `project`): the project part, FIRST_SYNC_LINE while the first full
     backfill is not done, the line about the questions that wait for the owner (with the memory fixes of `host`), the
-    plugin line when Claude Code loads another version than the code clone's, then KB_LINE."""
+    plugin line when Claude Code or Codex loads another version than the code clone's, then KB_LINE."""
     parts = [_project_part(Path(root), cwd, project), FIRST_SYNC_LINE if first_sync_pending else "",
              decide.brief_line(root, Path(root) / ".kb", host), plugin_line(plugin_drift), KB_LINE]
     return "\n".join(p for p in parts if p)
