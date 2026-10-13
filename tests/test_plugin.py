@@ -39,6 +39,31 @@ def test_manifests_agree():
     assert guard["matcher"] == "Bash" and guard["hooks"][0]["command"].endswith('/bin/kb-guard"')
 
 
+# What Claude Code and Codex load from their per-version plugin cache: the hooks run from that copy (bin/kb-guard and
+# bin/kb-hint are scripts of their own there), so a change here with no new version never reaches a machine.
+CACHED = ["bin", "hooks", "skills", "types", ":(exclude)hooks/*.test.tsx"]
+
+
+def _git(*args):
+    return subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True, timeout=20)
+
+
+def test_a_change_to_the_cached_files_raises_the_version():
+    """This branch, uncommitted edits included, against where it left origin/main. CI fetches main for it."""
+    base = _git("merge-base", "origin/main", "HEAD").stdout.strip()
+    if not base:
+        assert not os.environ.get("CI"), "no origin/main in CI: the checkout needs fetch-depth: 0"
+        pytest.skip("no origin/main to compare with")
+    changed = _git("diff", "--name-only", base, "--", *CACHED).stdout.split()
+    if not changed:
+        return
+    old = json.loads(_git("show", f"{base}:.claude-plugin/plugin.json").stdout)["version"]
+    new = json.loads((PLUGIN / ".claude-plugin/plugin.json").read_text())["version"]
+    number = lambda v: tuple(int(n) for n in v.split("."))     # noqa: E731
+    assert number(new) > number(old), (f"{', '.join(changed)} changed but the version {new} is not above {old}: "
+                                       "raise it in .claude-plugin/plugin.json and .codex-plugin/plugin.json")
+
+
 # grep_denied is the narrower fallback (no python3, or python3 exits with anything but 10). It misses a quoted kb,
 # sh -c / eval, a separator inside a quoted option, and \kb, and it denies a # comment on the same line.
 GUARD_CASES = [
