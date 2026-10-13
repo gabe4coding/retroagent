@@ -39,7 +39,7 @@ def test_manifests_agree():
     assert guard["matcher"] == "Bash" and guard["hooks"][0]["command"].endswith('/bin/kb-guard"')
 
 
-# What Claude Code and Codex load from their per-version plugin cache: the hooks run from that copy (bin/kb-guard and
+# What Claude Code and Codex load from their per-version plugin cache: the hooks run from that copy (bin/kb-hook and
 # bin/kb-hint are scripts of their own there), so a change here with no new version never reaches a machine.
 CACHED = ["bin", "hooks", "skills", "types", ":(exclude)hooks/*.test.tsx"]
 
@@ -167,12 +167,12 @@ def test_guard_uses_the_config_python_when_python3_is_a_stub(tmp_path):
     _assert_guard('kb decide --note "a; b" --yes accept s-1', True, env)
 
 
-CACHED = ".claude/plugins/cache/retroagent/retroagent/0.0.1"     # where Claude Code caches the plugin, under HOME
+CACHE_DIR = ".claude/plugins/cache/retroagent/retroagent/0.0.1"     # where Claude Code caches the plugin, under HOME
 
 
 def _cached_guard(tmp_path, config=None):
     """A copy of bin/kb-guard in a plugin cache under tmp_path, and an env whose config is `config` (None: no file)."""
-    guard = tmp_path / CACHED / "bin/kb-guard"
+    guard = tmp_path / CACHE_DIR / "bin/kb-guard"
     guard.parent.mkdir(parents=True)
     shutil.copy(PLUGIN / "bin/kb-guard", guard)
     cfg = tmp_path / "config.json"
@@ -195,7 +195,7 @@ def test_cached_guard_hands_over_to_the_code_clone(tmp_path):
 def test_cached_guard_keeps_its_own_logic_without_a_code_clone(tmp_path, case):
     # "cache": a "code" that is the cached copy itself would exec it again and again
     config = {"no config": None, "no key": {}, "missing clone": {"code": "/no/such/clone"},
-              "cache": {"code": str(tmp_path / CACHED)}}[case]
+              "cache": {"code": str(tmp_path / CACHE_DIR)}}[case]
     guard, env = _cached_guard(tmp_path, config)
     _assert_guard("kb decide accept s-1a2b3c", True, env, guard)
     _assert_guard("kb decide --json", False, env, guard)
