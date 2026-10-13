@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -247,6 +248,25 @@ def test_auto_update_leaves_a_clone_on_another_branch_or_with_changes_alone(tmp_
 def test_auto_update_does_nothing_without_a_git_clone(tmp_path, monkeypatch):
     monkeypatch.setattr(setup, "CODE_ROOT", tmp_path / "cache-copy")
     assert setup.auto_update(_cfg(tmp_path)) == ""
+
+
+def test_update_passes_the_running_python_to_install(tmp_path, monkeypatch):
+    code = tmp_path / "code"
+    (code / ".git").mkdir(parents=True)
+    monkeypatch.setattr(setup, "CODE_ROOT", code)
+    monkeypatch.setattr(setup.gitops, "git",
+                        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="abc fix\n", stderr=""))
+    seen = {}
+
+    def fake_call(cmd, env=None, **kwargs):
+        seen["cmd"] = cmd
+        seen["env"] = env
+        return 0
+
+    monkeypatch.setattr(setup.subprocess, "call", fake_call)
+    assert setup.update() == 0
+    assert seen["cmd"] == ["sh", str(code / "install.sh")]
+    assert seen["env"]["KB_PYTHON"] == sys.executable
 
 
 @pytest.mark.slow

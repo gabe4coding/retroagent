@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -382,7 +383,7 @@ def refresh_plugins() -> list:
                                timeout=300) != 0:
                 failed.append(" ".join(cmd))
     if shutil.which("codex"):
-        p = subprocess.run(["python3", str(CODE_ROOT / "scripts" / "codex_marketplace.py"), str(CODE_ROOT)],
+        p = subprocess.run([sys.executable, str(CODE_ROOT / "scripts" / "codex_marketplace.py"), str(CODE_ROOT)],
                            capture_output=True, text=True, timeout=60)
         # the script's last line is "marketplace: <name>": the Codex marketplace that now lists retroagent
         last_line = p.stdout.strip().splitlines()[-1] if p.returncode == 0 and p.stdout else ""
@@ -444,7 +445,8 @@ def update() -> int:
     if p.returncode != 0:
         raise SetupError(f"git pull in {CODE_ROOT}: {(p.stderr or p.stdout).strip()}")
     print(f"code: {CODE_ROOT} at {gitops.git(CODE_ROOT, 'log', '-1', '--format=%h %s').stdout.strip()}")
-    return subprocess.call(["sh", str(CODE_ROOT / "install.sh")])
+    return subprocess.call(["sh", str(CODE_ROOT / "install.sh")],
+                           env={**os.environ, "KB_PYTHON": sys.executable})
 
 
 def dumps(obj) -> str:
