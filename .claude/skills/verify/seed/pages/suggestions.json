@@ -1,0 +1,21 @@
+{
+  "suggestions": {
+    "s-000001": {
+      "category": "Rules",
+      "repo": "demo-app",
+      "signature": "",
+      "sources": ["1a2b3c4d"],
+      "text": "Wait for CI with a watch, not a sleep loop",
+      "weeks": ["2026-W39"]
+    },
+    "s-000002": {
+      "category": "",
+      "repo": "",
+      "signature": "",
+      "sources": ["5e6f7a8b"],
+      "text": "Split long sessions",
+      "weeks": ["2026-W40"]
+    }
+  },
+  "version": 1
+}
