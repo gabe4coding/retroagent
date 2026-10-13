@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -38,37 +39,95 @@ def test_manifests_agree():
     assert guard["matcher"] == "Bash" and guard["hooks"][0]["command"].endswith('/bin/kb-guard"')
 
 
-@pytest.mark.parametrize("command, denied", [
-    ("kb decide accept s-1a2b3c", True),
-    ("cd /x && ~/.local/bin/kb decide reject m-1a2b3c --yes", True),
-    ("python3 -m kb decide accept s-1a2b3c", True),
-    ("echo a; kb  decide   reject s-1a2b3c", True),
-    ("x=$(kb decide accept s-1a2b3c)", True),
-    ("ls\nkb decide accept s-1a2b3c", True),
-    ("kb decide", False),
-    ("kb decide later --days 2", False),
-    ("kb decide --json", False),
-    ('grep -rn "kb decide accept" docs', False),
-    ("kb decide accepted", False),
-    ("kb decide --yes accept s-1a2b3c", True),
-    ("kb decide --note ok reject m-1a2b3c", True),
-    ("kb decide\taccept s-1a2b3c", True),
-    ('"kb" decide accept s-1a2b3c', True),
-    ("'kb' decide reject s-1a2b3c", True),
-    ('bash -c "kb decide accept s-1a2b3c"', True),
-    ("kb decide; echo accept", False),
-    ("kb find decide accept", False),
-])
-def test_guard_refuses_an_agents_answer(command, denied):
+# grep_denied is the narrower fallback (no python3, or python3 exits with anything but 10). It misses a quoted kb,
+# sh -c / eval, a separator inside a quoted option, and \kb, and it denies a # comment on the same line.
+GUARD_CASES = [
+    ("kb decide accept s-1a2b3c", True, True),
+    ("cd /x && ~/.local/bin/kb decide reject m-1a2b3c --yes", True, True),
+    ("python3 -m kb decide accept s-1a2b3c", True, True),
+    ("echo a; kb  decide   reject s-1a2b3c", True, True),
+    ("x=$(kb decide accept s-1a2b3c)", True, True),
+    ("ls\nkb decide accept s-1a2b3c", True, True),
+    ("kb decide", False, False),
+    ("kb decide later --days 2", False, False),
+    ("kb decide --json", False, False),
+    ('grep -rn "kb decide accept" docs', False, False),
+    ("kb decide accepted", False, False),
+    ("kb decide --yes accept s-1a2b3c", True, True),
+    ("kb decide --note ok reject m-1a2b3c", True, True),
+    ("kb decide\taccept s-1a2b3c", True, True),
+    ('"kb" decide accept s-1a2b3c', True, False),
+    ("'kb' decide reject s-1a2b3c", True, False),
+    ('bash -c "kb decide accept s-1a2b3c"', True, False),
+    ('eval "kb decide reject s-1a2b3c"', True, False),
+    ("kb decide; echo accept", False, False),
+    ("kb decide\necho accept", False, False),
+    ("kb find decide accept", False, False),
+    ('kb decide --note "a; b" --yes accept s-1', True, False),
+    ("kb decide show s-1 # then accept", False, True),
+    ('grep -n "kb decide accept" docs/x.md; bash -c true', False, False),
+    ("\\kb decide accept s-1a2b3c", True, False),
+]
+
+
+def _assert_guard(command, denied, env=None):
     event = {"session_id": "x", "tool_name": "Bash", "tool_input": {"command": command.replace("\\n", "\n")}}
     p = subprocess.run([str(PLUGIN / "bin/kb-guard")], input=json.dumps(event), capture_output=True, text=True,
-                       timeout=5)
-    assert p.returncode == 0
+                       timeout=5, env=env)
+    assert p.returncode == 0, p.stderr
     if denied:
         out = json.loads(p.stdout)["hookSpecificOutput"]
         assert out["permissionDecision"] == "deny" and "only the user" in out["permissionDecisionReason"]
     else:
         assert p.stdout == ""
+
+
+def _guard_path(tmp_path, stub=False):
+    """A PATH with no real python3: sh, cat, grep, printf, sed, head, and optionally a python3 that exits 1."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for name in ("sh", "cat", "grep", "printf", "sed", "head"):
+        src = shutil.which(name)
+        if src:
+            os.symlink(src, bindir / name)
+    if stub:
+        py = bindir / "python3"
+        py.write_text("#!/bin/sh\nexit 1\n")
+        py.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = str(bindir)
+    env.pop("KB_PYTHON", None)
+    return env
+
+
+@pytest.mark.parametrize("command, denied, grep_denied", GUARD_CASES)
+def test_guard_refuses_an_agents_answer(command, denied, grep_denied):
+    _assert_guard(command, denied)
+
+
+@pytest.mark.parametrize("command, denied, grep_denied", GUARD_CASES)
+def test_guard_grep_fallback_without_python3(command, denied, grep_denied, tmp_path):
+    _assert_guard(command, grep_denied, _guard_path(tmp_path))
+
+
+def test_guard_uses_grep_when_python3_cannot_run(tmp_path):
+    env = _guard_path(tmp_path, stub=True)
+    _assert_guard("kb decide accept s-1a2b3c", True, env)
+    _assert_guard('kb decide --note "a; b" --yes accept s-1', False, env)   # the fallback still misses this one
+
+
+def test_guard_prefers_kb_python_over_a_stub(tmp_path):
+    env = _guard_path(tmp_path, stub=True)
+    env["KB_PYTHON"] = sys.executable
+    _assert_guard('kb decide --note "a; b" --yes accept s-1', True, env)
+
+
+def test_guard_uses_the_config_python_when_python3_is_a_stub(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"python": sys.executable}))
+    env = _guard_path(tmp_path, stub=True)
+    env["KB_CONFIG"] = str(cfg)
+    _assert_guard('kb decide --note "a; b" --yes accept s-1', True, env)
 
 
 def _hook_env(tmp_path):
