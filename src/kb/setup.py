@@ -340,6 +340,7 @@ def check(cfg, config_file: Path) -> dict:
         "indexed": index.exists(),
         "has_sessions": clone and (root / "sessions" / cfg.host).is_dir(),
         "routine_files": {rel: on_remote(rel) for rel in (ROUTINE_CONFIG, WORKFLOW)},
+        "plugin_stale": plugin_stale_files(),
     }
 
 
@@ -353,24 +354,58 @@ def plugin_version() -> str:
         return ""
 
 
-def installed_plugin_version() -> str:
-    """The retroagent version of Claude Code's user install: its cache copy is what sessions load, until a
-    `claude plugin update` copies a new one. "" when it is not installed or the file is unreadable."""
+def installed_plugin() -> dict:
+    """The record of Claude Code's user install of retroagent (`version`, `installPath`: the cache copy that sessions
+    load, until a `claude plugin update` copies a new one). {} when it is not installed or the file is unreadable."""
     path = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
     try:
         rows = json.loads(path.read_text(encoding="utf-8")).get("plugins", {}).get("retroagent@retroagent")
     except (OSError, ValueError, AttributeError):
-        return ""
+        return {}
     for row in rows if isinstance(rows, list) else []:
         if isinstance(row, dict) and row.get("scope") == "user":
-            return str(row.get("version") or "")
-    return ""
+            return row
+    return {}
+
+
+def installed_plugin_version() -> str:
+    return str(installed_plugin().get("version") or "")
 
 
 def plugin_drift() -> tuple:
     """(installed, clone) when Claude Code loads another retroagent version than the code clone's, else ()."""
     installed, clone = installed_plugin_version(), plugin_version()
     return (installed, clone) if installed and clone and installed != clone else ()
+
+
+CACHED_DIRS = ("bin", "hooks", "skills", "types")    # what sessions run from the cache copy, but hooks/*.test.tsx
+
+
+def _plugin_files(root: Path) -> dict:
+    """{path relative to root: content} of the files in CACHED_DIRS, without dot files, __pycache__ and tests."""
+    out = {}
+    for name in CACHED_DIRS:
+        for p in (root / name).rglob("*"):
+            rel = p.relative_to(root)
+            if (not any(part.startswith(".") or part == "__pycache__" for part in rel.parts)
+                    and not p.name.endswith(".test.tsx") and p.is_file()):
+                out[rel.as_posix()] = p.read_bytes()
+    return out
+
+
+def plugin_stale_files() -> list:
+    """The files of CACHED_DIRS that differ between Claude Code's cache copy and the code clone, when both have the
+    same version: a change that got no new version, so `claude plugin update` never copies it. [] when the versions
+    differ (plugin_drift tells that), there is no cache copy, or a file cannot be read."""
+    row = installed_plugin()
+    install = str(row.get("installPath") or "")
+    if not install or str(row.get("version") or "") != plugin_version() or not Path(install).is_dir():
+        return []
+    try:
+        cache, clone = _plugin_files(Path(install)), _plugin_files(CODE_ROOT)
+    except OSError:                                 # e.g. Claude Code removes an old cache copy during the walk
+        return []
+    return sorted(rel for rel in cache.keys() | clone.keys() if cache.get(rel) != clone.get(rel))
 
 
 def refresh_plugins() -> list:

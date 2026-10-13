@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from kb import setup
+
 pytestmark = pytest.mark.slow          # starts git and other processes; runs with scripts/test --all
 
 REPO = Path(__file__).resolve().parents[1]
@@ -40,8 +42,9 @@ def test_manifests_agree():
 
 
 # What Claude Code and Codex load from their per-version plugin cache: the hooks run from that copy (bin/kb-hook and
-# bin/kb-hint are scripts of their own there), so a change here with no new version never reaches a machine.
-CACHED = ["bin", "hooks", "skills", "types", ":(exclude)hooks/*.test.tsx"]
+# bin/kb-hint are scripts of their own there), so a change here with no new version never reaches a machine. The same
+# list as `kb setup check` uses to find a cache copy that differs from the code clone at the same version.
+CACHED = [*setup.CACHED_DIRS, ":(exclude)hooks/*.test.tsx"]
 
 
 def _git(*args):

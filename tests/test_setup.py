@@ -325,6 +325,43 @@ def test_plugin_drift_compares_the_install_with_the_code_clone(tmp_path, monkeyp
     assert setup.plugin_drift() == ()
 
 
+def test_plugin_stale_files_lists_what_changed_without_a_new_version(tmp_path, monkeypatch):
+    code = tmp_path / "code"
+    for rel, text in {".claude-plugin/plugin.json": '{"version": "0.11.0"}\n', "bin/kb-guard": "new\n",
+                      "hooks/hooks.json": "{}\n", "skills/a/SKILL.md": "a\n", "src/kb/x.py": "x\n"}.items():
+        (code / rel).parent.mkdir(parents=True, exist_ok=True)
+        (code / rel).write_text(text)
+    monkeypatch.setattr(setup, "CODE_ROOT", code)
+    assert setup.plugin_stale_files() == []                                             # not installed in Claude Code
+    write_installed_plugins(Path.home(), "0.11.0")
+    install = Path(setup.installed_plugin()["installPath"])
+    assert setup.plugin_stale_files() == []                                             # no cache copy yet
+    shutil.copytree(code, install)
+    (install / "src/kb/x.py").write_text("old\n")                  # not cached by the hooks: bin/kb runs the clone's
+    (install / ".orphaned_at").write_text("")
+    (install / "skills/a/__pycache__").mkdir()
+    (install / "skills/a/__pycache__/x.pyc").write_text("")
+    (install / "hooks/decide.test.tsx").write_text("")
+    assert setup.plugin_stale_files() == []
+    (install / "bin/kb-guard").write_text("old\n")
+    (install / "skills/a/SKILL.md").unlink()
+    (install / "hooks/gone.json").write_text("{}\n")
+    (install / "types").mkdir()
+    (install / "types/index.d.ts").write_text("")
+    stale = ["bin/kb-guard", "hooks/gone.json", "skills/a/SKILL.md", "types/index.d.ts"]
+    assert setup.plugin_stale_files() == stale
+    check = setup.check(config.Config(root=tmp_path / "data", host="h"), tmp_path / "config.json")
+    assert check["plugin_stale"] == stale
+
+    def unreadable(path):
+        raise PermissionError(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    assert setup.plugin_stale_files() == []                        # no traceback in `kb setup check`
+    write_installed_plugins(Path.home(), "0.10.0")                 # another version: plugin_drift reports it
+    assert setup.plugin_stale_files() == []
+
+
 # ---- bin/kb in a plugin cache runs the recorded code clone
 
 @pytest.mark.slow
