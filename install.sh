@@ -62,8 +62,9 @@ print(v if isinstance(v, str) else "")' "$CFG" "$1"
 
 # 1. Tools: a Python 3.9 or newer with SQLite FTS5, and git. The first python3 is not always good enough (macOS
 # /usr/bin/python3 can be 3.8; some distro or pyenv builds have SQLite without FTS5), so look further: $KB_PYTHON, the
-# python3 and python3.N on PATH, Homebrew, then uv (`uv python find`, else `uv python install`, whose builds have FTS5).
-# The one found is recorded as "python" in the config; bin/kb runs it.
+# python already recorded in the config, then python3 and python3.N on PATH, Homebrew, then uv (`uv python find`,
+# else `uv python install`, whose builds have FTS5). The one found is recorded as "python" in the config; bin/kb runs it.
+# The recorded path is read with sed, not python3: a 3.8 python3 can be the one this search is about to reject.
 py_ok() {       # $1 is Python 3.9 or newer with SQLite FTS5
   "$1" -c 'import sqlite3, sys
 assert sys.version_info >= (3, 9)
@@ -79,7 +80,9 @@ py_why() {      # why $1 is not good enough, for the error message
 }
 PY=""
 TRIED=""
-for c in ${KB_PYTHON:-} ${KB_INSTALL_PYTHONS-python3 python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 /opt/homebrew/bin/python3 /usr/local/bin/python3}; do
+SAVED=""
+[ -f "$CFG" ] && SAVED=$(sed -n 's/.*"python"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -n 1)
+for c in ${KB_PYTHON:-} $SAVED ${KB_INSTALL_PYTHONS-python3 python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 /opt/homebrew/bin/python3 /usr/local/bin/python3}; do
   case "$c" in /*) [ -x "$c" ] || continue ;; *) c=$(command -v "$c" 2>/dev/null) || continue ;; esac
   case "$c" in /*) ;; *) continue ;; esac
   if py_ok "$c"; then PY=$c; break; fi

@@ -12,7 +12,13 @@ CODE=$(cd "$(dirname "$self")/.." && pwd)
 CFG="${KB_CONFIG:-$HOME/.config/retroagent/config.json}"
 # The Python is $KB_PYTHON, else "python" in the config (install.sh records one with 3.9+ and SQLite FTS5), else python3.
 PY=${KB_PYTHON:-}
-[ -n "$PY" ] || { [ -f "$CFG" ] && PY=$(sed -n 's/.*"python"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -n 1); }
+if [ -z "$PY" ] && [ -f "$CFG" ]; then
+  PY=$(sed -n 's/.*"python"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -n 1)
+  if [ -n "$PY" ] && [ ! -x "$PY" ]; then
+    printf 'kb: %s from the config is missing; using python3. Run kb update.\n' "$PY" >&2
+    PY=""
+  fi
+fi
 [ -n "$PY" ] && [ -x "$PY" ] || PY=python3
 case "$CODE" in
   */plugins/cache/*)

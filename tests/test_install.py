@@ -674,3 +674,58 @@ def test_bin_kb_runs_the_python_of_the_config(tmp_path):
     p = subprocess.run([str(REPO / "bin/kb"), "--help"], env={"HOME": str(home), "PATH": SYSTEM_PATH},
                        capture_output=True, text=True, timeout=10)
     assert p.returncode == 0 and marker.read_text().strip() == "-m kb --help"
+
+
+def test_a_second_install_keeps_the_python_it_recorded(tmp_path):
+    m = Machine(tmp_path)
+    m.tool("python3", OLD_PYTHON)
+    first = m.install("--host", "h", KB_INSTALL_PYTHONS="python3", KB_PYTHON=sys.executable)
+    assert first.returncode == 0, _out(first)
+    assert m.config["python"] == sys.executable
+    second = m.install("--host", "h", KB_INSTALL_PYTHONS="python3")          # no KB_PYTHON: the config still names it
+    assert second.returncode == 0, _out(second)
+    assert m.config["python"] == sys.executable
+
+
+def test_bin_kb_warns_when_the_configured_python_is_missing(tmp_path):
+    home = tmp_path / "home"
+    cfg = home / ".config/retroagent/config.json"
+    cfg.parent.mkdir(parents=True)
+    missing = tmp_path / "no-such-python"
+    cfg.write_text(json.dumps({"python": str(missing)}))
+    p = subprocess.run([str(REPO / "bin/kb"), "--help"], env={"HOME": str(home), "PATH": SYSTEM_PATH},
+                       capture_output=True, text=True, timeout=20)
+    assert p.returncode == 0, p.stderr
+    assert f"kb: {missing} from the config is missing; using python3. Run kb update." in p.stderr
+
+
+def test_uv_installs_a_python_when_find_has_none(tmp_path):
+    m = Machine(tmp_path, gitleaks=True)                                    # gitleaks is present, so no download
+    m.tool("python3", OLD_PYTHON)
+    m.tool("uv", f'''#!/bin/sh
+printf 'uv %s\\n' "$*" >> "$FAKE_LOG"
+case "$1 $2" in
+  "python find")
+    [ "$3" = 3.12 ] && echo {sys.executable}
+    exit 0 ;;
+  "python install") exit 0 ;;
+esac
+exit 0
+''')
+    p = m.install("--host", "h", KB_INSTALL_PYTHONS="python3", KB_INSTALL_NO_FETCH="0")
+    assert p.returncode == 0, _out(p)
+    assert m.config["python"] == sys.executable
+    calls = m.calls()
+    finds = [i for i, c in enumerate(calls) if c.startswith("uv python find")]
+    installs = [i for i, c in enumerate(calls) if c.startswith("uv python install 3.12")]
+    assert finds and installs and finds[0] < installs[0] < finds[-1]
+
+
+def test_uv_does_not_install_a_python_when_fetch_is_off(tmp_path):
+    m = Machine(tmp_path)
+    m.tool("python3", OLD_PYTHON)
+    m.tool("uv", '#!/bin/sh\nprintf \'uv %s\\n\' "$*" >> "$FAKE_LOG"\nexit 0\n')
+    p = m.install("--host", "h", KB_INSTALL_PYTHONS="python3")               # KB_INSTALL_NO_FETCH=1 from Machine.env
+    assert p.returncode != 0
+    assert any(c.startswith("uv python find") for c in m.calls())
+    assert not any("python install" in c for c in m.calls())
