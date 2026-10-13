@@ -1,11 +1,10 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="retroagent logo" width="128" height="128">
+  <img src="docs/assets/banner.svg" alt="retroagent: every session, every machine, one search" width="100%">
 </p>
 
-<h1 align="center">retroagent</h1>
+<h3 align="center">Your agents forget. retroagent remembers.</h3>
 
 <p align="center">
-  <b>Your agents forget. retroagent remembers.</b><br>
   It keeps every Claude Code and Codex session from every machine in a private Git repo that you own.
   One command searches them all.
 </p>
