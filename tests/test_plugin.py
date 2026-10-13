@@ -50,6 +50,14 @@ def test_manifests_agree():
     ("kb decide --json", False),
     ('grep -rn "kb decide accept" docs', False),
     ("kb decide accepted", False),
+    ("kb decide --yes accept s-1a2b3c", True),
+    ("kb decide --note ok reject m-1a2b3c", True),
+    ("kb decide\taccept s-1a2b3c", True),
+    ('"kb" decide accept s-1a2b3c', True),
+    ("'kb' decide reject s-1a2b3c", True),
+    ('bash -c "kb decide accept s-1a2b3c"', True),
+    ("kb decide; echo accept", False),
+    ("kb find decide accept", False),
 ])
 def test_guard_refuses_an_agents_answer(command, denied):
     event = {"session_id": "x", "tool_name": "Bash", "tool_input": {"command": command.replace("\\n", "\n")}}
