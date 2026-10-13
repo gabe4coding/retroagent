@@ -2,10 +2,188 @@
 # PreToolUse hook (Bash): refuse an agent's call to `kb decide accept|reject`. Only the owner answers the questions of
 # `kb decide` (src/kb/decide.py): in their own terminal, or with the buttons of the decide mod (hooks/decide.tsx), which run kb
 # directly and are no tool call. Session text can hold instructions from other people, and an accepted suggestion or
-# memory fix reaches every later session. Matches only a call (kb after a separator or a space, or a path that ends in
-# /kb), so a search for the words in a file goes through. Prints nothing and exits 0 for every other command.
+# memory fix reaches every later session. The check tokenizes the command (quotes, and ; & | ( ) or a newline as
+# separators). A # starts a comment only at the start of a word, outside quotes. It denies a kb token (a path that
+# ends in /kb, or \kb, which shlex reads as kb) followed by decide, then accept or reject before the next separator.
+# It also looks inside $(...) and backticks, including inside double quotes, and it tokenizes the script of sh -c
+# and eval the same way. A search for those words in a file goes through. A pipe into a shell
+# (echo "kb decide accept s-1" | sh) is not caught. The interpreter is $KB_PYTHON, else "python" in the config, else
+# python3. Exit 10 means a match. Any other non-zero status (no python3, or the macOS stub that does not run) uses
+# the grep below. That grep is narrower: it misses a quoted kb, a call inside sh -c or eval, a separator inside a
+# quoted option, and \kb. It can also deny a # comment on the same line. Prints nothing and exits 0 otherwise.
+# Defense in depth, not a sandbox: `kb decide` itself also refuses accept|reject without a terminal or --yes.
 INPUT=$(cat)
-if printf '%s' "$INPUT" | grep -Eq '(^|[;&|(`]|\\n|[[:space:]]|:[[:space:]]*")([^[:space:]";&|]*/)?kb[[:space:]]+decide[[:space:]]+(accept|reject)([[:space:]]|\\|"|$)'; then
-  printf '%s\n' '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "retroagent: only the user answers `kb decide` questions, in their own terminal. Tell the user which answer you suggest and why; do not run it."}}'
+DENY='{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "retroagent: only the user answers `kb decide` questions, in their own terminal. Tell the user which answer you suggest and why; do not run it."}}'
+CFG="${KB_CONFIG:-$HOME/.config/retroagent/config.json}"
+PY=${KB_PYTHON:-}
+if [ -z "$PY" ] && [ -f "$CFG" ]; then
+  PY=$(sed -n 's/.*"python"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -n 1)
+fi
+if [ -z "$PY" ] || [ ! -x "$PY" ]; then
+  PY=$(command -v python3 2>/dev/null || true)
+fi
+code=1
+if [ -n "$PY" ] && [ -x "$PY" ]; then
+  printf '%s' "$INPUT" | "$PY" -c '
+import io, json, shlex, sys
+try:
+    cmd = json.load(sys.stdin).get("tool_input", {}).get("command", "")
+except Exception:
+    sys.exit(1)
+if not isinstance(cmd, str):
+    sys.exit(1)
+SEPS = set(";&|()\n")
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+SQ = "\x27"
+
+def strip_comments(text):
+    # Bash comments are a # at the start of a word, outside quotes. shlex would also cut at a#b.
+    out = []
+    i = 0
+    n = len(text)
+    quote = ""
+    start = True
+    while i < n:
+        c = text[i]
+        if quote:
+            out.append(c)
+            if quote == "\x22" and c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = ""
+            start = False
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(c)
+            out.append(text[i + 1])
+            i += 2
+            start = False
+            continue
+        if c == "#" and start:
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "\x22" or c == SQ:
+            quote = c
+            out.append(c)
+            start = False
+            i += 1
+            continue
+        out.append(c)
+        start = c in " \t\r\n;&|()"
+        i += 1
+    return "".join(out)
+
+def substitutions(text):
+    # $(...) and backticks run inside double quotes. Single quotes and a backslash do not.
+    i = 0
+    n = len(text)
+    quote = ""
+    while i < n:
+        c = text[i]
+        if quote == SQ:
+            if c == SQ:
+                quote = ""
+            i += 1
+            continue
+        if quote == "\x22":
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == "\x22":
+                quote = ""
+                i += 1
+                continue
+        else:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == "\x22" or c == SQ:
+                quote = c
+                i += 1
+                continue
+        if c == "$" and i + 1 < n and text[i + 1] == "(":
+            yield text[i + 2:]
+            i += 2
+            continue
+        if c == "`":
+            yield text[i + 1:]
+            i += 1
+            continue
+        i += 1
+
+def tokens(text):
+    lex = shlex.shlex(io.StringIO(text), posix=True, punctuation_chars=";&|()\n")
+    lex.whitespace = " \t\r"
+    lex.commenters = ""
+    out = []
+    try:
+        for tok in lex:
+            out.append(tok)
+    except ValueError:
+        pass
+    return out
+
+def is_sep(tok):
+    return bool(tok) and set(tok) <= SEPS
+
+def is_kb(tok):
+    return tok == "kb" or tok.endswith("/kb")
+
+def script_at(toks, i):
+    name = toks[i].rsplit("/", 1)[-1]
+    if name == "eval":
+        if i + 1 < len(toks) and not is_sep(toks[i + 1]):
+            return toks[i + 1]
+        return None
+    if name not in SHELLS:
+        return None
+    j = i + 1
+    while j < len(toks) and not is_sep(toks[j]):
+        flag = toks[j]
+        if flag.startswith("-") and not flag.startswith("--") and "c" in flag[1:]:
+            if j + 1 < len(toks) and not is_sep(toks[j + 1]):
+                return toks[j + 1]
+            return None
+        if not flag.startswith("-"):
+            return None
+        j += 1
+    return None
+
+def answers(text, depth=0):
+    if depth > 4 or not text:
+        return False
+    cleaned = strip_comments(text)
+    for inner in substitutions(cleaned):
+        if answers(inner, depth + 1):
+            return True
+    toks = tokens(cleaned)
+    for i, tok in enumerate(toks):
+        script = script_at(toks, i)
+        if script and answers(script, depth + 1):
+            return True
+        if is_kb(tok) and i + 1 < len(toks) and toks[i + 1] == "decide":
+            for later in toks[i + 2:]:
+                if is_sep(later):
+                    break
+                if later in ("accept", "reject"):
+                    return True
+    return False
+
+try:
+    hit = answers(cmd)
+except ValueError:
+    sys.exit(1)
+sys.exit(10 if hit else 0)
+' 2>/dev/null
+  code=$?
+fi
+if [ "$code" -eq 10 ]; then
+  printf '%s\n' "$DENY"
+elif [ "$code" -ne 0 ] && printf '%s' "$INPUT" | grep -Eq '(^|[;&|(`]|\\n|\\t|[[:space:]]|:[[:space:]]*")([^[:space:]";&|]*/)?kb([[:space:]]|\\t)+decide([[:space:]]|\\t)+([^;&|]*[[:space:]])?(accept|reject)([[:space:]]|\\|"|$)'; then
+  printf '%s\n' "$DENY"
 fi
 exit 0
