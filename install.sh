@@ -60,12 +60,47 @@ except Exception:
 print(v if isinstance(v, str) else "")' "$CFG" "$1"
 }
 
-# 1. Tools: python3 >= 3.9 with SQLite FTS5, and git
-command -v python3 >/dev/null 2>&1 || die "python3 not found; install Python 3.9 or newer"
-python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1 \
-  || die "python3 3.9 or newer is needed (this one is $(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown))"
-python3 -c 'import sqlite3; sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE t USING fts5(x)")' >/dev/null 2>&1 \
-  || die "python3 has no SQLite FTS5 support, which kb needs for search; use another python3 (for example from Homebrew)"
+# 1. Tools: a Python 3.9 or newer with SQLite FTS5, and git. The first python3 is not always good enough (macOS
+# /usr/bin/python3 can be 3.8; some distro or pyenv builds have SQLite without FTS5), so look further: $KB_PYTHON, the
+# python3 and python3.N on PATH, Homebrew, then uv (`uv python find`, else `uv python install`, whose builds have FTS5).
+# The one found is recorded as "python" in the config; bin/kb runs it.
+py_ok() {       # $1 is Python 3.9 or newer with SQLite FTS5
+  "$1" -c 'import sqlite3, sys
+assert sys.version_info >= (3, 9)
+sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE t USING fts5(x)")' >/dev/null 2>&1
+}
+py_why() {      # why $1 is not good enough, for the error message
+  v=$("$1" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown)
+  if "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+    printf '%s (%s) has no SQLite FTS5 support' "$1" "$v"
+  else
+    printf '%s is Python %s, older than 3.9' "$1" "$v"
+  fi
+}
+PY=""
+TRIED=""
+for c in ${KB_PYTHON:-} ${KB_INSTALL_PYTHONS-python3 python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 /opt/homebrew/bin/python3 /usr/local/bin/python3}; do
+  case "$c" in /*) [ -x "$c" ] || continue ;; *) c=$(command -v "$c" 2>/dev/null) || continue ;; esac
+  case "$c" in /*) ;; *) continue ;; esac
+  if py_ok "$c"; then PY=$c; break; fi
+  TRIED="$TRIED; $(py_why "$c")"
+done
+if [ -z "$PY" ] && command -v uv >/dev/null 2>&1; then
+  c=$(uv python find '>=3.9' 2>/dev/null || true)
+  if [ -n "$c" ] && py_ok "$c"; then
+    PY=$c
+  elif [ "${KB_INSTALL_NO_FETCH:-}" != 1 ]; then
+    say "python: no Python 3.9+ with SQLite FTS5 found; installing one with uv (uv python install 3.12)"
+    uv python install 3.12 >/dev/null 2>&1 && c=$(uv python find 3.12 2>/dev/null || true)
+    if [ -n "$c" ] && py_ok "$c"; then PY=$c; fi
+  fi
+fi
+if [ -z "$PY" ]; then
+  [ -n "$TRIED" ] || TRIED="; no python3 found"
+  die "kb needs Python 3.9 or newer with SQLite FTS5 (for search): ${TRIED#; }. Install one (for example brew install python, or uv python install 3.12 with uv from https://docs.astral.sh/uv/), or name it with KB_PYTHON=/path/to/python3"
+fi
+[ "$PY" = "$(command -v python3 2>/dev/null || true)" ] || say "python: using $PY"
+python3() { "$PY" "$@"; }   # every later python3 call in this script runs the one found
 command -v git >/dev/null 2>&1 || die "git not found"
 
 # 2. The config: an old install (sessions-kb) keeps its settings
@@ -183,6 +218,7 @@ if os.path.exists(path):
 data["root"] = root
 data["host"] = host
 data["code"] = code                                 # plugin caches run this clone (bin/kb)
+data["python"] = sys.executable                     # the Python 3.9+ with FTS5 that install.sh found; bin/kb runs it
 if not isinstance(data.get("auto_sync"), bool):
     data["auto_sync"] = False                       # on after the first full backfill, or with `kb enable`
     data["auto_sync_pending"] = True                # kb.sync: the first full backfill turns auto_sync on

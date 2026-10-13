@@ -8,7 +8,7 @@ description: Set up retroagent on a machine, give it a unique host name, and kee
 ## Requirements
 
 - git
-- Python 3.9+ with SQLite FTS5 (`/usr/bin/python3` on macOS works)
+- Python 3.9+ with SQLite FTS5 (`/usr/bin/python3` on macOS works). `install.sh` also tries `python3.N`, Homebrew and `KB_PYTHON=/path`, then uv (`uv python find`, else `uv python install 3.12`), and records the one it uses as `python` in the config
 
 These tools are optional:
 

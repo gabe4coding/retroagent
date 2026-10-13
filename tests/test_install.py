@@ -579,15 +579,15 @@ def test_a_host_without_a_folder_is_free(tmp_path):
 def test_python_older_than_3_9_stops_the_install(tmp_path):
     m = Machine(tmp_path)
     m.tool("python3", '#!/bin/sh\ncase "$2" in *version_info*) exit 1;; esac\necho 3.8\n')
-    p = m.install("--host", "h")
+    p = m.install("--host", "h", KB_INSTALL_PYTHONS="python3")      # only the fake: a good python3.N may be installed
     assert p.returncode == 1 and "3.9" in _out(p) and not (m.root).exists()
 
 
 def test_python_without_fts5_stops_the_install(tmp_path):
     m = Machine(tmp_path)
-    m.tool("python3", '#!/bin/sh\ncase "$2" in *version_info*) exit 0;; *fts5*) exit 1;; esac\nexit 0\n')
-    p = m.install("--host", "h")
-    assert p.returncode == 1 and "FTS5" in _out(p) and not (m.root).exists()
+    m.tool("python3", '#!/bin/sh\ncase "$2" in *fts5*) exit 1;; *version_info*) exit 0;; esac\nexit 0\n')
+    p = m.install("--host", "h", KB_INSTALL_PYTHONS="python3")
+    assert p.returncode == 1 and "has no SQLite FTS5" in _out(p) and not (m.root).exists()
 
 
 def test_unknown_options_are_refused(tmp_path):
@@ -628,3 +628,49 @@ def test_a_host_that_already_has_sessions_is_not_told_to_backfill(tmp_path):
     p = m.install("--host", "laptop-1", "--force-host")
     assert p.returncode == 0, _out(p)
     assert "kb backfill" not in p.stdout and "Next step: kb enable" in p.stdout
+
+
+# ---- install.sh picks a Python 3.9+ with SQLite FTS5 (the first python3 can be too old or lack FTS5)
+
+OLD_PYTHON = '#!/bin/sh\ncase "$*" in *version_info*) printf "3.8\\n"; exit 1 ;; esac\nexit 1\n'
+
+
+def test_a_too_old_python3_is_skipped_for_a_good_one_named_in_kb_python(tmp_path):
+    m = Machine(tmp_path)
+    m.tool("python3", OLD_PYTHON)
+    p = m.install("--host", "h", KB_INSTALL_PYTHONS="python3", KB_PYTHON=sys.executable)
+    assert p.returncode == 0, _out(p)
+    assert m.config["python"] == sys.executable
+
+
+def test_without_a_good_python_install_says_why_each_one_failed(tmp_path):
+    m = Machine(tmp_path)
+    m.tool("python3", OLD_PYTHON)
+    p = m.install("--host", "h", KB_INSTALL_PYTHONS="python3")
+    assert p.returncode != 0
+    assert "older than 3.9" in _out(p) and "FTS5" in _out(p) and "KB_PYTHON" in _out(p)
+    assert not m.config_file.exists()
+
+
+def test_uv_finds_a_python_when_none_on_path_is_good_enough(tmp_path):
+    m = Machine(tmp_path)
+    m.tool("python3", OLD_PYTHON)
+    m.tool("uv", f'#!/bin/sh\nprintf \'uv %s\\n\' "$*" >> "$FAKE_LOG"\n[ "$1 $2" = "python find" ] && echo {sys.executable}\n')
+    p = m.install("--host", "h", KB_INSTALL_PYTHONS="python3")
+    assert p.returncode == 0, _out(p)
+    assert m.config["python"] == sys.executable
+    assert any(c.startswith("uv python find") for c in m.calls())
+
+
+def test_bin_kb_runs_the_python_of_the_config(tmp_path):
+    home = tmp_path / "home"
+    cfg = home / ".config/retroagent/config.json"
+    cfg.parent.mkdir(parents=True)
+    marker = tmp_path / "ran"
+    fake = tmp_path / "py"
+    fake.write_text(f'#!/bin/sh\necho "$*" > {marker}\n')
+    fake.chmod(0o755)
+    cfg.write_text(json.dumps({"python": str(fake)}))
+    p = subprocess.run([str(REPO / "bin/kb"), "--help"], env={"HOME": str(home), "PATH": SYSTEM_PATH},
+                       capture_output=True, text=True, timeout=10)
+    assert p.returncode == 0 and marker.read_text().strip() == "-m kb --help"
