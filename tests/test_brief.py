@@ -35,11 +35,16 @@ def test_the_first_sync_line_comes_before_the_kb_line_while_the_backfill_is_pend
     assert brief.build(tmp_path, str(tmp_path)) == brief.KB_LINE
 
 
-def test_a_plugin_that_claude_code_loads_at_another_version_adds_one_line_before_the_kb_line(tmp_path):
-    text = brief.build(tmp_path, str(tmp_path), first_sync_pending=True, plugin_drift=("0.4.1", "0.11.0"))
-    assert text.splitlines() == [brief.FIRST_SYNC_LINE, brief.plugin_line(("0.4.1", "0.11.0")), brief.KB_LINE]
-    line = brief.plugin_line(("0.4.1", "0.11.0"))
-    assert "0.4.1" in line and "0.11.0" in line and "`kb update`" in line
+def test_a_plugin_that_an_agent_loads_at_another_version_adds_one_line_before_the_kb_line(tmp_path):
+    drift = ("0.11.0", {"Claude Code": "0.4.1"})
+    text = brief.build(tmp_path, str(tmp_path), first_sync_pending=True, plugin_drift=drift)
+    assert text.splitlines() == [brief.FIRST_SYNC_LINE, brief.plugin_line(drift), brief.KB_LINE]
+    line = brief.plugin_line(drift)
+    assert line.startswith("Claude Code loads the retroagent plugin 0.4.1, but the code clone has 0.11.0:")
+    assert "`kb update`" in line
+    line = brief.plugin_line(("0.11.0", {"Claude Code": "0.4.1", "Codex": "0.10.2"}))
+    assert line.startswith("Claude Code loads the retroagent plugin 0.4.1 and Codex loads the retroagent plugin "
+                           "0.10.2, but the code clone has 0.11.0:")
     assert brief.plugin_line(()) == ""
 
 

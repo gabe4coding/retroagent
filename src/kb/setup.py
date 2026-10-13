@@ -353,7 +353,7 @@ def plugin_version() -> str:
         return ""
 
 
-def installed_plugin_version() -> str:
+def claude_plugin_version() -> str:
     """The retroagent version of Claude Code's user install: its cache copy is what sessions load, until a
     `claude plugin update` copies a new one. "" when it is not installed or the file is unreadable."""
     path = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
@@ -367,10 +367,47 @@ def installed_plugin_version() -> str:
     return ""
 
 
-def plugin_drift() -> tuple:
-    """(installed, clone) when Claude Code loads another retroagent version than the code clone's, else ()."""
-    installed, clone = installed_plugin_version(), plugin_version()
-    return (installed, clone) if installed and clone and installed != clone else ()
+def _codex_version_key(name: str) -> tuple:
+    """Codex's order of the version folders of a plugin: "local" first, then the highest version."""
+    parts = name.split(".")
+    if name == "local":
+        return (2, ())
+    return (1, tuple(int(p) for p in parts)) if all(p.isdigit() for p in parts) else (0, (name,))
+
+
+def codex_plugin_version(codex_home) -> str:
+    """The retroagent version Codex loads. Codex keeps no install record: `codex plugin add retroagent@<marketplace>`
+    copies the plugin to <codex_home>/plugins/cache/<marketplace>/retroagent/<version>/, and Codex loads one of these
+    folders (_codex_version_key). The marketplace is the one refresh_plugins adds retroagent to, as named in
+    ~/.agents/plugins/marketplace.json (scripts/codex_marketplace.py). The version is the one in the plugin.json of that
+    folder. "" when it is not installed or has no version."""
+    marketplace = Path.home() / ".agents" / "plugins" / "marketplace.json"
+    try:
+        name = json.loads(marketplace.read_text(encoding="utf-8"))["name"]
+    except (OSError, ValueError, KeyError, TypeError):
+        name = ""
+    base = Path(codex_home) / "plugins" / "cache" / (name if isinstance(name, str) and name.strip() else "personal")
+    try:
+        versions = [d for d in (base / "retroagent").iterdir() if d.is_dir()]
+        manifest = max(versions, key=lambda d: _codex_version_key(d.name)) / ".codex-plugin" / "plugin.json"
+        return str(json.loads(manifest.read_text(encoding="utf-8")).get("version") or "")
+    except (OSError, ValueError, AttributeError):     # max() of no folder is a ValueError too
+        return ""
+
+
+def installed_plugin_versions(cfg) -> dict:
+    """{agent: the retroagent version it loads}, for Claude Code and Codex when they have it installed. Codex counts
+    only with `codex` on PATH, as in refresh_plugins: else no refresh can change its cache."""
+    found = {"Claude Code": claude_plugin_version(),
+             "Codex": codex_plugin_version(cfg.codex_home) if shutil.which("codex") else ""}
+    return {agent: version for agent, version in found.items() if version}
+
+
+def plugin_drift(cfg) -> tuple:
+    """(clone, {agent: installed}) for the agents that load another retroagent version than the code clone's, or ()."""
+    clone = plugin_version()
+    stale = {agent: v for agent, v in installed_plugin_versions(cfg).items() if v != clone} if clone else {}
+    return (clone, stale) if stale else ()
 
 
 def refresh_plugins() -> list:
@@ -398,8 +435,8 @@ def refresh_plugins() -> list:
 def auto_update(cfg) -> str:
     """`kb sync --auto` with auto_update on: at most once a day, fast-forward the code clone this runs from, when it
     sits clean on its default branch. Then refresh the plugins when the pull brought a new plugin version, or when
-    Claude Code still loads another version than the clone's (`kb update` pulled it, or a refresh failed): a refresh
-    that fails is tried again the next day. One line for the log, or ""."""
+    Claude Code or Codex still loads another version than the clone's (`kb update` pulled it, or a refresh failed): a
+    refresh that fails is tried again the next day. One line for the log, or ""."""
     import time
     if not (CODE_ROOT / ".git").exists():
         return ""
@@ -425,13 +462,13 @@ def auto_update(cfg) -> str:
         line = f"code update failed: {' '.join((p.stderr or p.stdout).split())[:300]}"
     else:
         line = f"code updated {before[:7]}..{after[:7]}" if after != before else ""
-    drift = plugin_drift()
+    drift = plugin_drift(cfg)
     if drift or plugin_version() != version:
         failed = refresh_plugins()
-        if not failed and plugin_drift():           # `claude plugin update` exited 0 but did not copy the new version
-            failed = [f"Claude Code still loads {installed_plugin_version()}"]
-        refresh = f"plugin {drift[0] if drift else version} -> {plugin_version()}" \
-                  + (f" (failed: {'; '.join(failed)})" if failed else "")
+        if not failed:      # the plugin commands exited 0, but one of them can still leave the old version
+            failed = [f"{agent} still loads {v}" for agent, v in (plugin_drift(cfg) or ("", {}))[1].items()]
+        old = ", ".join(f"{agent} {v}" for agent, v in drift[1].items()) if drift else version
+        refresh = f"plugin {old} -> {plugin_version()}" + (f" (failed: {'; '.join(failed)})" if failed else "")
         line = f"{line}, {refresh}" if line else refresh
     return line
 

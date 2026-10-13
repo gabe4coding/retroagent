@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: What to do when a sync fails, a host is claimed by another machine, the index is missing, or Claude Code loads an old plugin.
+description: What to do when a sync fails, a host is claimed by another machine, the index is missing, or Claude Code or Codex loads an old plugin.
 ---
 
 # Troubleshooting
@@ -55,11 +55,14 @@ To fix it, run `kb reindex` one time from a normal shell.
 
 ## `plugin: WARNING Claude Code loads retroagent <old>, the code clone has <new>`
 
-Symptom: `kb status` shows this line. The hooks and skills of the new version are not active in your sessions.
+Symptom: `kb status` shows this line, or the same line for Codex. The hooks and skills of the new version are not
+active in your sessions.
 
-Claude Code sessions load the plugin from a cache, and the cache still holds the old version. To fix it, run
-`kb update`, then start a new session. If the warning stays, run `claude plugin update retroagent@retroagent` to see
-the error.
+Claude Code and Codex sessions load the plugin from a cache, and the cache still holds the old version. To fix it,
+run `kb update`, then start a new session. If the warning stays, run the command of the agent to see the error:
+
+- Claude Code: `claude plugin update retroagent@retroagent`
+- Codex: `codex plugin add retroagent@personal` (use the name of your Codex personal marketplace)
 
 ## Semantic search uses keywords only
 

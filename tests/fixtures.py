@@ -375,6 +375,27 @@ def write_installed_plugins(home, version, plugin="retroagent@retroagent", scope
     return path
 
 
+def write_codex_plugin_cache(codex_home, version, marketplace="personal", plugin="retroagent"):
+    """The copy `codex plugin add` makes in <codex_home>/plugins/cache/<marketplace>/<plugin>/<version>/. Codex keeps no
+    install record: the folder name is the version it loads. Adds a version folder, as Codex does before it removes the
+    old ones."""
+    folder = Path(codex_home) / "plugins" / "cache" / marketplace / plugin / version
+    (folder / ".codex-plugin").mkdir(parents=True, exist_ok=True)
+    (folder / ".codex-plugin" / "plugin.json").write_text(json.dumps({"name": plugin, "version": version}))
+    return folder
+
+
+def codex_on_path(monkeypatch, folder, installed=True):
+    """PATH with a `codex` that does nothing first in it, or (installed=False) without any `codex`: kb looks at the
+    Codex plugin cache only when codex is installed."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "codex").write_text("#!/bin/sh\nexit 0\n")
+    (folder / "codex").chmod(0o755)
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and not (Path(d) / "codex").exists()]
+    monkeypatch.setenv("PATH", os.pathsep.join(([str(folder)] if installed else []) + dirs))
+
+
 def make_config(root, host, claude_dir, codex_sessions, codex_home, **kw):
     from kb.config import Config
     return Config(root=Path(root), host=host, claude_dir=Path(claude_dir), codex_dirs=[Path(codex_sessions)],

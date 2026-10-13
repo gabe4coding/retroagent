@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from fixtures import write_installed_plugins
+from fixtures import age, codex_on_path, write_codex_plugin_cache, write_installed_plugins
 
 from kb import config, setup
 
@@ -283,46 +283,101 @@ def test_auto_update_refreshes_a_plugin_that_claude_code_loads_at_another_versio
     write_installed_plugins(Path.home(), "0.9.0")
     calls = []
     monkeypatch.setattr(setup, "refresh_plugins", lambda: calls.append(1) or ["claude plugin update retroagent@retroagent"])
-    assert setup.auto_update(cfg) == "plugin 0.9.0 -> 1.0.0 (failed: claude plugin update retroagent@retroagent)"
+    assert setup.auto_update(cfg) == "plugin Claude Code 0.9.0 -> 1.0.0 (failed: claude plugin update retroagent@retroagent)"
     assert setup.auto_update(cfg) == "" and calls == [1]                                # within a day
     next_day()
     monkeypatch.setattr(setup, "refresh_plugins", lambda: calls.append(1) or [])       # exits 0, changes nothing
-    assert setup.auto_update(cfg) == "plugin 0.9.0 -> 1.0.0 (failed: Claude Code still loads 0.9.0)"
+    assert setup.auto_update(cfg) == "plugin Claude Code 0.9.0 -> 1.0.0 (failed: Claude Code still loads 0.9.0)"
     next_day()
     monkeypatch.setattr(setup, "refresh_plugins",
                         lambda: calls.append(1) or write_installed_plugins(Path.home(), "1.0.0") and [])
     publish_code()
     line = setup.auto_update(cfg)
-    assert line.startswith("code updated ") and line.endswith(", plugin 0.9.0 -> 1.0.0") and len(calls) == 3
+    assert line.startswith("code updated ") and line.endswith(", plugin Claude Code 0.9.0 -> 1.0.0") and len(calls) == 3
     next_day()
     assert setup.auto_update(cfg) == "" and len(calls) == 3                             # in step: nothing to do
 
 
-# ---- the plugin version Claude Code loads
+@pytest.mark.slow
+def test_auto_update_refreshes_a_plugin_that_codex_loads_at_another_version(tmp_path, code_clone, monkeypatch):
+    """Codex still loads 0.9.0 from its cache: the daily run refreshes, and says when `codex plugin add` exits 0 but
+    leaves the old version."""
+    cfg = _cfg(tmp_path)
+    cfg.codex_home = tmp_path / "codex"
+    write_codex_plugin_cache(cfg.codex_home, "0.9.0")
+    write_installed_plugins(Path.home(), "1.0.0")                                       # Claude Code is up to date
+    monkeypatch.setattr(setup, "refresh_plugins", lambda: [])
+    codex_on_path(monkeypatch, tmp_path / "bin", installed=False)
+    assert setup.auto_update(cfg) == ""                                                 # no codex: no refresh can help
+    codex_on_path(monkeypatch, tmp_path / "bin")
+    age([cfg.kb_dir / "code-update"])
+    assert setup.auto_update(cfg) == "plugin Codex 0.9.0 -> 1.0.0 (failed: Codex still loads 0.9.0)"
 
-def test_installed_plugin_version_reads_the_user_install_of_retroagent():
-    assert setup.installed_plugin_version() == ""                                       # no file: not installed
+    def refresh():
+        write_codex_plugin_cache(cfg.codex_home, "1.0.0")
+        return []
+
+    monkeypatch.setattr(setup, "refresh_plugins", refresh)
+    age([cfg.kb_dir / "code-update"])
+    assert setup.auto_update(cfg) == "plugin Codex 0.9.0 -> 1.0.0"
+    age([cfg.kb_dir / "code-update"])
+    assert setup.auto_update(cfg) == ""                                                 # in step: nothing to do
+
+
+# ---- the plugin version Claude Code and Codex load
+
+def test_claude_plugin_version_reads_the_user_install_of_retroagent():
+    assert setup.claude_plugin_version() == ""                                          # no file: not installed
     write_installed_plugins(Path.home(), "0.4.1", scope="project")
-    assert setup.installed_plugin_version() == ""
+    assert setup.claude_plugin_version() == ""
     write_installed_plugins(Path.home(), "0.4.1", plugin="other@retroagent")
-    assert setup.installed_plugin_version() == ""
+    assert setup.claude_plugin_version() == ""
     path = write_installed_plugins(Path.home(), "0.4.1")
-    assert setup.installed_plugin_version() == "0.4.1"
+    assert setup.claude_plugin_version() == "0.4.1"
     for broken in ("{broken", "[]", '{"plugins": {"retroagent@retroagent": {"version": "1"}}}'):
         path.write_text(broken)
-        assert setup.installed_plugin_version() == ""
+        assert setup.claude_plugin_version() == ""
 
 
-def test_plugin_drift_compares_the_install_with_the_code_clone(tmp_path, monkeypatch):
-    code = tmp_path / "code"
+def test_codex_plugin_version_reads_the_folder_codex_loads(tmp_path):
+    codex = tmp_path / "codex"
+    assert setup.codex_plugin_version(codex) == ""                                      # no folder: not installed
+    write_codex_plugin_cache(codex, "0.4.1", plugin="other")
+    (codex / "plugins/cache/personal/retroagent").mkdir(parents=True)                  # no version folder
+    (codex / "plugins/cache/personal/retroagent/0.12.0").write_text("")                # a file, not a folder
+    assert setup.codex_plugin_version(codex) == ""
+    write_codex_plugin_cache(codex, "0.9.2")
+    write_codex_plugin_cache(codex, "0.11.2")
+    assert setup.codex_plugin_version(codex) == "0.11.2"                                # the highest, not 0.9.2
+    local = write_codex_plugin_cache(codex, "local")
+    assert setup.codex_plugin_version(codex) == "local"                                 # Codex prefers "local"
+    (local / ".codex-plugin/plugin.json").write_text('{"name": "retroagent"}')
+    assert setup.codex_plugin_version(codex) == ""                                      # no version to compare
+    write_codex_plugin_cache(codex, "0.3.0", marketplace="mine")
+    marketplace = Path.home() / ".agents/plugins/marketplace.json"
+    marketplace.parent.mkdir(parents=True)
+    marketplace.write_text('{"name": "mine", "plugins": []}')
+    assert setup.codex_plugin_version(codex) == "0.3.0"                                 # the marketplace refresh uses
+
+
+def test_plugin_drift_compares_each_install_with_the_code_clone(tmp_path, monkeypatch):
+    code, cfg = tmp_path / "code", _cfg(tmp_path)
+    cfg.codex_home = tmp_path / "codex"
     (code / ".claude-plugin").mkdir(parents=True)
     (code / ".claude-plugin/plugin.json").write_text('{"version": "0.11.0"}\n')
     monkeypatch.setattr(setup, "CODE_ROOT", code)
-    assert setup.plugin_drift() == ()                                                   # not installed in Claude Code
+    assert setup.plugin_drift(cfg) == ()                                                # not installed anywhere
     write_installed_plugins(Path.home(), "0.4.1")
-    assert setup.plugin_drift() == ("0.4.1", "0.11.0")
+    write_codex_plugin_cache(cfg.codex_home, "0.10.2")
+    codex_on_path(monkeypatch, tmp_path / "bin", installed=False)
+    assert setup.plugin_drift(cfg) == ("0.11.0", {"Claude Code": "0.4.1"})            # no codex on PATH
+    codex_on_path(monkeypatch, tmp_path / "bin")
+    assert setup.plugin_drift(cfg) == ("0.11.0", {"Claude Code": "0.4.1", "Codex": "0.10.2"})
     write_installed_plugins(Path.home(), "0.11.0")
-    assert setup.plugin_drift() == ()
+    assert setup.plugin_drift(cfg) == ("0.11.0", {"Codex": "0.10.2"})
+    write_codex_plugin_cache(cfg.codex_home, "0.11.0")
+    assert setup.plugin_drift(cfg) == ()
+    assert setup.installed_plugin_versions(cfg) == {"Claude Code": "0.11.0", "Codex": "0.11.0"}
 
 
 # ---- bin/kb in a plugin cache runs the recorded code clone
