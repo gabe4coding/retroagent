@@ -83,10 +83,9 @@ GUARD_CASES = [
 ]
 
 
-def _assert_guard(command, denied, env=None):
+def _assert_guard(command, denied, env=None, guard=PLUGIN / "bin/kb-guard"):
     event = {"session_id": "x", "tool_name": "Bash", "tool_input": {"command": command.replace("\\n", "\n")}}
-    p = subprocess.run([str(PLUGIN / "bin/kb-guard")], input=json.dumps(event), capture_output=True, text=True,
-                       timeout=5, env=env)
+    p = subprocess.run([str(guard)], input=json.dumps(event), capture_output=True, text=True, timeout=5, env=env)
     assert p.returncode == 0, p.stderr
     if denied:
         out = json.loads(p.stdout)["hookSpecificOutput"]
@@ -141,6 +140,40 @@ def test_guard_uses_the_config_python_when_python3_is_a_stub(tmp_path):
     env = _guard_path(tmp_path, stub=True)
     env["KB_CONFIG"] = str(cfg)
     _assert_guard('kb decide --note "a; b" --yes accept s-1', True, env)
+
+
+CACHED = ".claude/plugins/cache/retroagent/retroagent/0.0.1"     # where Claude Code caches the plugin, under HOME
+
+
+def _cached_guard(tmp_path, config=None):
+    """A copy of bin/kb-guard in a plugin cache under tmp_path, and an env whose config is `config` (None: no file)."""
+    guard = tmp_path / CACHED / "bin/kb-guard"
+    guard.parent.mkdir(parents=True)
+    shutil.copy(PLUGIN / "bin/kb-guard", guard)
+    cfg = tmp_path / "config.json"
+    if config is not None:
+        cfg.write_text(json.dumps(config))
+    return guard, {**os.environ, "KB_CONFIG": str(cfg)}
+
+
+def test_cached_guard_hands_over_to_the_code_clone(tmp_path):
+    clone = tmp_path / "clone"
+    (clone / "bin").mkdir(parents=True)
+    (clone / "bin/kb-guard").write_text("#!/bin/sh\nprintf 'clone:'\ncat\n")   # not executable: run with sh
+    guard, env = _cached_guard(tmp_path, {"code": str(clone)})
+    event = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}})
+    p = subprocess.run([str(guard)], input=event, capture_output=True, text=True, timeout=5, env=env)
+    assert p.returncode == 0 and p.stdout == "clone:" + event                 # the event on stdin passes through
+
+
+@pytest.mark.parametrize("case", ["no config", "no key", "missing clone", "cache"])
+def test_cached_guard_keeps_its_own_logic_without_a_code_clone(tmp_path, case):
+    # "cache": a "code" that is the cached copy itself would exec it again and again
+    config = {"no config": None, "no key": {}, "missing clone": {"code": "/no/such/clone"},
+              "cache": {"code": str(tmp_path / CACHED)}}[case]
+    guard, env = _cached_guard(tmp_path, config)
+    _assert_guard("kb decide accept s-1a2b3c", True, env, guard)
+    _assert_guard("kb decide --json", False, env, guard)
 
 
 def _hook_env(tmp_path):

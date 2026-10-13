@@ -40,7 +40,8 @@ It never uses your real data repo. The recipe also says when to skip `/verify`.
 
 When skills or hooks change, increase `version` in `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`.
 Claude Code and Codex keep a cache of plugins per version. The decide mod is part of the hooks, so the same rule
-applies to it.
+applies to it. The cached `bin/kb` and `bin/kb-guard` run the code clone, so `kb update` gives users a change to them
+or to `src/kb/`. The other scripts in `bin/` run from the cache, so a change to them needs a new version.
 
 ## More
 

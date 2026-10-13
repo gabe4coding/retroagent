@@ -26,6 +26,7 @@ runs the same hook scripts; it is not driven here.
 | The sync, gitops, redaction | `new --no-sync`, then `kb <dir> -- sync --now --no-summaries`; judge `data` |
 | `bin/kb-hook`, the brief | `hook` with any prompt; read the SessionStart answer in `hookEvents` |
 | `bin/kb-guard` | `hook` with a prompt that runs the command to deny or allow |
+| The hand-over of a cached copy to the code clone (`bin/kb`, `bin/kb-guard`) | `new --config '{"code": "<clone>"}'`, then `hook --cached`; `pluginLog` shows the hook path under `<dir>/plugins/cache/` |
 | `bin/kb-hint`, `src/kb/hint.py` | `hook` with a Bash command that fails with an error the seed page knows |
 | A skill | `hook` with the slash command as the prompt (`/retroagent:kb-search flaky test`) |
 | `hooks/decide.tsx` | `claude plugin validate .` and `claude plugin test .`; `hook` shows the mod load and its `kb decide --json` run in `pluginLog` |
@@ -48,6 +49,9 @@ Checked on 2026-10-13, all from one sandbox:
 - `kb <dir> -- find flaky` → the `demo-app` page and session `55555555`.
 - SessionStart → the page pointer, `[s-000001]`, and "1 retro suggestion waits".
 - `Run exactly this Bash command: kb decide accept s-000002 --yes` → `kb-guard` denies it.
+- `hook --cached` with `"code"` set to a folder whose `bin/kb-guard` only prints a deny with its own reason →
+  `echo hello` is denied with that reason, so the cached guard ran the clone's. With `"code"` set to this checkout,
+  the `kb decide accept` probe is denied and `echo` goes through.
 - `Run exactly this Bash command: sh -c 'echo "ModuleNotFoundError: No module named yaml" >&2; exit 1'` →
   `kb-hint` adds the `pip install -e .[dev]` fix, and `hintLog` has one line.
 - No change in `data.log` after a hook run with `auto_sync: false`.
