@@ -2,10 +2,12 @@
 # PreToolUse hook (Bash): refuse an agent's call to `kb decide accept|reject`. Only the owner answers the questions of
 # `kb decide` (src/kb/decide.py): in their own terminal, or with the buttons of the decide mod (hooks/decide.tsx), which run kb
 # directly and are no tool call. Session text can hold instructions from other people, and an accepted suggestion or
-# memory fix reaches every later session. The check tokenizes the command (quotes, # comments, and ; & | ( ) or a
-# newline as separators). It denies a kb token (a path that ends in /kb, or \kb, which shlex reads as kb) followed by
-# decide, then accept or reject before the next separator. It tokenizes the script of sh -c and eval the same way.
-# A search for those words in a file goes through. The interpreter is $KB_PYTHON, else "python" in the config, else
+# memory fix reaches every later session. The check tokenizes the command (quotes, and ; & | ( ) or a newline as
+# separators). A # starts a comment only at the start of a word, outside quotes. It denies a kb token (a path that
+# ends in /kb, or \kb, which shlex reads as kb) followed by decide, then accept or reject before the next separator.
+# It also looks inside $(...) and backticks, including inside double quotes, and it tokenizes the script of sh -c
+# and eval the same way. A search for those words in a file goes through. A pipe into a shell
+# (echo "kb decide accept s-1" | sh) is not caught. The interpreter is $KB_PYTHON, else "python" in the config, else
 # python3. Exit 10 means a match. Any other non-zero status (no python3, or the macOS stub that does not run) uses
 # the grep below. That grep is narrower: it misses a quoted kb, a call inside sh -c or eval, a separator inside a
 # quoted option, and \kb. It can also deny a # comment on the same line. Prints nothing and exits 0 otherwise.
@@ -32,12 +34,98 @@ if not isinstance(cmd, str):
     sys.exit(1)
 SEPS = set(";&|()\n")
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+SQ = "\x27"
+
+def strip_comments(text):
+    # Bash comments are a # at the start of a word, outside quotes. shlex would also cut at a#b.
+    out = []
+    i = 0
+    n = len(text)
+    quote = ""
+    start = True
+    while i < n:
+        c = text[i]
+        if quote:
+            out.append(c)
+            if quote == "\x22" and c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = ""
+            start = False
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(c)
+            out.append(text[i + 1])
+            i += 2
+            start = False
+            continue
+        if c == "#" and start:
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "\x22" or c == SQ:
+            quote = c
+            out.append(c)
+            start = False
+            i += 1
+            continue
+        out.append(c)
+        start = c in " \t\r\n;&|()"
+        i += 1
+    return "".join(out)
+
+def substitutions(text):
+    # $(...) and backticks run inside double quotes. Single quotes and a backslash do not.
+    i = 0
+    n = len(text)
+    quote = ""
+    while i < n:
+        c = text[i]
+        if quote == SQ:
+            if c == SQ:
+                quote = ""
+            i += 1
+            continue
+        if quote == "\x22":
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == "\x22":
+                quote = ""
+                i += 1
+                continue
+        else:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == "\x22" or c == SQ:
+                quote = c
+                i += 1
+                continue
+        if c == "$" and i + 1 < n and text[i + 1] == "(":
+            yield text[i + 2:]
+            i += 2
+            continue
+        if c == "`":
+            yield text[i + 1:]
+            i += 1
+            continue
+        i += 1
 
 def tokens(text):
     lex = shlex.shlex(io.StringIO(text), posix=True, punctuation_chars=";&|()\n")
     lex.whitespace = " \t\r"
-    lex.commenters = "#"
-    return list(lex)
+    lex.commenters = ""
+    out = []
+    try:
+        for tok in lex:
+            out.append(tok)
+    except ValueError:
+        pass
+    return out
 
 def is_sep(tok):
     return bool(tok) and set(tok) <= SEPS
@@ -68,7 +156,11 @@ def script_at(toks, i):
 def answers(text, depth=0):
     if depth > 4 or not text:
         return False
-    toks = tokens(text)
+    cleaned = strip_comments(text)
+    for inner in substitutions(cleaned):
+        if answers(inner, depth + 1):
+            return True
+    toks = tokens(cleaned)
     for i, tok in enumerate(toks):
         script = script_at(toks, i)
         if script and answers(script, depth + 1):

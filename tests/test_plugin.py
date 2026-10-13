@@ -67,6 +67,19 @@ GUARD_CASES = [
     ("kb decide show s-1 # then accept", False, True),
     ('grep -n "kb decide accept" docs/x.md; bash -c true', False, False),
     ("\\kb decide accept s-1a2b3c", True, False),
+    ('echo "$(kb decide --yes accept s-1)"', True, True),
+    ('x="`kb decide --yes accept s-1`"', True, True),
+    ("kb decide --yes --note a#b accept s-1", True, True),
+    ("foo#bar; kb decide accept s-1a2b3c", True, True),
+    ('echo "`kb decide --yes reject s-1`"', True, True),
+    ('out="$(/tmp/kb decide --yes accept s-1)"', True, True),
+    ('echo "$( kb decide --yes accept s-1 )"', True, True),
+    ('kb decide --note "a"#b accept s-1', True, True),
+    ('kb decide --note "#1" --yes accept s-1', True, True),
+    ("a#b&&kb decide reject s-1", True, True),
+    ("kb decide --note a#b # accept", False, True),
+    ("echo '$(kb decide --yes accept s-1)'", False, True),
+    ('echo "\\$(kb decide --yes accept s-1)"', False, True),
 ]
 
 
