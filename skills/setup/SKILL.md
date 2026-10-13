@@ -18,7 +18,8 @@ Rules:
 ## Steps
 
 0. **State.** `kb setup check` (no `kb` anywhere yet: `"${CLAUDE_PLUGIN_ROOT}/bin/kb" setup check`). It prints JSON.
-   Skip what is done; say in one line what is set up and what is left.
+   Skip what is done; say in one line what is set up and what is left. If `plugin_stale` lists files, say "same
+   version, content differs: the code repo needs a new plugin version" with the files.
 1. **Code clone.** install.sh, the shell's `kb`, Codex and updates run from one clone of the code. When `code_is_clone`
    is false and `~/.retroagent` does not exist, clone it without a question (it changes nothing outside this machine):
    `git clone https://github.com/gabe4coding/retroagent ~/.retroagent`. `<code>` below is that clone (or `code` when
