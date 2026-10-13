@@ -6,7 +6,9 @@
          `kb sync --now --no-summaries`; prints its folder
   kb     one command of this checkout's bin/kb in a sandbox, with the sandbox's KB_CONFIG, KB_ROOT and HOME
   hook   one headless Claude Code session with this checkout as the plugin, in <dir>/work/demo-app, with the sandbox's
-         KB_CONFIG and KB_ROOT (it keeps the real HOME for the login); the session is not saved
+         KB_CONFIG and KB_ROOT (it keeps the real HOME for the login); the session is not saved. With --cached, the
+         plugin is a copy in <dir>/plugins/cache/, like the one Claude Code runs, so its bin/kb and bin/kb-guard hand
+         over to "code" in the sandbox config (set it with new --config)
   clean  removes a sandbox
 
 kb, hook and clean refuse a folder without the sandbox marker, so no run reaches the real data repo. Git runs with
@@ -35,6 +37,7 @@ PREFIX = "ra-verify-"
 MARKER = ".ra-verify"
 PROJECT = "demo-app"                    # the seeded project page; sessions run in <dir>/work/demo-app
 KEEP = {"assistant", "user", "result"}  # the stream messages the evidence reads
+PLUGIN_PARTS = (".claude-plugin", ".codex-plugin", "bin", "hooks", "skills", "src", "types")  # what --cached copies
 # debug lines that only repeat a hook's output, which hookEvents already holds
 ECHO = re.compile(r"Checking first line|Parsed initial response|success:\\n|returned permissionDecision|Keeping /")
 
@@ -130,11 +133,21 @@ def cmd_kb(args) -> dict:
     return {"dir": str(d), **run_kb(d, args.kb_args, args.timeout), "data": data_state(d)}
 
 
+def cached_plugin(d: Path) -> Path:
+    """A fresh copy of the plugin where Claude Code caches it, under the version of the manifest."""
+    version = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"]
+    dest = d / "plugins" / "cache" / "retroagent" / "retroagent" / version
+    shutil.rmtree(dest, ignore_errors=True)
+    for part in PLUGIN_PARTS:
+        shutil.copytree(ROOT / part, dest / part, ignore=shutil.ignore_patterns("__pycache__"))
+    return dest
+
+
 def run_session(d: Path, args, run: str) -> tuple:
     """One session; its files in the sandbox are named by `run`, so parallel runs do not mix."""
     argv = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--include-hook-events", "--no-session-persistence",
-            "--plugin-dir", str(ROOT),
+            "--plugin-dir", str(cached_plugin(d) if args.cached else ROOT),
             # only this plugin's hooks: no user settings (their hooks, plugins, permission mode)
             "--setting-sources", "project,local", "--strict-mcp-config",
             "--allowedTools", args.allow,
@@ -257,6 +270,7 @@ def main() -> int:
     h.add_argument("--model", default="haiku")
     h.add_argument("--budget", type=float, default=0.5, help="--max-budget-usd of the session")
     h.add_argument("--timeout", type=float, default=600, help="seconds before the session is killed")
+    h.add_argument("--cached", action="store_true", help="run the plugin from a copy in <dir>/plugins/cache/")
     h.set_defaults(fn=cmd_hook)
     c = sub.add_parser("clean", help="remove a sandbox")
     c.add_argument("dir")

@@ -12,9 +12,20 @@
 # the grep below. That grep is narrower: it misses a quoted kb, a call inside sh -c or eval, a separator inside a
 # quoted option, and \kb. It can also deny a # comment on the same line. Prints nothing and exits 0 otherwise.
 # Defense in depth, not a sandbox: `kb decide` itself also refuses accept|reject without a terminal or --yes.
+# Like bin/kb, a plugin's cached copy (Claude Code, Codex) runs the guard of the code clone ("code" in the config)
+# instead, so a guard fix reaches the hook with `kb update`, without a version bump. The event on stdin passes through.
+CFG="${KB_CONFIG:-$HOME/.config/retroagent/config.json}"
+case "$0" in
+  */plugins/cache/*)
+    CLONE=""
+    [ -f "$CFG" ] && CLONE=$(sed -n 's/.*"code"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -n 1)
+    case "$CLONE" in
+      ""|*/plugins/cache/*) ;;
+      *) [ -f "$CLONE/bin/kb-guard" ] && exec /bin/sh "$CLONE/bin/kb-guard" ;;
+    esac ;;
+esac
 INPUT=$(cat)
 DENY='{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "retroagent: only the user answers `kb decide` questions, in their own terminal. Tell the user which answer you suggest and why; do not run it."}}'
-CFG="${KB_CONFIG:-$HOME/.config/retroagent/config.json}"
 PY=${KB_PYTHON:-}
 if [ -z "$PY" ] && [ -f "$CFG" ]; then
   PY=$(sed -n 's/.*"python"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -n 1)
