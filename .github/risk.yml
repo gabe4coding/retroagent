@@ -1,0 +1,61 @@
+# Rules of the deterministic risk classifier (.github/scripts/risk_tier.py).
+# The `risk` workflow reads this file from the BASE branch: a PR cannot loosen its own rules.
+# Any change to this file is T2-hard. Globs: `*` stays in one folder, `**` crosses folders,
+# a pattern without `/` matches the name in any folder.
+version: 1
+repo: gabe4coding/retroagent
+
+# T0 candidates. A PR whose files are all docs or tests (and that removes no assertion) is T0.
+docs: ["*.md", "*.mdx", "*.txt", "docs/**", "**/assets/**", "*.svg", "*.png", "*.jpg", "*.gif", "*.webp"]
+# Markdown that a model or an agent reads is product text, not docs: T1 at least.
+not_docs: [AGENTS.md, CLAUDE.md, CODING_STANDARDS.md, "skills/**", "hooks/**", "templates/**", ".claude/**", "scripts/**"]
+# Test infrastructure that enforces rules is code.
+not_tests: [tests/conftest.py, tests/fixtures.py]
+tests: ["tests/**", ".github/scripts/test_*.py"]
+generated: ["plugins/**"]
+
+# T2-hard: nothing lowers it.
+hard:
+  - .github/risk.yml
+  - .github/scripts/risk_tier.py
+  - .github/scripts/general_review.py
+  - .github/workflows/review.yml
+  - .github/workflows/risk.yml
+  - "**/publish*.yml"
+  - "**/release*.yml"
+  - "**/tag*.yml"
+  - CODEOWNERS
+  - .github/CODEOWNERS
+  - docs/CODEOWNERS
+  - "**/ruleset*"
+  - LICENSE
+  - LICENSE.*
+  - .gitleaks.toml
+  - ".githooks/**"
+# T2-soft: the guards, the redactor, the secret scan and the installer. Gabe, unless the LLM layer
+# (not active yet) shows the change only tightens.
+soft:
+  - bin/kb-guard
+  - src/kb/redact.py
+  - "**/gitleaks_fetch.py"
+  - install.sh
+  - "templates/data/.github/**"
+plugin_manifests: [.claude-plugin/plugin.json, .codex-plugin/plugin.json]
+publish_on_version: []          # plain only: package.json version publishes to npm
+dependency_manifests:
+  npm: [package.json]
+  python: [pyproject.toml]
+limits:
+  net_deleted_lines: 1000
+  changed_code_lines: 1500
+  changed_code_files: 40
+history_rewrite_text: "force[- ]?push|push --force|rewrite (the )?(git )?history|history rewrite|filter-(branch|repo)"
+
+hold:
+  # Never install those plugins: any path or added line that names them goes to HOLD.
+  forbidden_text: ["the[ _-]?fork"]
+  # Comment-pruning PRs are on hold.
+  comment_pruning:
+    title_or_branch: "(prune|pruning|strip|remove|drop|trim|delete)[-_ a-z]{0,20}comments|comments?[-_ ]?(prune|pruning|cleanup|removal)"
+    min_removed_lines: 20
+    comment_share: 0.7
