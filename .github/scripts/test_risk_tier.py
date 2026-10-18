@@ -5,8 +5,10 @@
 Pure: no git, no network (the git part has one test on a temporary repo, marked `git`).
 """
 
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,7 +21,6 @@ sys.path.insert(0, str(HERE))
 import risk_tier as rt  # noqa: E402
 
 RULES = rt.load_rules(str(HERE.parent / "risk.yml"))
-FORBIDDEN = "The" + "Fork"  # built at run time, so this file does not name it
 
 
 def f(path, added=(), removed=(), status="M", old_path=None):
@@ -81,7 +82,8 @@ def test_deleted_test_file_is_t1():
 
 
 def test_model_facing_markdown_is_not_docs():
-    assert tier(f("skills/pr-write/SKILL.md", ["new rule"]))["tier"] == "T1"
+    folder = next(p[:-3] for p in RULES["not_docs"] if p.endswith("/**") and "*" not in p[:-3])
+    assert tier(f(f"{folder}/x/SKILL.md", ["new rule"]))["tier"] == "T1"
     assert tier(f("AGENTS.md", ["x"]))["tier"] == "T1"
 
 
@@ -102,7 +104,8 @@ def test_ci_check_script_is_not_a_test():
 # ---------------------------------------------------------------- plugin versions and dependencies
 
 
-PLUGIN = ".claude-plugin/plugin.json"
+PLUGIN = next(iter(RULES.get("plugin_manifests") or []), None)
+PYPROJECT = next(iter((RULES.get("dependency_manifests") or {}).get("python") or []), None)
 
 
 @pytest.mark.parametrize("old,new,expected", [
@@ -113,6 +116,8 @@ PLUGIN = ".claude-plugin/plugin.json"
     ("0.2.3", "0.2.2", "T2-hard"),
 ])
 def test_plugin_version_bumps(old, new, expected):
+    if not PLUGIN:
+        pytest.skip("this repo has no plugin manifest")
     read = manifests(**{f"base:{PLUGIN}": json.dumps({"version": old}), f"head:{PLUGIN}": json.dumps({"version": new})})
     assert tier(f(PLUGIN, ['"version": "x"'], ['"version": "y"']), read=read)["tier"] == expected
 
@@ -135,6 +140,13 @@ def test_runtime_npm_bumps(old, new, expected):
     assert tier(f("package.json", ["x"], ["y"]), read=read)["tier"] == expected
 
 
+def test_moved_manifest_compares_with_its_old_place():
+    read = manifests(**{"base:old/package.json": json.dumps({"dependencies": {"a": "^1.0.0"}}),
+                        "head:package.json": json.dumps({"dependencies": {"a": "^1.0.0"}})})
+    r = tier(f("package.json", ["x"], status="R", old_path="old/package.json"), read=read)
+    assert not any(x["rule"] == "new-runtime-dependency" for x in r["reasons"])
+
+
 def test_dev_dependency_is_t1():
     read = manifests(**{"base:package.json": json.dumps({"devDependencies": {}}),
                         "head:package.json": json.dumps({"devDependencies": {"@types/node": "^24.0.0"}})})
@@ -144,8 +156,10 @@ def test_dev_dependency_is_t1():
 def test_new_python_runtime_dependency_is_t2_hard():
     base = '[project]\nname = "x"\ndependencies = ["pyyaml>=6"]\n'
     head = '[project]\nname = "x"\ndependencies = ["pyyaml>=6", "requests>=2"]\n'
-    read = manifests(**{"base:pyproject.toml": base, "head:pyproject.toml": head})
-    assert tier(f("pyproject.toml", ['"requests>=2"']), read=read)["tier"] == "T2-hard"
+    if not PYPROJECT:
+        pytest.skip("this repo has no Python manifest")
+    read = manifests(**{f"base:{PYPROJECT}": base, f"head:{PYPROJECT}": head})
+    assert tier(f(PYPROJECT, ['"requests>=2"']), read=read)["tier"] == "T2-hard"
 
 
 def test_publish_on_version(monkeypatch):
@@ -172,6 +186,16 @@ def test_soft_paths():
         pytest.skip("this repo lists no sensitive files")
     path = soft[0].replace("**/", "").replace("/**", "/x")
     assert tier(f(path, ["x"]))["tier"] == "T2-soft"
+
+
+def test_soft_content(monkeypatch):
+    monkeypatch.setitem(RULES, "soft_content", [{"paths": ["src/**"], "pattern": "secret|redact"}])
+    r = tier(f("src/x/page.ts", ["  return redactAll(text)"], ["  return text"]))
+    assert r["tier"] == "T2-soft" and r["reasons"][0]["rule"] == "sensitive-code"
+    assert tier(f("src/x/page.ts", ["  return a + b"]))["tier"] == "T1"
+    assert tier(f("lib/x.ts", ["secret"]))["tier"] == "T1"   # outside the paths
+    monkeypatch.setitem(RULES, "soft_content", [{"pattern": "redact"}])
+    assert tier(f("tests/test_x.py", ["    assert redact(x)"]))["tier"] == "T0"   # tests never match
 
 
 def test_additive_workflow_edit_is_t2_soft():
@@ -218,7 +242,9 @@ def test_size_limits():
 
 
 def test_history_rewrite_request():
-    assert tier(f("src/a.py", ["x"]), body="Then force-push the branch.")["tier"] == "T2-hard"
+    assert tier(f("src/a.py", ["x"]), title="Rewrite history to drop a file")["tier"] == "T2-hard"
+    assert tier(f("src/a.py", ["x"]), branch="fix/force-push-main")["tier"] == "T2-hard"
+    assert tier(f("src/a.py", ["x"]), body="/verify: a force push was denied.")["tier"] == "T1"
 
 
 def test_kill_switch_raises_everything():
@@ -230,10 +256,21 @@ def test_kill_switch_raises_everything():
 # ---------------------------------------------------------------- HOLD
 
 
-def test_forbidden_reference_is_hold():
-    assert tier(f("README.md", [f"Install the {FORBIDDEN} plugin"]))["tier"] == "HOLD"
-    assert tier(f(f"plugins/{FORBIDDEN.lower()}-x/plugin.json", ["{}"], status="A"))["tier"] == "HOLD"
-    assert tier(f("src/a.py", [], [f"# {FORBIDDEN}"]))["tier"] == "T1"   # removing a mention is fine
+def test_forbidden_name_is_hold(monkeypatch):
+    # A made-up name: the real ones are hashes in risk.yml, so this public repo never spells them.
+    monkeypatch.setitem(RULES, "hold", {**RULES["hold"], "forbidden_names_sha256": [hashlib.sha256(b"acmebrand").hexdigest()]})
+    assert tier(f("README.md", ["Install the AcmeBrand plugin"]))["tier"] == "HOLD"
+    assert tier(f("README.md", ["see acme-brand_tools"]))["tier"] == "HOLD"
+    assert tier(f("plugins/acmebrand-x/plugin.json", ["{}"], status="A"))["tier"] == "HOLD"
+    assert tier(f("cfg.yaml", ["checkout: ~/Repositories/acmebrand/app"]))["tier"] == "HOLD"
+    assert tier(f("src/a.py", [], ["# AcmeBrand"]))["tier"] == "T1"   # removing a mention is fine
+    assert tier(f("src/a.py", ["# the acme brand"]))["tier"] != "HOLD"   # words a space separates do not join
+    assert tier(f("src/a.py", ["# acmebrandnew"]))["tier"] != "HOLD"
+
+
+def test_rules_hold_the_names_as_hashes_only():
+    hashes = RULES["hold"]["forbidden_names_sha256"]
+    assert hashes and all(re.fullmatch(r"[0-9a-f]{64}", h) for h in hashes)
 
 
 def test_comment_pruning_by_title_is_hold():
@@ -252,11 +289,6 @@ def test_doc_edits_are_not_comment_pruning():
 
 
 # ---------------------------------------------------------------- the rules file and git
-
-
-def test_rules_file_never_names_the_forbidden_text():
-    text = (HERE.parent / "risk.yml").read_text(encoding="utf-8").lower()
-    assert FORBIDDEN.lower() not in text
 
 
 def test_parse_diff():

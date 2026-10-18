@@ -42,6 +42,5 @@ def test_render_has_marker_and_escapes_pipes():
     assert text.startswith(gr.MARKER) and "a \\| b" in text and "would block" in text and "does not match" in text
 
 
-def test_system_prompt_names_the_vendor_only_at_run_time():
-    source = Path(gr.__file__).read_text(encoding="utf-8")
-    assert gr.FORBIDDEN_VENDOR in gr.SYSTEM and gr.FORBIDDEN_VENDOR not in source
+def test_system_prompt_flags_new_plugins():
+    assert "third-party Claude Code plugin" in gr.SYSTEM

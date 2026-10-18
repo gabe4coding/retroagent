@@ -52,8 +52,12 @@ limits:
 history_rewrite_text: "force[- ]?push|push --force|rewrite (the )?(git )?history|history rewrite|filter-(branch|repo)"
 
 hold:
-  # Never install those plugins: any path or added line that names them goes to HOLD.
-  forbidden_text: ["the[ _-]?fork"]
+  # Never install the plugins of these vendors: a path or an added line that names one goes to HOLD.
+  # sha256 of the lowercase name, so this public repo does not spell it (risk_tier.name_hashes).
+  forbidden_names_sha256:
+    - de61d34d2cf76f1208bb2cfd0b417d7e6827c66ff5ffbaa765d31c8a92f5cf41
+    - 219edac479105ee0f6e4b0323ed589d2523d1204767d11797b052eaf1fdb05cb
+  forbidden_text: []   # optional regexes, for text that is not a secret
   # Comment-pruning PRs are on hold.
   comment_pruning:
     title_or_branch: "(prune|pruning|strip|remove|drop|trim|delete)[-_ a-z]{0,20}comments|comments?[-_ ]?(prune|pruning|cleanup|removal)"

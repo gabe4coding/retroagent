@@ -16,6 +16,7 @@ head contents of a few manifests; `collect` reads them from git. No network, no 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -162,6 +163,29 @@ def _spec_floor(spec: str) -> Optional[str]:
     return m.group(0) if m else None
 
 
+# ---------------------------------------------------------------------------- forbidden names
+
+
+_WORD = re.compile(r"[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*")
+_CAMEL = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+
+
+def name_hashes(text: str, max_parts: int = 3) -> set:
+    """sha256 of each name a text can spell: a word, or 2-3 adjacent parts of a word split at
+    `-`, `_` or a camelCase boundary ("TheBrand", "the-brand", "the_brand_x" all spell
+    "thebrand"). Words that a space separates never join."""
+    out = set()
+    for word in _WORD.findall(text):
+        parts = [p.lower() for chunk in re.split(r"[_-]", word) for p in (_CAMEL.findall(chunk) or [chunk])]
+        whole = "".join(parts)
+        cands = {whole}
+        for n in range(1, max_parts + 1):
+            for i in range(len(parts) - n + 1):
+                cands.add("".join(parts[i:i + n]))
+        out.update(hashlib.sha256(c.encode()).hexdigest() for c in cands)
+    return out
+
+
 # ---------------------------------------------------------------------------- dependency rules
 
 
@@ -202,11 +226,12 @@ def dependency_reasons(change: Change, rules: dict) -> List[Reason]:
     manifests = rules.get("dependency_manifests") or {}
     readers = [(p, _npm_runtime) for p in manifests.get("npm", ["package.json"])]
     readers += [(p, _py_runtime) for p in manifests.get("python", ["pyproject.toml"])]
-    changed = {f.path for f in change.files}
+    changed = {f.path: f for f in change.files}
     for path, parse in readers:
         if path not in changed:
             continue
-        before, after = parse(change.read(path, "base")), parse(change.read(path, "head"))
+        old_path = changed[path].old_path or path   # a moved manifest compares with its old place
+        before, after = parse(change.read(old_path, "base")), parse(change.read(path, "head"))
         for name, spec in sorted(after.items()):
             if name not in before:
                 reasons.append(Reason("T2-hard", "new-runtime-dependency", f"{path}: adds runtime dependency `{name}`"))
@@ -255,12 +280,17 @@ def classify(change: Change, rules: dict) -> dict:
     text_rx = [re.compile(p, re.I) for p in (rules.get("hold") or {}).get("forbidden_text", [])]
 
     # HOLD: forbidden refs (paths or added lines), comment pruning
+    names = {h.lower() for h in (rules.get("hold") or {}).get("forbidden_names_sha256", [])}
     for f in files:
         for rx in text_rx:
             hit = next((p for p in _paths(f) if rx.search(p)), None) or next((l for l in f.added if rx.search(l)), None)
             if hit is not None:
                 reasons.append(Reason("HOLD", "forbidden-ref", f"`{f.path}` adds a forbidden reference ({rx.pattern})"))
                 break
+        else:
+            # the names are stored as hashes, so this public repo never spells them out
+            if names and any(name_hashes(t) & names for t in [*_paths(f), *f.added]):
+                reasons.append(Reason("HOLD", "forbidden-ref", f"`{f.path}` adds a forbidden name"))
     prune = (rules.get("hold") or {}).get("comment_pruning") or {}
     title_rx = prune.get("title_or_branch")
     if title_rx and re.search(title_rx, f"{change.title}\n{change.branch}", re.I):
@@ -276,10 +306,10 @@ def classify(change: Change, rules: dict) -> dict:
                                   f"{len(comments)} of {len(removed)} removed code lines are comments"))
 
     # T2-hard
-    pr_text = f"{change.title}\n{change.body}"
+    # Title and branch only: PR bodies often describe a guard that denies a force push.
     hist = rules.get("history_rewrite_text")
-    if hist and re.search(hist, pr_text, re.I):
-        reasons.append(Reason("T2-hard", "history-rewrite", "the PR asks for a history rewrite or force push"))
+    if hist and re.search(hist, f"{change.title}\n{change.branch}", re.I):
+        reasons.append(Reason("T2-hard", "history-rewrite", "the title or branch asks for a history rewrite or force push"))
     for f in files:
         if _any_match(f, rules.get("hard")):
             reasons.append(Reason("T2-hard", "hard-path", f"touches `{f.path}`"))
@@ -287,6 +317,16 @@ def classify(change: Change, rules: dict) -> dict:
             reasons.append(workflow_reason(f))
         elif _any_match(f, rules.get("soft")):
             reasons.append(Reason("T2-soft", "sensitive-path", f"touches `{f.path}`"))
+        elif not is_test(f, rules):
+            for rule in rules.get("soft_content") or []:
+                if not _any_match(f, rule.get("paths") or ["**"]):
+                    continue
+                rx = re.compile(rule["pattern"], re.I)
+                hit = next((l for l in f.added + f.removed if rx.search(l)), None)
+                if hit is not None:
+                    reasons.append(Reason("T2-soft", "sensitive-code",
+                                          f"`{f.path}` changes a line with `{rx.search(hit).group(0)}`"))
+                    break
     for path in rules.get("publish_on_version") or []:
         if any(f.path == path for f in files):
             old, new = _version(change.read(path, "base")), _version(change.read(path, "head"))
