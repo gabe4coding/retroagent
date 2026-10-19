@@ -21,6 +21,11 @@ hard:
   - .github/scripts/general_review.py
   - .github/workflows/review.yml
   - .github/workflows/risk.yml
+  # Reviewer config can change what the hosted reviewer allows.
+  - greptile.json
+  - ".greptile/**"
+  - .coderabbit.yaml
+  - .coderabbit.yml
   - "**/publish*.yml"
   - "**/release*.yml"
   - "**/tag*.yml"
