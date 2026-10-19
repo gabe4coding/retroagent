@@ -441,13 +441,42 @@ def greptile(conclusion="success", status="completed", sha=HEAD, app="greptile-a
     return run
 
 
-def test_a_passing_greptile_check_does_not_lower_the_tier():
-    ok = [greptile()]
-    assert rt.reviewer_passed({"check_runs": ok}, HEAD) is True
+def pr47():
+    return json.loads((HERE / "fixtures" / "greptile_pr47.json").read_text(encoding="utf-8"))
+
+
+def summary_body(score=5, sha=HEAD):
+    """The real PR 47 summary, with the score and the reviewed commit replaced."""
+    data = pr47()
+    body = data["comments"][0]["body"]
+    body = re.sub(r"Confidence Score:\s*\d+\s*/\s*5", f"Confidence Score: {score}/5", body, count=1)
+    body = re.sub(r"greptile_confidence_score:\d+", f"greptile_confidence_score:{score}", body, count=1)
+    return body.replace(data["head_sha"], sha)
+
+
+def summary(score=5, sha=HEAD, login="greptile-apps[bot]", user_type="Bot", updated="2026-10-19T11:25:14Z", body=None):
+    return {"user": {"login": login, "type": user_type}, "created_at": "2026-10-19T10:55:54Z", "updated_at": updated,
+            "body": summary_body(score, sha) if body is None else body}
+
+
+def signal(runs=None, comments=None, reviews=None, score=5, sha=HEAD):
+    if runs is None:
+        runs = [greptile(sha=sha)]
+    if comments is None:
+        comments = [summary(score, sha)]
+    return {"check_runs": runs, "comments": comments, "review_comments": list(reviews or [])}
+
+
+def test_a_passing_greptile_review_does_not_lower_the_tier():
+    ok = signal()
+    assert rt.reviewer_passed(ok, HEAD) is True
     assert tier(f("README.md", ["x"]), checks=ok, head_sha=HEAD)["tier"] == "T0"
     soft = tier(f(".github/workflows/test.yml", ["  lint:", "    runs-on: ubuntu-latest"]), checks=ok, head_sha=HEAD)
     assert soft["tier"] == "T2-soft" and not any(x["rule"] == "reviewer-not-passed" for x in soft["reasons"])
     assert tier(f("LICENSE", ["x"]), checks=ok, head_sha=HEAD)["tier"] == "T2-hard"
+    # a successful check on its own is not a pass
+    assert rt.reviewer_passed({"check_runs": [greptile()]}, HEAD) is False
+    assert tier(f("README.md", ["x"]), checks=[greptile()], head_sha=HEAD)["tier"] == "T1"
 
 
 def test_a_failed_greptile_check_raises_one_tier():
@@ -481,7 +510,8 @@ def test_a_greptile_check_on_an_old_sha_does_not_pass():
     assert rt.reviewer_state(old, HEAD) == "stale"
     assert tier(f("README.md", ["x"]), checks=old, head_sha=HEAD)["tier"] == "T1"
     # a failure on the previous head does not block a pass on this head
-    both = [greptile("failure", sha=OLD), greptile(sha=HEAD)]
+    both = signal(runs=[greptile("failure", sha=OLD), greptile(sha=HEAD)])
+    assert rt.reviewer_state(both["check_runs"], HEAD) == "passed"
     assert rt.reviewer_passed(both, HEAD) is True
     assert tier(f("README.md", ["x"]), checks=both, head_sha=HEAD)["tier"] == "T0"
 
@@ -503,7 +533,97 @@ def test_a_later_pass_on_this_head_clears_an_earlier_failure():
     runs = [greptile("failure", completed_at="2026-10-19T00:00:00Z"),
             greptile(completed_at="2026-10-19T01:00:00Z")]
     assert rt.reviewer_state(runs, HEAD) == "passed"
-    assert tier(f("README.md", ["x"]), checks=runs, head_sha=HEAD)["tier"] == "T0"
+    sig = signal(runs=runs)
+    assert rt.reviewer_passed(sig, HEAD) is True
+    assert tier(f("README.md", ["x"]), checks=sig, head_sha=HEAD)["tier"] == "T0"
+
+
+def test_real_greptile_review_with_score_0_and_p1_does_not_pass():
+    # Trimmed from gabe4coding/claude-code-mode#47 at 5075dbc: success check, score 0/5, three P1s.
+    data = pr47()
+    sha = data["head_sha"]
+    sig = {"check_runs": [greptile(sha=sha)], "comments": data["comments"], "review_comments": data["review_comments"]}
+    assert "Confidence Score: 0/5" in data["comments"][0]["body"]
+    assert any(c["commit_id"] == sha and 'alt="P1"' in c["body"] for c in data["review_comments"])
+    assert rt.reviewer_passed(sig, sha) is False
+    assert tier(f("README.md", ["x"]), checks=sig, head_sha=sha)["tier"] == "T1"
+
+
+@pytest.mark.parametrize("score", [4, 5])
+def test_score_4_or_5_with_no_p0_or_p1_passes(score):
+    data = pr47()
+    old = [c for c in data["review_comments"] if c["commit_id"] != data["head_sha"]]
+    on_head = json.loads(json.dumps(next(c for c in data["review_comments"] if 'alt="P2"' in c["body"])))
+    on_head["commit_id"] = HEAD
+    sig = signal(score=score, reviews=old + [on_head])
+    assert rt.reviewer_passed(sig, HEAD) is True
+    assert tier(f("README.md", ["x"]), checks=sig, head_sha=HEAD)["tier"] == "T0"
+
+
+def test_score_3_does_not_pass():
+    sig = signal(score=3)
+    assert rt.reviewer_outcome(sig, HEAD) == "low-score"
+    assert tier(f("README.md", ["x"]), checks=sig, head_sha=HEAD)["tier"] == "T1"
+
+
+def test_summary_on_an_old_sha_does_not_pass():
+    sig = signal(runs=[greptile()], comments=[summary(5, OLD)])
+    assert rt.reviewer_outcome(sig, HEAD) == "old-sha"
+    assert tier(f("README.md", ["x"]), checks=sig, head_sha=HEAD)["tier"] == "T1"
+
+
+def test_no_summary_does_not_pass():
+    sig = signal(comments=[])
+    assert rt.reviewer_outcome(sig, HEAD) == "no-summary"
+    assert tier(f("README.md", ["x"]), checks=sig, head_sha=HEAD)["tier"] == "T1"
+
+
+def test_an_unparseable_score_does_not_pass():
+    body = re.sub(r"Confidence Score:\s*\d+\s*/\s*5", "Confidence Score: high/5", summary_body(5, HEAD), count=1)
+    body = re.sub(r"greptile_confidence_score:\d+", "greptile_confidence_score:?", body, count=1)
+    sig = signal(comments=[summary(body=body)])
+    assert rt.reviewer_outcome(sig, HEAD) == "unparseable"
+    assert tier(f("README.md", ["x"]), checks=sig, head_sha=HEAD)["tier"] == "T1"
+
+
+def test_a_p0_inline_comment_does_not_pass():
+    data = pr47()
+    review = json.loads(json.dumps(next(c for c in data["review_comments"] if c["commit_id"] == data["head_sha"])))
+    review["commit_id"] = HEAD
+    review["body"] = review["body"].replace('alt="P1"', 'alt="P0"').replace("badges/p1.svg", "badges/p0.svg")
+    sig = signal(score=5, reviews=[review])
+    assert rt.reviewer_outcome(sig, HEAD) == "blocking"
+    assert tier(f("README.md", ["x"]), checks=sig, head_sha=HEAD)["tier"] == "T1"
+
+
+def test_a_p1_on_an_old_commit_does_not_block():
+    data = pr47()
+    old = next(c for c in data["review_comments"] if c["commit_id"] != data["head_sha"] and 'alt="P1"' in c["body"])
+    sig = signal(score=5, reviews=[old])
+    assert old["commit_id"] != HEAD
+    assert rt.reviewer_passed(sig, HEAD) is True
+    assert tier(f("README.md", ["x"]), checks=sig, head_sha=HEAD)["tier"] == "T0"
+
+
+def test_the_same_summary_from_another_author_does_not_pass():
+    sig = signal(comments=[summary(5, HEAD, login="gabe-bots[bot]")])
+    assert rt.reviewer_outcome(sig, HEAD) == "no-summary"
+    sig = signal(comments=[summary(5, HEAD, user_type="User")])
+    assert rt.reviewer_passed(sig, HEAD) is False
+
+
+def test_a_failed_check_with_a_good_comment_does_not_pass():
+    sig = signal(runs=[greptile("failure")], score=5)
+    assert rt.reviewer_outcome(sig, HEAD) == "failed"
+    assert tier(f("README.md", ["x"]), checks=sig, head_sha=HEAD)["tier"] == "T1"
+
+
+def test_the_latest_summary_is_the_one_that_counts():
+    early_pass = summary(5, HEAD, updated="2026-10-19T10:00:00Z")
+    later_fail = summary(0, HEAD, updated="2026-10-19T12:00:00Z")
+    assert rt.reviewer_passed(signal(comments=[early_pass, later_fail]), HEAD) is False
+    later_pass = summary(5, HEAD, updated="2026-10-19T13:00:00Z")
+    assert rt.reviewer_passed(signal(comments=[later_fail, later_pass]), HEAD) is True
 
 
 def test_cli_raises_when_greptile_is_missing(tmp_path):

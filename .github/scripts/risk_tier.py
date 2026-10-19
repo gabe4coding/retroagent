@@ -3,9 +3,11 @@
 
 Shadow week: the tier is advisory. The `risk` workflow posts it as a check summary and a
 `risk:*` label, and never merges. The rules come from `.github/risk.yml` on the BASE branch,
-so a pull request cannot loosen its own rules. The reviewer signal is the "Greptile Review"
-check run of app `greptile-apps` on the current head (`--checks-file`). A pass does not lower
-the tier. A failed, missing, pending or stale check raises it one step, never past T2-hard.
+so a pull request cannot loosen its own rules. A Greptile pass (`--checks-file`) needs all three
+on the current head: a completed "Greptile Review" check from app `greptile-apps` with conclusion
+success, the latest `greptile-apps[bot]` summary comment for that commit with Confidence Score at
+least 4/5, and no P0 or P1 inline comment from that bot on that commit. Anything else does not pass.
+A pass does not lower the tier. A non-pass raises it one step, never past T2-hard.
 
     risk_tier.py --rules RULES.yml --base BASE_SHA --head HEAD_SHA \
         [--title T] [--branch B] [--body-file F] [--automerge off] \
@@ -75,7 +77,8 @@ class Change:
     automerge: str = ""
     # set when git's file list and its diff do not agree: the files cannot be trusted
     problem: str = ""
-    # check-runs payload (a list, or {"check_runs": [...]}). None: the signal was not supplied.
+    # Greptile payload: check runs, or {"check_runs", "comments", "review_comments"}.
+    # None: the signal was not supplied, so the tier is not raised.
     checks: object = None
     head_sha: str = ""
 
@@ -393,9 +396,9 @@ def classify(change: Change, rules: dict) -> dict:
         reasons.append(Reason("T2-hard", "kill-switch", "repo variable AUTOMERGE=off: every PR goes to Gabe"))
 
     # A pass adds nothing: the reviewer can raise a tier and cannot lower one. Not supplied (None)
-    # leaves the deterministic tier, so a caller that has no check-run payload stays as it was.
+    # leaves the deterministic tier, so a caller that has no payload stays as it was.
     if change.checks is not None:
-        state = reviewer_state(change.checks, change.head_sha)
+        state = reviewer_outcome(change.checks, change.head_sha)
         if state != "passed":
             current = max((r.tier for r in reasons), key=TIERS.index)
             # One step, and no further than T2-hard. The default covers T2-hard and HOLD: a review
@@ -495,6 +498,11 @@ def git_reader(base: str, head: str) -> Callable[[str, str], Optional[str]]:
 
 GREPTILE_CHECK = "Greptile Review"
 GREPTILE_APP = "greptile-apps"
+GREPTILE_LOGIN = "greptile-apps[bot]"
+SUMMARY_MARK = re.compile(r"<!--\s*greptile_summary\s*-->")
+CONFIDENCE = re.compile(r"Confidence Score:\s*(\d+)\s*/\s*5")
+REVIEWED_SHA = re.compile(r"Last reviewed commit:[\s\S]{0,400}?/commit/([0-9a-f]{40})")
+BLOCKING_BADGE = re.compile(r"""alt\s*=\s*["']P[01]["']|badges/p[01]\.svg""", re.I)
 
 
 def _check_runs(payload) -> List[dict]:
@@ -505,12 +513,38 @@ def _check_runs(payload) -> List[dict]:
     return [c for c in payload if isinstance(c, dict)]
 
 
+def _signal(payload):
+    """(check runs, issue comments, review comments). A bare check list has no comments."""
+    if isinstance(payload, dict) and any(k in payload for k in ("check_runs", "comments", "review_comments")):
+        return payload.get("check_runs") or [], payload.get("comments") or [], payload.get("review_comments") or []
+    return payload, [], []
+
+
+def _rows(payload) -> List[dict]:
+    if isinstance(payload, dict):
+        payload = payload.get("comments") or payload.get("review_comments") or []
+    if not isinstance(payload, list):
+        return []
+    rows: List[dict] = []
+    for item in payload:
+        if isinstance(item, list):
+            rows.extend(x for x in item if isinstance(x, dict))
+        elif isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def _greptile_bot(comment: dict) -> bool:
+    user = comment.get("user") if isinstance(comment.get("user"), dict) else {}
+    return user.get("login") == GREPTILE_LOGIN and user.get("type") == "Bot"
+
+
 def reviewer_state(checks, head_sha: str) -> str:
     """How the Greptile Review check on `head_sha` stands: passed, failed, pending, stale or missing.
 
-    Only a completed success from app `greptile-apps` whose `head_sha` is the current head passes.
-    A run on another SHA is stale. A label or a comment is not a check run, so it is missing.
-    When several runs match this head, the latest `completed_at` wins."""
+    Only a completed success from app `greptile-apps` whose `head_sha` is the current head has
+    passed this part. A run on another SHA is stale. Labels are not read. When several runs match
+    this head, the latest `completed_at` wins. A passed check is not by itself a Greptile pass."""
     if not head_sha:
         return "missing"
     on_head, on_other = [], []
@@ -531,8 +565,70 @@ def reviewer_state(checks, head_sha: str) -> str:
     return "passed"
 
 
+def _latest_summary(comments):
+    """The newest greptile-apps[bot] summary comment, or None. Other authors are ignored."""
+    found = []
+    for comment in _rows(comments):
+        body = comment.get("body") or ""
+        if _greptile_bot(comment) and SUMMARY_MARK.search(body):
+            found.append(comment)
+    if not found:
+        return None
+    found.sort(key=lambda c: str(c.get("updated_at") or c.get("created_at") or ""))
+    return found[-1]
+
+
+def _confidence(body: str):
+    match = CONFIDENCE.search(body or "")
+    if not match:
+        return None
+    score = int(match.group(1))
+    return score if score <= 5 else None
+
+
+def _reviewed_sha(body: str):
+    match = REVIEWED_SHA.search(body or "")
+    return match.group(1) if match else None
+
+
+def _blocking_review(reviews, head_sha: str) -> bool:
+    """A P0 or P1 badge from greptile-apps[bot] whose commit_id is this head."""
+    for comment in _rows(reviews):
+        if not _greptile_bot(comment) or comment.get("commit_id") != head_sha:
+            continue
+        if BLOCKING_BADGE.search(comment.get("body") or ""):
+            return True
+    return False
+
+
+def reviewer_outcome(payload, head_sha: str) -> str:
+    """passed, or why not. Comments count only from greptile-apps[bot]. Labels are not read.
+
+    A pass needs the check, a summary of this commit with Confidence Score >= 4/5, and no P0 or
+    P1 inline comment on this commit. Missing, unparseable, another author, or another SHA is not
+    a pass."""
+    checks, comments, reviews = _signal(payload)
+    state = reviewer_state(checks, head_sha)
+    if state != "passed":
+        return state
+    summary = _latest_summary(comments)
+    if summary is None:
+        return "no-summary"
+    body = summary.get("body") or ""
+    reviewed, score = _reviewed_sha(body), _confidence(body)
+    if reviewed is None or score is None:
+        return "unparseable"
+    if reviewed != head_sha:
+        return "old-sha"
+    if score < 4:
+        return "low-score"
+    if _blocking_review(reviews, head_sha):
+        return "blocking"
+    return "passed"
+
+
 def reviewer_passed(checks, head_sha: str) -> bool:
-    return reviewer_state(checks, head_sha) == "passed"
+    return reviewer_outcome(checks, head_sha) == "passed"
 
 
 def load_rules(path: str) -> dict:
@@ -564,7 +660,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--branch", default="")
     ap.add_argument("--body-file")
     ap.add_argument("--automerge", default="")
-    ap.add_argument("--checks-file", help="check-runs JSON; the Greptile Review signal on this head")
+    ap.add_argument("--checks-file", help="Greptile check runs plus summary and inline comments")
     ap.add_argument("--json")
     ap.add_argument("--markdown")
     ap.add_argument("--note", default="", help="extra line for the markdown summary")

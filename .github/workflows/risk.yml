@@ -10,10 +10,11 @@
 # Only the classifier tests run the PR's code, on `pull_request`, with a read-only token.
 # A consumer of the tier (auto-merge) must read the "risk tier" check of a pull_request_target run of
 # .github/workflows/risk.yml, never a label or a check from a `pull_request` run: a PR can forge those.
-# The reviewer signal is only the "Greptile Review" check run of app greptile-apps on the current
-# head SHA. A pass does not lower the tier. A failed, missing, pending or stale check raises it
-# one step. Labels and comments are not read. The job reads the check when it runs: a review that
-# is still pending raises the tier until this job runs again.
+# A Greptile pass needs three things on the current head SHA: the "Greptile Review" check from
+# greptile-apps with conclusion success, the latest greptile-apps[bot] summary comment for that
+# commit with Confidence Score at least 4/5, and no P0 or P1 inline comment from that bot on that
+# commit. A pass does not lower the tier. Anything else raises it one step. Labels are not read.
+# Comments are read only from greptile-apps[bot]. The job reads them when it runs.
 name: risk
 
 on:
@@ -51,8 +52,9 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: write   # the risk:* label
-      checks: write          # the "risk tier" check run
+      issues: read           # Greptile's summary comment, GET only
+      pull-requests: write   # the risk:* label; review comments are read with GET
+      checks: write          # the "risk tier" check run; Greptile's check is read with GET
     steps:
       # The base branch: this file, .github/risk.yml and the classifier as the base has them.
       # The stored credentials are safe here: no step runs a file of the PR.
@@ -69,18 +71,50 @@ jobs:
           git fetch --no-tags --quiet origin "+refs/pull/$PR/head:refs/remotes/pr/head"
           git cat-file -e "$HEAD_SHA^{commit}"
 
-      - name: Greptile Review check on this head
-        # Data only: the check-run list. A comment or a label is not read. An API failure is "missing".
+      - name: Greptile review on this head
+        # GET only. Labels are not read. An API failure leaves that list empty, which is not a pass.
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Name filter keeps the run on the first page. The app slug and the head SHA are checked later.
-          if ! gh api -X GET "repos/$REPO/commits/$HEAD_SHA/check-runs" \
-              -f check_name="Greptile Review" -F per_page=100 > "$RUNNER_TEMP/checks.json"; then
-            echo '{"check_runs":[]}' > "$RUNNER_TEMP/checks.json"
-          fi
+          python3 -I - <<'PY'
+          import json, os, subprocess
+          repo, pr, sha = os.environ["REPO"], os.environ["PR"], os.environ["HEAD_SHA"]
+          dest = os.environ["RUNNER_TEMP"] + "/checks.json"
+
+          def pages(path, extra):
+              if not pr.isdigit() or len(sha) != 40 or any(c not in "0123456789abcdefABCDEF" for c in sha):
+                  return []
+              proc = subprocess.run(["gh", "api", "--paginate", "--slurp", "-X", "GET", path, *extra],
+                                    capture_output=True, text=True)
+              if proc.returncode != 0:
+                  return []
+              try:
+                  data = json.loads(proc.stdout or "[]")
+              except json.JSONDecodeError:
+                  return []
+              return data if isinstance(data, list) else [data]
+
+          def flat(data, key=None):
+              rows = []
+              for page in data:
+                  if isinstance(page, list):
+                      rows.extend(item for item in page if isinstance(item, dict))
+                  elif isinstance(page, dict) and key:
+                      rows.extend(item for item in (page.get(key) or []) if isinstance(item, dict))
+              return rows
+
+          payload = {
+              "check_runs": flat(pages(f"repos/{repo}/commits/{sha}/check-runs",
+                                       ["-f", "check_name=Greptile Review", "-F", "per_page=100"]), "check_runs"),
+              "comments": flat(pages(f"repos/{repo}/issues/{pr}/comments", ["-F", "per_page=100"])),
+              "review_comments": flat(pages(f"repos/{repo}/pulls/{pr}/comments", ["-F", "per_page=100"])),
+          }
+          with open(dest, "w", encoding="utf-8") as fh:
+              json.dump(payload, fh)
+          PY
 
       - name: Classify
         id: tier
