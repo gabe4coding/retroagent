@@ -85,6 +85,48 @@ def test_push_rebases_when_remote_moved(tmp_path):
     assert (a / "sessions/hb/x.md").read_text() == "hb"
 
 
+def _own_commit(repo, host):
+    _add(repo, host, host)
+    gitops.stage(repo, [f"sessions/{host}"])
+    gitops.commit(repo, host, [f"sessions/{host}"])
+
+
+def test_push_sends_only_the_checked_commit(tmp_path):
+    """A commit made after the check stays local (formal/sync/Sync.tla, NoForeignPush)."""
+    remote = init_remote(tmp_path)
+    a = clone(remote, tmp_path / "a")
+    _own_commit(a, "ha")
+
+    def check(sha):
+        _own_commit(a, "hb")                                       # a person commits right after the check
+        return ""
+
+    gitops.push(a, check=check)
+    assert gitops.git(remote, "ls-tree", "-r", "--name-only", "main").stdout.split() == [
+        ".gitignore", "README.md", "sessions/ha/x.md"]
+    assert gitops.ahead(a) == 1
+
+
+def test_push_checks_the_rebased_commits_again_before_a_retry(tmp_path):
+    remote = init_remote(tmp_path)
+    a, b = clone(remote, tmp_path / "a"), clone(remote, tmp_path / "b")
+    _own_commit(a, "ha")
+    _own_commit(b, "hc")
+    gitops.push(b)                                                 # the remote moved: a's first attempt is rejected
+    seen = []
+
+    def check(sha):
+        seen.append(gitops.unpushed_paths(a, sha))
+        if len(seen) == 1:
+            _own_commit(a, "hb")                                   # a person commits during the first attempt
+        return "foreign" if any(p.startswith("sessions/hb/") for p in seen[-1]) else ""
+
+    with pytest.raises(gitops.GitError, match="^foreign$"):
+        gitops.push(a, check=check)
+    assert seen == [["sessions/ha/x.md"], ["sessions/ha/x.md", "sessions/hb/x.md"]]
+    assert "sessions/hb/x.md" not in gitops.git(remote, "ls-tree", "-r", "--name-only", "main").stdout
+
+
 # ---------------------------------------------------------------- non-interactive git
 
 def test_git_runs_with_an_editor_that_does_nothing(tmp_path, monkeypatch):

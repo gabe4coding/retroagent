@@ -17,7 +17,7 @@ Run it when a diff changes one of the covered functions below. Skip it for other
 | `Sync.tla` | `src/kb/sync.py`: `run_sync`, `git_gate`, `commit_own`, `publish`. `src/kb/gitops.py`: `pull`, `push`, `repair`, `unpushed_paths`, `_run`. `src/kb/lock.py`: `Lock` |
 | `CloudInbox.tla` | `src/kb/cloud.py`: `push`, `import_inbox`, `delete_branches`. `src/kb/setup.py`: `publish`. `src/kb/lock.py`: `Lock` |
 
-Last confirmed against: `2fcc23e` (main). Move this commit only after you read the covered code at the new commit
+Last confirmed against: `2fcc23e` (main) with the fixes of issue #61 on top. Move this commit only after you read the covered code at the new commit
 and confirm that each `\* src:` comment still names the right lines.
 
 ## Steps

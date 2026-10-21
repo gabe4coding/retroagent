@@ -40,7 +40,7 @@ behaviour on and fails. The sanity config fails, so the checked states include t
 | Config | Turns on | Expect |
 | --- | --- | --- |
 | `SyncMC` | push only checked commits (`PushChecked`) | pass |
-| `SyncMC_unchecked` | the push on `main`: it sends the branch, not the checked commits | fail: property 2 |
+| `SyncMC_unchecked` | the push before the checked-commit fix: it sends the branch | fail: property 2 |
 | `SyncMC_bug_abort` | reset to the upstream after a rebase conflict | fail: property 1 |
 | `SyncMC_bug_lock` | a lock file with no takeover, not `flock` | fail: property 3 |
 | `SyncMC_bug_timeout` | git calls without a timeout | fail: property 4 |

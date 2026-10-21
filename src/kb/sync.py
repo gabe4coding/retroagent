@@ -579,12 +579,13 @@ def publish(cfg, idx, state, report) -> None:
     first_push = not has_upstream and not no_commit_yet
     # Push when this run committed, when older commits wait, or for the first push of a branch that has commits.
     if report.committed or gitops.ahead(root) or first_push:
-        foreign = [p for p in gitops.unpushed_paths(root) if not _within(p, own_paths(cfg))]
-        if foreign:                         # somebody's own commits are theirs to push
-            report.errors.append(f"git: unpushed commits touch {', '.join(foreign[:SHOW_PATHS])}; push them by hand")
-            return
+        def foreign_commits(sha) -> str:
+            """Somebody's own commits are theirs to push. Checked before each push attempt, on the commits it sends."""
+            foreign = [p for p in gitops.unpushed_paths(root, sha) if not _within(p, own_paths(cfg))]
+            return f"git: unpushed commits touch {', '.join(foreign[:SHOW_PATHS])}; push them by hand" if foreign else ""
+
         try:
-            gitops.push(root, keep=tuple(state.quarantine))
+            gitops.push(root, keep=tuple(state.quarantine), check=foreign_commits)
             report.pushed = True
         except gitops.GitError as e:
             report.errors.append(f"{REPAIR_HINT}; {e}" if isinstance(e, gitops.PullConflict) else str(e))
