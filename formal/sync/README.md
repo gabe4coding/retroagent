@@ -46,7 +46,7 @@ behaviour on and fails. The sanity config fails, so the checked states include t
 | `SyncMC_bug_timeout` | git calls without a timeout | fail: property 4 |
 | `SyncMC_sanity` | `NeverAllPushed` | fail |
 | `CloudMC` | a busy push lock makes the next hook wait (`WaitForLock`) | pass |
-| `CloudMC_giveup` | the hook on `main`: it gives up when the lock is busy | fail: property 1 |
+| `CloudMC_giveup` | the hook before the wait fix: it gives up when the lock is busy | fail: property 1 |
 | `CloudMC_giveup_rounds` | the same, with the short exit window merged into one step | fail: property 1 |
 | `CloudMC_nolease` | delete the inbox branch without `--force-with-lease` | fail: property 1 |
 | `CloudMC_sanity` | `NeverAllImported` | fail |
