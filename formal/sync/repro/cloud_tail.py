@@ -59,16 +59,24 @@ if [ "$1" = "-C" ] && [ "$2" = "$BOX" ] && [ "$3" = "push" ]; then
     2) echo "$T3" >> "$TRANSCRIPT" ;;
     3) echo "$T4" >> "$TRANSCRIPT"
        # Record each hook's pid and exit. A traceback is one process failing, not two finished hooks.
+       # The subshell must not keep this push's stdout: the parent reads that pipe, and a hook that waits
+       # for the lock cannot finish until this push returns.
        (
          "$PY" "$HOOK" "Stop hook of turn 4" > "$REPRO_STATE/stop.out" 2> "$REPRO_STATE/stop.err"
          echo $? > "$REPRO_STATE/stop.rc"
-       ) &
+       ) </dev/null >/dev/null 2>&1 &
        echo $! > "$REPRO_STATE/stop.pid"
        (
          "$PY" "$HOOK" "SessionEnd hook" > "$REPRO_STATE/end.out" 2> "$REPRO_STATE/end.err"
          echo $? > "$REPRO_STATE/end.rc"
-       ) &
+       ) </dev/null >/dev/null 2>&1 &
        echo $! > "$REPRO_STATE/end.pid"
+       # Let both hooks hit the lock while it is still held. Stop at their output or after 5s: a hook that
+       # waits on the lock has no output yet, and waiting for it here would deadlock.
+       for _ in $(seq 50); do
+         [ -s "$REPRO_STATE/stop.out" ] && [ -s "$REPRO_STATE/end.out" ] && break
+         sleep 0.1
+       done
        ;;
   esac
 fi''')
