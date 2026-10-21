@@ -71,15 +71,30 @@ def test_a_push_that_finds_the_lock_busy_waits_then_pushes(setup_):
     remote, cfg, transcript, _ = setup_
     holder = Lock(cfg.kb_dir / "cloud-push.lock")
     assert holder.acquire()
+    reached = threading.Event()
+    real_acquire = Lock.acquire
+
+    def acquire(self, *args, **kwargs):
+        if self.path == holder.path:               # the worker is at the lock, past the git calls before it
+            reached.set()
+        return real_acquire(self, *args, **kwargs)
+
+    Lock.acquire = acquire
     result = []
-    waiter = threading.Thread(target=lambda: result.append(cloud.push(cfg, str(transcript))))
+    waiter = threading.Thread(target=lambda: result.append(cloud.push(cfg, str(transcript))), daemon=True)
     waiter.start()
-    waiter.join(timeout=1)
-    assert waiter.is_alive() and result == []                  # waits; does not return "another push is running"
-    holder.release()
-    waiter.join(timeout=30)
-    assert result and result[0].startswith("pushed 2 file(s)")
-    assert f"inbox/claude/{transcript.parent.name}/{SID}.jsonl.gz" in _remote_files(remote, BRANCH)
+    try:
+        assert reached.wait(timeout=30), "push did not reach Lock.acquire"
+        waiter.join(timeout=1)
+        assert waiter.is_alive() and result == [], result       # blocked on the busy lock
+        holder.release()
+        waiter.join(timeout=30)
+        assert result and result[0].startswith("pushed 2 file(s)")
+        assert f"inbox/claude/{transcript.parent.name}/{SID}.jsonl.gz" in _remote_files(remote, BRANCH)
+    finally:
+        Lock.acquire = real_acquire
+        holder.release()
+        waiter.join(timeout=30)
 
 
 @pytest.mark.parametrize("start", ["detached", "main"])
