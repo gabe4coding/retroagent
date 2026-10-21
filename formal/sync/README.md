@@ -64,3 +64,14 @@ behaviour on and fails. The sanity config fails, so the checked states include t
 - A hook process runs to its end before the cloud container goes away.
 - Not modelled: gitleaks quarantine and the stash, the index, summaries, the pages routine, `kb repair`, and
   sessions that change after they were written.
+
+## Repro scripts
+
+`repro/foreign_push.py` and `repro/cloud_tail.py` run the real code against a local bare remote. A `git` wrapper on
+PATH adds the outside events of a counterexample at fixed points. Every kb step runs unchanged. Exit 1 means the
+bug happened, exit 0 means it did not.
+
+```bash
+python3 formal/sync/repro/foreign_push.py    # SyncMC_unchecked: a sync pushes another host's commit
+python3 formal/sync/repro/cloud_tail.py      # CloudMC_giveup_rounds: a cloud session loses its last turn
+```
