@@ -9,6 +9,7 @@ data; each user's data lives in their own data repo.
   `docs/*.mdx`. The whole repo is the Claude Code / Codex plugin (marketplace source `./`); `bin/kb` runs
   `python3 -m kb` from `src/kb/`.
 - Run a change end to end (`/verify`) → `.claude/skills/verify/SKILL.md`.
+- Change the sync, git steps, locks or cloud inbox → `.claude/skills/verify-sync-model/SKILL.md` (TLA+ models).
 - Install or setup → `skills/setup/SKILL.md` and `install.sh`.
 - The cloud routine → `scripts/pages-routine.md`.
 - Cloud sessions: the push from a cloud container and the import by one machine's sync → `src/kb/cloud.py`.
