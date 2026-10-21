@@ -7,7 +7,8 @@ turn and the SessionEnd hook both give up, and no push sends the last turn. The 
 The git wrapper adds one turn to the transcript during each push, as a fast session does. During the third push it
 starts the two last hooks. Every kb step runs unchanged.
 
-Run: python3 formal/sync/repro/cloud_tail.py      (exit 1: reproduced, exit 0: not reproduced)
+Run: python3 formal/sync/repro/cloud_tail.py
+     exit 1: reproduced, exit 0: not reproduced, exit 2: a hook did not finish
 """
 from __future__ import annotations
 
@@ -57,21 +58,61 @@ if [ "$1" = "-C" ] && [ "$2" = "$BOX" ] && [ "$3" = "push" ]; then
     1) echo "$T2" >> "$TRANSCRIPT" ;;
     2) echo "$T3" >> "$TRANSCRIPT" ;;
     3) echo "$T4" >> "$TRANSCRIPT"
-       "$PY" "$HOOK" "Stop hook of turn 4" >> "$REPRO_STATE/hooks.log" 2>&1 &
-       "$PY" "$HOOK" "SessionEnd hook" >> "$REPRO_STATE/hooks.log" 2>&1 &
-       for _ in $(seq 50); do [ "$(wc -l < "$REPRO_STATE/hooks.log" 2>/dev/null || echo 0)" -ge 2 ] && break; sleep 0.1; done ;;
+       # Record each hook's pid and exit. A traceback is one process failing, not two finished hooks.
+       (
+         "$PY" "$HOOK" "Stop hook of turn 4" > "$REPRO_STATE/stop.out" 2> "$REPRO_STATE/stop.err"
+         echo $? > "$REPRO_STATE/stop.rc"
+       ) &
+       echo $! > "$REPRO_STATE/stop.pid"
+       (
+         "$PY" "$HOOK" "SessionEnd hook" > "$REPRO_STATE/end.out" 2> "$REPRO_STATE/end.err"
+         echo $? > "$REPRO_STATE/end.rc"
+       ) &
+       echo $! > "$REPRO_STATE/end.pid"
+       ;;
   esac
 fi''')
 
 print("Stop hook of turn 1: " + cloud.push(cfg, str(transcript)))
-deadline = time.time() + 60
-while time.time() < deadline and len((tmp / "hooks.log").read_text().splitlines()) < 2:
-    time.sleep(0.2)
-print((tmp / "hooks.log").read_text().rstrip())
 
-blob = subprocess.run([os.environ["REAL_GIT"], "-C", str(remote), "show",
+
+def finish_hook(hook_id: str, label: str) -> None:
+    """Wait until this hook process has exited 0. A timeout or a failure is an error, not a lost turn."""
+    pid_path, rc_path = tmp / f"{hook_id}.pid", tmp / f"{hook_id}.rc"
+    out_path, err_path = tmp / f"{hook_id}.out", tmp / f"{hook_id}.err"
+    if not pid_path.is_file():
+        print(f"ERROR: {label} was not started")
+        sys.exit(2)
+    pid = pid_path.read_text().strip()
+    deadline = time.time() + 60
+    while time.time() < deadline and not rc_path.is_file():
+        time.sleep(0.05)
+    out = out_path.read_text(encoding="utf-8", errors="replace") if out_path.is_file() else ""
+    err = err_path.read_text(encoding="utf-8", errors="replace") if err_path.is_file() else ""
+    if out.strip():
+        print(out.rstrip())
+    if err.strip():
+        print(err.rstrip())
+    if not rc_path.is_file():
+        print(f"ERROR: {label} timed out (pid {pid})")
+        sys.exit(2)
+    rc = int(rc_path.read_text().strip())
+    if rc != 0:
+        print(f"ERROR: {label} exited {rc}")
+        sys.exit(2)
+
+
+finish_hook("stop", "Stop hook of turn 4")
+finish_hook("end", "SessionEnd hook")
+
+show = subprocess.run([os.environ["REAL_GIT"], "-C", str(remote), "show",
                        f"{branch}:inbox/claude/{transcript.parent.name}/{transcript.name}.gz"],
-                      capture_output=True, check=True).stdout
+                      capture_output=True)
+if show.returncode != 0:
+    print(f"ERROR: cannot read the pushed transcript on {branch}: "
+          f"{show.stderr.decode('utf-8', 'replace').strip()}")
+    sys.exit(2)
+blob = show.stdout
 pushed = gzip.decompress(blob).decode("utf-8")
 local = transcript.read_text(encoding="utf-8")
 for n in (2, 3, 4):
