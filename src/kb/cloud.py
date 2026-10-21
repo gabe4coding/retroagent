@@ -104,7 +104,7 @@ def inbox_branch(transcript: str) -> str:
 
 def push(cfg, transcript: str) -> str:
     """Commit the session's slim transcript files on the data clone's branch and push. Pushes again while the
-    transcript grew during the push (up to PUSH_ROUNDS). Returns one line."""
+    transcript grew during the push (up to PUSH_ROUNDS). A second push waits for the first. Returns one line."""
     root = cfg.root
     if not (root / ".git").exists():
         raise CloudError(f"no data clone at {root}; start the session with the data repo too")
@@ -115,8 +115,9 @@ def push(cfg, transcript: str) -> str:
         raise CloudError(f"the data clone is on {branch}, the pages routine's branch: it reaches {cfg.branch} with the "
                          f"pages, so nothing is pushed there")
     lock = Lock(cfg.kb_dir / "cloud-push.lock")
-    if not lock.acquire():
-        return "another push is running"
+    # Wait, never give up: the push that holds the lock stops after PUSH_ROUNDS, so a hook that gave up here could
+    # leave the last turns unpushed when the session ends (formal/sync/CloudInbox.tla). flock frees a dead holder.
+    lock.acquire(wait=True)
     done_file = cfg.kb_dir / "cloud-pushed.json"
     try:
         try:
