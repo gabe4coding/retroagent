@@ -25,7 +25,9 @@ and confirm that each `\* src:` comment still names the right lines.
 1. Run `formal/sync/run.sh`. Every line must show the expected result.
 2. If the code change alters a modelled step (an order, a check, a retry, a lock), change the matching action in the
    model first. Keep one action per atomic step of the code, and update its `\* src:` comment.
-3. A config with an unexpected result is a finding until the trace shows a model error. Read
+3. Run the repro scripts: `python3 formal/sync/repro/foreign_push.py` and `python3 formal/sync/repro/cloud_tail.py`.
+   Exit 0 means the bug did not happen.
+4. A config with an unexpected result is a finding until the trace shows a model error. Read
    `.tlc-out/<config>/trace.md`. Tell the trace in the code's words. Do not weaken a property or a bound to get a pass.
 
 ## Real bug or model error
