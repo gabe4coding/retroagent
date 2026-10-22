@@ -11,7 +11,7 @@ EXTENDS Integers, FiniteSets
 CONSTANTS Machines,        \* model values; machine m owns host folder m
           MaxSessions,     \* sessions each machine writes
           Runs,            \* sync runs per machine
-          Tries,           \* src: src/kb/gitops.py:473 push(tries=3)
+          Tries,           \* src: src/kb/gitops.py:479 push(tries=3)
           PushChecked,     \* FIX toggle: each push attempt sends only commits it checked
           UseFlock,        \* TRUE: src/kb/lock.py flock; FALSE: bug toggle, a lock file nobody takes over
           AbortOnConflict, \* TRUE: src/kb/gitops.py:207-212 rebase --abort; FALSE: bug toggle, reset to upstream
@@ -97,7 +97,7 @@ Pull(m) ==
     /\ pc[m] = "pull" /\ PullStep(m, "check")
     /\ UNCHANGED <<lockSt, ilock, hung, produced, wt, snap, rv, remote, tries, runs, syncPushed, env>>
 
-\* src: src/kb/sync.py:578-585 unpushed_paths outside own_paths -> "push them by hand"
+\* src: src/kb/sync.py:582-585 foreign_commits, run by gitops.push before each attempt (gitops.py:491-498)
 Check(m) ==
     /\ pc[m] = "check"
     /\ IF loc[m] = {}
@@ -107,7 +107,7 @@ Check(m) ==
                   ELSE snap' = [snap EXCEPT ![m] = loc[m]] /\ Go(m, "push") /\ UNCHANGED outcome
     /\ UNCHANGED <<lockSt, ilock, hung, produced, wt, loc, base, rv, remote, conflict, tries, runs, syncPushed, env>>
 
-\* src: src/kb/gitops.py:473-494 push: `git push` of the branch (code) or of
+\* src: src/kb/gitops.py:479-512 push: `git push` of the branch (code) or of
 \* the checked commits (fix). The remote ref update is a compare-and-swap.
 Push(m) ==
     /\ pc[m] = "push" /\ ~hung[m]
@@ -125,12 +125,12 @@ Push(m) ==
                      ELSE Report(m) /\ UNCHANGED tries
     /\ UNCHANGED <<lockSt, ilock, hung, produced, wt, snap, conflict, runs, env>>
 
-\* src: src/kb/gitops.py:486-493 rejected push -> pull(), then push again (no new check in the code)
+\* src: src/kb/gitops.py:504-509 rejected push -> pull(), then a new attempt (before the fix: no new check)
 Retry(m) ==
     /\ pc[m] = "retry" /\ PullStep(m, IF PushChecked THEN "check" ELSE "push")
     /\ UNCHANGED <<lockSt, ilock, hung, produced, wt, snap, rv, remote, tries, runs, syncPushed, env>>
 
-\* src: src/kb/sync.py:797-798 finally: lock.release()
+\* src: src/kb/sync.py:798-799 finally: lock.release()
 Release(m) ==
     /\ pc[m] = "release"
     /\ lockSt' = [lockSt EXCEPT ![m] = "free"] /\ tries' = [tries EXCEPT ![m] = 0] /\ Go(m, "idle")

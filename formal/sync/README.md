@@ -40,13 +40,13 @@ behaviour on and fails. The sanity config fails, so the checked states include t
 | Config | Turns on | Expect |
 | --- | --- | --- |
 | `SyncMC` | push only checked commits (`PushChecked`) | pass |
-| `SyncMC_unchecked` | the push on `main`: it sends the branch, not the checked commits | fail: property 2 |
+| `SyncMC_unchecked` | the push before the checked-commit fix: it sends the branch | fail: property 2 |
 | `SyncMC_bug_abort` | reset to the upstream after a rebase conflict | fail: property 1 |
 | `SyncMC_bug_lock` | a lock file with no takeover, not `flock` | fail: property 3 |
 | `SyncMC_bug_timeout` | git calls without a timeout | fail: property 4 |
 | `SyncMC_sanity` | `NeverAllPushed` | fail |
 | `CloudMC` | a busy push lock makes the next hook wait (`WaitForLock`) | pass |
-| `CloudMC_giveup` | the hook on `main`: it gives up when the lock is busy | fail: property 1 |
+| `CloudMC_giveup` | the hook before the wait fix: it gives up when the lock is busy | fail: property 1 |
 | `CloudMC_giveup_rounds` | the same, with the short exit window merged into one step | fail: property 1 |
 | `CloudMC_nolease` | delete the inbox branch without `--force-with-lease` | fail: property 1 |
 | `CloudMC_sanity` | `NeverAllImported` | fail |
@@ -64,3 +64,14 @@ behaviour on and fails. The sanity config fails, so the checked states include t
 - A hook process runs to its end before the cloud container goes away.
 - Not modelled: gitleaks quarantine and the stash, the index, summaries, the pages routine, `kb repair`, and
   sessions that change after they were written.
+
+## Repro scripts
+
+`repro/foreign_push.py` and `repro/cloud_tail.py` run the real code against a local bare remote. A `git` wrapper on
+PATH adds the outside events of a counterexample at fixed points. Every kb step runs unchanged. Exit 1 means the
+bug happened, exit 0 means it did not.
+
+```bash
+python3 formal/sync/repro/foreign_push.py    # SyncMC_unchecked: a sync pushes another host's commit
+python3 formal/sync/repro/cloud_tail.py      # CloudMC_giveup_rounds: a cloud session loses its last turn
+```
