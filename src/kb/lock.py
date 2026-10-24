@@ -21,13 +21,14 @@ class Lock:
         self.held = False
         self._fd = None
 
-    def acquire(self) -> bool:
+    def acquire(self, wait: bool = False) -> bool:
+        """Take the lock. False if another process holds it; with `wait`, block until it is free instead."""
         if self.held:
             return True
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o644)  # not inherited by child processes
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             os.close(fd)
             return False

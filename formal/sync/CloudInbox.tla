@@ -11,7 +11,7 @@ CONSTANTS MaxTurns,     \* turns of the session; each ends with a Stop hook
           PushRounds,   \* src: src/kb/cloud.py:44 PUSH_ROUNDS
           ImportRuns,   \* syncs of the importing machine
           WaitForLock,  \* FIX toggle: a push that finds the lock busy waits for it
-          UseLease,     \* src: src/kb/cloud.py:303-311 --force-with-lease (FALSE = bug toggle)
+          UseLease,     \* src: src/kb/cloud.py:304-312 --force-with-lease (FALSE = bug toggle)
           ExitWindow    \* TRUE: the last fingerprint read and the lock release are two steps (as in
                         \* the code); FALSE merges them, so TLC must find the rounds-exhausted variant
 
@@ -55,7 +55,7 @@ Spawn == /\ spawned' = spawned + 1
 
 importer == <<ipc, fetchedTip, fetchedLen, imported, runs>>
 
-\* src: src/kb/cloud.py:146-161 hook(), run by the Stop hook after each turn
+\* src: src/kb/cloud.py:147-162 hook(), run by the Stop hook after each turn
 Turn ==
     /\ ~ended /\ len < MaxTurns
     /\ len' = len + 1 /\ Spawn
@@ -67,19 +67,19 @@ End ==
     /\ ended' = TRUE /\ Spawn
     /\ UNCHANGED <<len, seen, round, lock, pushedFp, branch, tip>> /\ UNCHANGED importer
 
-\* src: src/kb/cloud.py:117-119 lock.acquire()
+\* src: src/kb/cloud.py:117-120 lock.acquire(wait=True)
 Acquire(p) ==
     /\ pc[p] = "start" /\ lock = 0
     /\ lock' = p /\ pc' = [pc EXCEPT ![p] = "read"]
     /\ UNCHANGED <<len, ended, spawned, seen, round, pushedFp, branch, tip>> /\ UNCHANGED importer
 
-\* src: src/kb/cloud.py:118-119 return "another push is running"
+\* src: src/kb/cloud.py:117-120 before the wait fix: return "another push is running"
 GiveUp(p) ==
     /\ ~WaitForLock /\ pc[p] = "start" /\ lock # 0
     /\ pc' = [pc EXCEPT ![p] = "done"]
     /\ UNCHANGED <<len, ended, spawned, seen, round, lock, pushedFp, branch, tip>> /\ UNCHANGED importer
 
-\* src: src/kb/cloud.py:127-131 for _ in range(PUSH_ROUNDS): fingerprint; equal -> break
+\* src: src/kb/cloud.py:128-132 for _ in range(PUSH_ROUNDS): fingerprint; equal -> break
 Read(p) ==
     /\ pc[p] = "read"
     /\ IF round[p] = PushRounds \/ pushedFp = len
@@ -88,27 +88,27 @@ Read(p) ==
           ELSE pc' = [pc EXCEPT ![p] = "push"] /\ seen' = [seen EXCEPT ![p] = len] /\ UNCHANGED lock
     /\ UNCHANGED <<len, ended, spawned, round, pushedFp, branch, tip>> /\ UNCHANGED importer
 
-\* src: src/kb/cloud.py:132-140 slim + setup.publish (src/kb/setup.py:143-165), record the fingerprint
+\* src: src/kb/cloud.py:133-141 slim + setup.publish (src/kb/setup.py:143-165), record the fingerprint
 Push(p) ==
     /\ pc[p] = "push"
     /\ branch' = seen[p] /\ tip' = tip + 1 /\ pushedFp' = seen[p]
     /\ round' = [round EXCEPT ![p] = round[p] + 1] /\ pc' = [pc EXCEPT ![p] = "read"]
     /\ UNCHANGED <<len, ended, spawned, seen, lock>> /\ UNCHANGED importer
 
-\* src: src/kb/cloud.py:142-143 finally: lock.release()
+\* src: src/kb/cloud.py:143-144 finally: lock.release()
 Release(p) ==
     /\ pc[p] = "release"
     /\ lock' = 0 /\ pc' = [pc EXCEPT ![p] = "done"]
     /\ UNCHANGED <<len, ended, spawned, seen, round, pushedFp, branch, tip>> /\ UNCHANGED importer
 
-\* src: src/kb/cloud.py:266-300 import_inbox (fetch --prune, copy a longer blob)
+\* src: src/kb/cloud.py:267-301 import_inbox (fetch --prune, copy a longer blob)
 Fetch ==
     /\ ipc = "idle" /\ runs < ImportRuns /\ branch # Absent
     /\ ipc' = "fetched" /\ runs' = runs + 1
     /\ fetchedTip' = tip /\ fetchedLen' = branch /\ imported' = Max(imported, branch)
     /\ UNCHANGED <<len, ended, spawned, pc, seen, round, lock, pushedFp, branch, tip>>
 
-\* src: src/kb/sync.py:782-783 after a clean push; src/kb/cloud.py:303-311 delete_branches
+\* src: src/kb/sync.py:782-783 after a clean push; src/kb/cloud.py:304-312 delete_branches
 Delete ==
     /\ ipc = "fetched"
     /\ ipc' = "idle"

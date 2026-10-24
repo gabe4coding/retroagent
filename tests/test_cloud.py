@@ -3,6 +3,7 @@ import gzip
 import io
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from fixtures import GH_TOKEN, SID, clone, git, init_remote, make_claude_tree, m
 
 from kb import cloud
 from kb.index import Index
+from kb.lock import Lock
 from kb.sync import own_paths, run_sync
 from kb.util import short_id
 from test_sync import FakeRunner
@@ -62,6 +64,37 @@ def test_push_commits_the_slim_transcript_on_the_sessions_branch(setup_):
         fh.write(json.dumps({"type": "user", "sessionId": SID, "timestamp": "2026-10-06T14:01:00.000Z",
                              "message": {"role": "user", "content": "one more"}}) + "\n")
     assert cloud.push(cfg, str(transcript)).startswith("pushed 1 file(s)")
+
+
+def test_a_push_that_finds_the_lock_busy_waits_then_pushes(setup_):
+    """A hook that gave up on a busy lock could lose the last turn of a session (formal/sync/CloudInbox.tla)."""
+    remote, cfg, transcript, _ = setup_
+    holder = Lock(cfg.kb_dir / "cloud-push.lock")
+    assert holder.acquire()
+    reached = threading.Event()
+    real_acquire = Lock.acquire
+
+    def acquire(self, *args, **kwargs):
+        if self.path == holder.path:               # the worker is at the lock, past the git calls before it
+            reached.set()
+        return real_acquire(self, *args, **kwargs)
+
+    Lock.acquire = acquire
+    result = []
+    waiter = threading.Thread(target=lambda: result.append(cloud.push(cfg, str(transcript))), daemon=True)
+    waiter.start()
+    try:
+        assert reached.wait(timeout=30), "push did not reach Lock.acquire"
+        waiter.join(timeout=1)
+        assert waiter.is_alive() and result == [], result       # blocked on the busy lock
+        holder.release()
+        waiter.join(timeout=30)
+        assert result and result[0].startswith("pushed 2 file(s)")
+        assert f"inbox/claude/{transcript.parent.name}/{SID}.jsonl.gz" in _remote_files(remote, BRANCH)
+    finally:
+        Lock.acquire = real_acquire
+        holder.release()
+        waiter.join(timeout=30)
 
 
 @pytest.mark.parametrize("start", ["detached", "main"])

@@ -127,9 +127,9 @@ def current_branch(root) -> str:
     return p.stdout.strip() if p.returncode == 0 else ""
 
 
-def unpushed_paths(root) -> list:
-    """Sorted paths changed by the commits that the upstream does not have. [] if there is no upstream."""
-    p = git(root, "log", "-z", "--name-only", "--format=", "--no-renames", "@{u}..HEAD", check=False)
+def unpushed_paths(root, rev: str = "HEAD") -> list:
+    """Sorted paths changed by the commits up to `rev` that the upstream does not have. [] if there is no upstream."""
+    p = git(root, "log", "-z", "--name-only", "--format=", "--no-renames", f"@{{u}}..{rev}", check=False)
     if p.returncode != 0:
         return []
     return sorted({x for x in p.stdout.split("\0") if x})
@@ -470,15 +470,33 @@ def secrets_check(root, exe=None) -> SecretsResult:
 _RETRYABLE = ("[rejected]", "fetch first", "non-fast-forward")
 
 
-def push(root, tries: int = 3, keep=()) -> None:
+def _upstream_ref(root) -> list:
+    """[remote, ref on the remote] of the checked-out branch's upstream, e.g. ["origin", "refs/heads/main"]."""
+    head = git(root, "symbolic-ref", "-q", "HEAD").stdout.strip()
+    return git(root, "for-each-ref", "--format=%(upstream:remotename) %(upstream:remoteref)", head).stdout.split()
+
+
+def push(root, tries: int = 3, keep=(), check=None) -> None:
     """Push without hooks. Sets the upstream on first use. Rebases and retries only when the remote moved;
     any other failure (auth, server hook, network) raises at once with every message collected. PullConflict if the
-    retry's pull conflicted."""
+    retry's pull conflicted.
+
+    With an upstream, `check(sha)` runs before each attempt. It returns why the commits up to `sha` must not go out,
+    or "". A refusal raises GitError with that text. The attempt then pushes exactly `sha`: a commit made after the
+    check stays local, and a retry checks the rebased commits again."""
     has_upstream = git(root, "rev-parse", "--abbrev-ref", "@{u}", check=False).returncode == 0
     args = ["push", "--quiet", "--no-verify"] + ([] if has_upstream else ["-u", "origin", "HEAD"])
     notes, kind = [], GitError
     for _ in range(tries):
-        p = git(root, *args, check=False, timeout=PUSH_TIMEOUT)
+        attempt = args
+        if check is not None and has_upstream:
+            sha = git(root, "rev-parse", "HEAD").stdout.strip()
+            why = check(sha)
+            if why:
+                raise GitError(why)
+            remote, ref = _upstream_ref(root)
+            attempt = args + [remote, f"{sha}:{ref}"]
+        p = git(root, *attempt, check=False, timeout=PUSH_TIMEOUT)
         if p.returncode == 0:
             return
         err = (p.stderr or p.stdout).strip()
